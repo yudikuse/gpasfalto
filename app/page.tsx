@@ -87,7 +87,7 @@ export default function DashboardPage() {
           <div className="brand">
             {/* Coloque o arquivo da logo em /public/gpasfalto-logo.svg ou .png */}
             <img
-              src="/gpasfalto-logo.svg"
+              src="/gpasfalto-logo.png"
               alt="GP Asfalto"
               className="brand-logo"
             />
