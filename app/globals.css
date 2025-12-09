@@ -1,0 +1,19 @@
+/* FILE: app/globals.css */
+
+:root {
+  color-scheme: dark;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background-color: #020617; /* aproxima bg-slate-950 */
+  color: #e5e7eb; /* aproxima text-slate-200 */
+}
