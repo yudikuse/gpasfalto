@@ -2,7 +2,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { supabase } from "../lib/supabaseClient";
 
 type OrderRow = {
   id: number;
@@ -176,7 +176,9 @@ export default function DashboardPage() {
                           </span>
                         </td>
                         <td className="py-2 pr-4">
-                          {row.numero_oc || <span className="text-slate-500">—</span>}
+                          {row.numero_oc || (
+                            <span className="text-slate-500">—</span>
+                          )}
                         </td>
                         <td className="py-2 pr-4">
                           {row.codigo_equipamento || (
