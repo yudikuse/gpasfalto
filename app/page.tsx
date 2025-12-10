@@ -11,15 +11,24 @@ import {
   LineElement,
   Tooltip,
   Legend,
+  // controllers:
+  LineController,
+  BarController,
 } from "chart.js";
 import { supabase } from "@/lib/supabaseClient";
 
 ChartJS.register(
-  BarElement,
+  // scales
   CategoryScale,
   LinearScale,
+  // elements
+  BarElement,
   PointElement,
   LineElement,
+  // controllers (importante pro mixed chart bar+line)
+  LineController,
+  BarController,
+  // plugins
   Tooltip,
   Legend
 );
@@ -409,11 +418,7 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="h-80">
-              {/* <-- AQUI está o cast pro TS parar de reclamar */}
-              <Bar
-                data={chartData as any}
-                options={chartOptions as any}
-              />
+              <Bar data={chartData as any} options={chartOptions as any} />
             </div>
           )}
         </section>
