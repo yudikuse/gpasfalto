@@ -153,8 +153,7 @@ export default function DashboardPage() {
     });
 
     const diff = totalGp - totalGoinfra;
-    const custoHoraGp =
-      totalHoras > 0 ? totalGp / totalHoras : undefined;
+    const custoHoraGp = totalHoras > 0 ? totalGp / totalHoras : undefined;
     const custoHoraGoinfra =
       totalHoras > 0 ? totalGoinfra / totalHoras : undefined;
 
@@ -410,7 +409,11 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="h-80">
-              <Bar data={chartData} options={chartOptions} />
+              {/* <-- AQUI está o cast pro TS parar de reclamar */}
+              <Bar
+                data={chartData as any}
+                options={chartOptions as any}
+              />
             </div>
           )}
         </section>
