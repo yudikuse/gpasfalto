@@ -63,6 +63,19 @@ const currency = new Intl.NumberFormat("pt-BR", {
   currency: "BRL",
 });
 
+type RankingMode = "percent" | "value";
+
+type EquipStat = {
+  equipamento: string;
+  totalGp: number;
+  totalGoinfra: number;
+  totalHoras: number;
+  custoHoraGp: number | null;
+  custoHoraGoinfra: number | null;
+  diffHora: number | null; // R$/h
+  diffPercent: number | null; // ex: 0.25 = 25% mais caro
+};
+
 export default function DashboardPage() {
   const [data, setData] = useState<EquipmentCostRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -70,8 +83,9 @@ export default function DashboardPage() {
   const [startMonth, setStartMonth] = useState(1);
   const [endMonth, setEndMonth] = useState(12);
   const [error, setError] = useState<string | null>(null);
+  const [rankingMode, setRankingMode] = useState<RankingMode>("percent");
 
-  // === FETCH: view equipment_costs_2025_v (dados corretos) ===
+  // === FETCH: view equipment_costs_2025_v ===
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -96,17 +110,22 @@ export default function DashboardPage() {
     fetchData();
   }, []);
 
-  // Equipamentos disponíveis
+  // Equipamentos disponíveis (já excluindo TP-03 da análise inteira)
   const equipmentOptions = useMemo(() => {
     const set = new Set<string>();
-    data.forEach((row) => set.add(row.equipamento));
+    data.forEach((row) => {
+      if (row.equipamento && row.equipamento !== "TP-03") {
+        set.add(row.equipamento);
+      }
+    });
     return Array.from(set).sort();
   }, [data]);
 
-  // Filtros aplicados
+  // Filtros aplicados (ignorando TP-03)
   const filteredData = useMemo(
     () =>
       data.filter((row) => {
+        if (row.equipamento === "TP-03") return false;
         const inEquip =
           selectedEquip === "all" || row.equipamento === selectedEquip;
         const inMonth = row.mes >= startMonth && row.mes <= endMonth;
@@ -167,19 +186,17 @@ export default function DashboardPage() {
     };
   }, [filteredData]);
 
-  // === TOP 5 MAIS CAROS / MAIS BARATOS POR HORA (GP x GOINFRA) ===
-  type EquipStat = {
-    equipamento: string;
-    totalGp: number;
-    totalGoinfra: number;
-    totalHoras: number;
-    custoHoraGp?: number;
-    custoHoraGoinfra?: number;
-    diffHora?: number;
-  };
+  // === Estatísticas por equipamento para TOP 5 ===
+  const equipStats: EquipStat[] = useMemo(() => {
+    type Acc = {
+      equipamento: string;
+      totalGp: number;
+      totalGoinfra: number;
+      totalHoras: number;
+      custoHoraGoinfraRef: number | null;
+    };
 
-  const { topMaisCaros, topMaisBaratos } = useMemo(() => {
-    const map = new Map<string, EquipStat>();
+    const map = new Map<string, Acc>();
 
     filteredData.forEach((row) => {
       const eq = row.equipamento;
@@ -189,45 +206,101 @@ export default function DashboardPage() {
       const gp = row.custo_gp ?? 0;
       const go = row.custo_goinfra ?? 0;
 
-      const current = map.get(eq) || {
-        equipamento: eq,
-        totalGp: 0,
-        totalGoinfra: 0,
-        totalHoras: 0,
-      };
+      const current: Acc =
+        map.get(eq) || {
+          equipamento: eq,
+          totalGp: 0,
+          totalGoinfra: 0,
+          totalHoras: 0,
+          custoHoraGoinfraRef: null,
+        };
 
       current.totalGp += gp;
       current.totalGoinfra += go;
       current.totalHoras += horas;
 
+      // guarda o custo hora de referência GOINFRA se vier preenchido
+      if (row.custo_hora_goinfra != null) {
+        current.custoHoraGoinfraRef = row.custo_hora_goinfra;
+      }
+
       map.set(eq, current);
     });
 
-    const stats: EquipStat[] = Array.from(map.values()).map((s) => {
-      if (s.totalHoras > 0) {
-        s.custoHoraGp = s.totalGp / s.totalHoras;
-        s.custoHoraGoinfra = s.totalGoinfra / s.totalHoras;
-        if (s.custoHoraGp != null && s.custoHoraGoinfra != null) {
-          s.diffHora = s.custoHoraGp - s.custoHoraGoinfra;
-        }
-      }
-      return s;
+    const stats: EquipStat[] = [];
+    for (const acc of map.values()) {
+      const custoHoraGp =
+        acc.totalHoras > 0 ? acc.totalGp / acc.totalHoras : null;
+
+      const custoHoraGoinfraCalc =
+        acc.totalHoras > 0 ? acc.totalGoinfra / acc.totalHoras : null;
+
+      const custoHoraGoinfra =
+        acc.custoHoraGoinfraRef != null
+          ? acc.custoHoraGoinfraRef
+          : custoHoraGoinfraCalc;
+
+      const diffHora =
+        custoHoraGp != null && custoHoraGoinfra != null
+          ? custoHoraGp - custoHoraGoinfra
+          : null;
+
+      const diffPercent =
+        custoHoraGp != null &&
+        custoHoraGoinfra != null &&
+        custoHoraGoinfra > 0
+          ? custoHoraGp / custoHoraGoinfra - 1
+          : null;
+
+      stats.push({
+        equipamento: acc.equipamento,
+        totalGp: acc.totalGp,
+        totalGoinfra: acc.totalGoinfra,
+        totalHoras: acc.totalHoras,
+        custoHoraGp,
+        custoHoraGoinfra,
+        diffHora,
+        diffPercent,
+      });
+    }
+
+    return stats;
+  }, [filteredData]);
+
+  // TOP 5 mais caros / mais baratos por hora
+  const topMaisCaros: EquipStat[] = useMemo(() => {
+    const valid = equipStats.filter((s) => {
+      if (s.totalHoras <= 0) return false;
+      if (rankingMode === "percent") return s.diffPercent != null;
+      return s.diffHora != null;
     });
 
-    const valid = stats.filter(
-      (s) => s.totalHoras > 0 && s.diffHora != null
-    ) as Required<EquipStat>[];
+    const sorted = [...valid].sort((a, b) => {
+      if (rankingMode === "percent") {
+        return (b.diffPercent! ?? 0) - (a.diffPercent! ?? 0);
+      }
+      return (b.diffHora! ?? 0) - (a.diffHora! ?? 0);
+    });
 
-    const topMaisCaros = [...valid]
-      .sort((a, b) => b.diffHora - a.diffHora)
-      .slice(0, 5);
+    return sorted.slice(0, 5);
+  }, [equipStats, rankingMode]);
 
-    const topMaisBaratos = [...valid]
-      .sort((a, b) => a.diffHora - b.diffHora)
-      .slice(0, 5);
+  const topMaisBaratos: EquipStat[] = useMemo(() => {
+    const valid = equipStats.filter((s) => {
+      if (s.totalHoras <= 0) return false;
+      if (rankingMode === "percent") return s.diffPercent != null;
+      return s.diffHora != null;
+    });
 
-    return { topMaisCaros, topMaisBaratos };
-  }, [filteredData]);
+    const sorted = [...valid].sort((a, b) => {
+      if (rankingMode === "percent") {
+        return (a.diffPercent! ?? 0) - (b.diffPercent! ?? 0);
+      }
+      return (a.diffHora! ?? 0) - (b.diffHora! ?? 0);
+    });
+
+    return sorted.slice(0, 5);
+  }, [equipStats, rankingMode]);
 
   const chartData = {
     labels: chartLabels,
@@ -305,27 +378,30 @@ export default function DashboardPage() {
       ? "Jan–Dez 2025"
       : `${monthLabels[startMonth - 1]}–${monthLabels[endMonth - 1]} · 2025`;
 
+  const rankingSubtitle =
+    rankingMode === "percent"
+      ? "Diferença de custo/hora em %: GP ÷ GOINFRA - 1 (maior % = pior)."
+      : "Diferença de custo/hora em R$/h: GP – GOINFRA (maior valor = pior).";
+
   return (
     <div className="page-root">
       <div className="page-container">
-        {/* HEADER / BRANDING COM LOGO GRANDE */}
+        {/* HEADER / BRANDING COM LOGO */}
         <header className="page-header">
           <div className="brand">
-            {/* Troca o src abaixo para o arquivo real da logo: /logo-gp-asfalto.png */}
-            <div
+            <img
+              src="/gpasfalto-logo.png"
+              alt="GP Asfalto"
               className="brand-logo"
               style={{
                 width: 72,
                 height: 72,
                 borderRadius: 20,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
+                border: "1px solid #e5e7eb",
+                background: "#ffffff",
+                objectFit: "contain",
               }}
-            >
-              {/* fallback caso a logo ainda não exista */}
-              <span style={{ fontWeight: 600, fontSize: "1rem" }}>GP</span>
-            </div>
+            />
             <div>
               <div className="brand-text-main">
                 Dashboard de Manutenção 2025 - GP Asfalto
@@ -375,7 +451,7 @@ export default function DashboardPage() {
                     outline: "none",
                   }}
                 >
-                  <option value="all">Todos</option>
+                  <option value="all">Todos (exceto TP-03)</option>
                   {equipmentOptions.map((eq) => (
                     <option key={eq} value={eq}>
                       {eq}
@@ -438,7 +514,7 @@ export default function DashboardPage() {
               <div className="filter-chip">
                 <span>
                   {selectedEquip === "all"
-                    ? "Frota completa no período."
+                    ? "Frota completa no período (sem TP-03)."
                     : `Equipamento: ${selectedEquip}`}
                 </span>
               </div>
@@ -479,8 +555,7 @@ export default function DashboardPage() {
               {currency.format(summary.diff)}
             </div>
             <div className="summary-subvalue">
-              Valor positivo indica custo maior na operação GP em relação ao
-              parâmetro GOINFRA.
+              Valor positivo indica custo maior na operação GP vs GOINFRA.
             </div>
           </div>
 
@@ -524,128 +599,209 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* TOP 5 MAIS CAROS / MAIS BARATOS POR HORA */}
-        <section className="summary-grid">
-          <div className="section-card">
-            <div className="section-header">
-              <div>
-                <div className="section-title">
-                  Top 5 · Mais caros por hora (GP x GOINFRA)
-                </div>
-                <div className="section-subtitle">
-                  Diferença de custo/hora: GP – GOINFRA (maior &gt; pior).
-                </div>
-              </div>
-            </div>
-            <div className="table-wrapper">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Equipamento</th>
-                    <th>Horas</th>
-                    <th>GP / h</th>
-                    <th>GOINFRA / h</th>
-                    <th>Diferença</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topMaisCaros.length === 0 && (
-                    <tr>
-                      <td colSpan={5}>Sem dados para o filtro atual.</td>
-                    </tr>
-                  )}
-                  {topMaisCaros.map((s) => (
-                    <tr key={s.equipamento}>
-                      <td>{s.equipamento}</td>
-                      <td>
-                        {s.totalHoras.toLocaleString("pt-BR", {
-                          maximumFractionDigits: 1,
-                        })}
-                      </td>
-                      <td>
-                        {s.custoHoraGp != null
-                          ? currency.format(s.custoHoraGp)
-                          : "—"}
-                      </td>
-                      <td>
-                        {s.custoHoraGoinfra != null
-                          ? currency.format(s.custoHoraGoinfra)
-                          : "—"}
-                      </td>
-                      <td
-                        style={{
-                          color: s.diffHora! > 0 ? "#dc2626" : "#16a34a",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {currency.format(s.diffHora!)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+        {/* TOGGLE DE RANKING + TOP 5 */}
+        <section>
+          {/* Toggle de modo de ranking */}
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "flex-end",
+              marginBottom: 8,
+              fontSize: "0.75rem",
+              color: "var(--gp-muted)",
+            }}
+          >
+            <span style={{ marginRight: 8, color: "var(--gp-muted-soft)" }}>
+              Ordenar TOP 5 por:
+            </span>
+            <button
+              onClick={() => setRankingMode("percent")}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 999,
+                border:
+                  rankingMode === "percent"
+                    ? "1px solid var(--gp-accent)"
+                    : "1px solid #e5e7eb",
+                background:
+                  rankingMode === "percent"
+                    ? "var(--gp-accent-soft)"
+                    : "#ffffff",
+                color:
+                  rankingMode === "percent"
+                    ? "var(--gp-accent)"
+                    : "var(--gp-muted)",
+                fontSize: "0.75rem",
+                cursor: "pointer",
+                marginRight: 4,
+              }}
+            >
+              % Dif
+            </button>
+            <button
+              onClick={() => setRankingMode("value")}
+              style={{
+                padding: "4px 10px",
+                borderRadius: 999,
+                border:
+                  rankingMode === "value"
+                    ? "1px solid var(--gp-accent)"
+                    : "1px solid #e5e7eb",
+                background:
+                  rankingMode === "value"
+                    ? "var(--gp-accent-soft)"
+                    : "#ffffff",
+                color:
+                  rankingMode === "value"
+                    ? "var(--gp-accent)"
+                    : "var(--gp-muted)",
+                fontSize: "0.75rem",
+                cursor: "pointer",
+              }}
+            >
+              R$/h
+            </button>
           </div>
 
-          <div className="section-card">
-            <div className="section-header">
-              <div>
-                <div className="section-title">
-                  Top 5 · Mais baratos por hora (GP x GOINFRA)
-                </div>
-                <div className="section-subtitle">
-                  Diferença de custo/hora: GP – GOINFRA (mais negativo &gt;
-                  melhor).
+          <div className="summary-grid">
+            <div className="section-card">
+              <div className="section-header">
+                <div>
+                  <div className="section-title">
+                    Top 5 · Mais caros por hora (GP × GOINFRA)
+                  </div>
+                  <div className="section-subtitle">{rankingSubtitle}</div>
                 </div>
               </div>
-            </div>
-            <div className="table-wrapper">
-              <table className="table">
-                <thead>
-                  <tr>
-                    <th>Equipamento</th>
-                    <th>Horas</th>
-                    <th>GP / h</th>
-                    <th>GOINFRA / h</th>
-                    <th>Diferença</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {topMaisBaratos.length === 0 && (
+              <div className="table-wrapper">
+                <table className="table">
+                  <thead>
                     <tr>
-                      <td colSpan={5}>Sem dados para o filtro atual.</td>
+                      <th>Equipamento</th>
+                      <th>Horas</th>
+                      <th>GP / h</th>
+                      <th>GOINFRA / h</th>
+                      <th>Dif. (R$/h)</th>
+                      <th>Dif. (%)</th>
                     </tr>
-                  )}
-                  {topMaisBaratos.map((s) => (
-                    <tr key={s.equipamento}>
-                      <td>{s.equipamento}</td>
-                      <td>
-                        {s.totalHoras.toLocaleString("pt-BR", {
-                          maximumFractionDigits: 1,
-                        })}
-                      </td>
-                      <td>
-                        {s.custoHoraGp != null
-                          ? currency.format(s.custoHoraGp)
-                          : "—"}
-                      </td>
-                      <td>
-                        {s.custoHoraGoinfra != null
-                          ? currency.format(s.custoHoraGoinfra)
-                          : "—"}
-                      </td>
-                      <td
-                        style={{
-                          color: s.diffHora! > 0 ? "#dc2626" : "#16a34a",
-                          fontWeight: 600,
-                        }}
-                      >
-                        {currency.format(s.diffHora!)}
-                      </td>
+                  </thead>
+                  <tbody>
+                    {topMaisCaros.length === 0 && (
+                      <tr>
+                        <td colSpan={6}>Sem dados para o filtro atual.</td>
+                      </tr>
+                    )}
+                    {topMaisCaros.map((s) => {
+                      const diffColor =
+                        (s.diffHora ?? 0) > 0 ? "#dc2626" : "#16a34a";
+                      const diffPercentStr =
+                        s.diffPercent != null
+                          ? `${(s.diffPercent * 100).toFixed(1)}%`
+                          : "—";
+                      return (
+                        <tr key={s.equipamento}>
+                          <td>{s.equipamento}</td>
+                          <td>
+                            {s.totalHoras.toLocaleString("pt-BR", {
+                              maximumFractionDigits: 1,
+                            })}
+                          </td>
+                          <td>
+                            {s.custoHoraGp != null
+                              ? currency.format(s.custoHoraGp)
+                              : "—"}
+                          </td>
+                          <td>
+                            {s.custoHoraGoinfra != null
+                              ? currency.format(s.custoHoraGoinfra)
+                              : "—"}
+                          </td>
+                          <td style={{ color: diffColor, fontWeight: 600 }}>
+                            {s.diffHora != null
+                              ? currency.format(s.diffHora)
+                              : "—"}
+                          </td>
+                          <td style={{ color: diffColor, fontWeight: 600 }}>
+                            {diffPercentStr}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="section-card">
+              <div className="section-header">
+                <div>
+                  <div className="section-title">
+                    Top 5 · Mais baratos por hora (GP × GOINFRA)
+                  </div>
+                  <div className="section-subtitle">
+                    {rankingMode === "percent"
+                      ? "Mais negativo em % = melhor."
+                      : "Menor diferença em R$/h = melhor."}
+                  </div>
+                </div>
+              </div>
+              <div className="table-wrapper">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Equipamento</th>
+                      <th>Horas</th>
+                      <th>GP / h</th>
+                      <th>GOINFRA / h</th>
+                      <th>Dif. (R$/h)</th>
+                      <th>Dif. (%)</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody>
+                    {topMaisBaratos.length === 0 && (
+                      <tr>
+                        <td colSpan={6}>Sem dados para o filtro atual.</td>
+                      </tr>
+                    )}
+                    {topMaisBaratos.map((s) => {
+                      const diffColor =
+                        (s.diffHora ?? 0) > 0 ? "#dc2626" : "#16a34a";
+                      const diffPercentStr =
+                        s.diffPercent != null
+                          ? `${(s.diffPercent * 100).toFixed(1)}%`
+                          : "—";
+                      return (
+                        <tr key={s.equipamento}>
+                          <td>{s.equipamento}</td>
+                          <td>
+                            {s.totalHoras.toLocaleString("pt-BR", {
+                              maximumFractionDigits: 1,
+                            })}
+                          </td>
+                          <td>
+                            {s.custoHoraGp != null
+                              ? currency.format(s.custoHoraGp)
+                              : "—"}
+                          </td>
+                          <td>
+                            {s.custoHoraGoinfra != null
+                              ? currency.format(s.custoHoraGoinfra)
+                              : "—"}
+                          </td>
+                          <td style={{ color: diffColor, fontWeight: 600 }}>
+                            {s.diffHora != null
+                              ? currency.format(s.diffHora)
+                              : "—"}
+                          </td>
+                          <td style={{ color: diffColor, fontWeight: 600 }}>
+                            {diffPercentStr}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         </section>
