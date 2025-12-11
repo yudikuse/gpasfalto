@@ -718,8 +718,8 @@ export default function DashboardPage() {
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
               style={{
-                width: 120,
-                height: 120,
+                width: 240,
+                height: 240,
                 objectFit: "contain",
                 border: "none",
                 background: "transparent",
