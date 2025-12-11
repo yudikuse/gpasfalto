@@ -71,7 +71,7 @@ export default function DashboardPage() {
   const [endMonth, setEndMonth] = useState(12);
   const [error, setError] = useState<string | null>(null);
 
-  // BUSCA: view equipment_costs_2025_v (dados corretos de custo)
+  // === FETCH: usa view equipment_costs_2025_v ===
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -96,14 +96,14 @@ export default function DashboardPage() {
     fetchData();
   }, []);
 
-  // Equipamentos para o filtro
+  // Equipamentos disponíveis
   const equipmentOptions = useMemo(() => {
     const set = new Set<string>();
     data.forEach((row) => set.add(row.equipamento));
     return Array.from(set).sort();
   }, [data]);
 
-  // Filtros (equipamento + meses)
+  // Filtros aplicados
   const filteredData = useMemo(
     () =>
       data.filter((row) => {
@@ -115,7 +115,7 @@ export default function DashboardPage() {
     [data, selectedEquip, startMonth, endMonth]
   );
 
-  // Agregação mensal (barras GP, linha GOINFRA)
+  // Agregação mensal (barras = GP, linha = GOINFRA)
   const monthlyAggregates = useMemo(() => {
     const result: { [mes: number]: { gp: number; goinfra: number } } = {};
 
@@ -130,7 +130,6 @@ export default function DashboardPage() {
     return result;
   }, [filteredData]);
 
-  // Dados do gráfico, mantendo a mesma lógica
   const chartLabels = monthLabels.slice(startMonth - 1, endMonth);
   const barData = chartLabels.map((_, idx) => {
     const monthNumber = startMonth + idx;
@@ -177,7 +176,7 @@ export default function DashboardPage() {
         data: barData,
         backgroundColor: "#fb4b37",
         borderRadius: 10,
-        maxBarThickness: 42,
+        maxBarThickness: 40,
       },
       {
         type: "line" as const,
@@ -202,12 +201,12 @@ export default function DashboardPage() {
       legend: {
         position: "top" as const,
         labels: {
+          usePointStyle: true,
           font: {
             size: 11,
             family:
               "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
           },
-          usePointStyle: true,
         },
       },
       tooltip: {
@@ -222,25 +221,13 @@ export default function DashboardPage() {
     },
     scales: {
       x: {
-        grid: {
-          display: false,
-        },
-        ticks: {
-          font: {
-            size: 11,
-          },
-        },
+        grid: { display: false },
       },
       y: {
         beginAtZero: true,
-        grid: {
-          color: "#e5e7eb",
-        },
+        grid: { color: "#e5e7eb" },
         ticks: {
           callback: (value: any) => currency.format(Number(value)),
-          font: {
-            size: 11,
-          },
         },
       },
     },
@@ -257,227 +244,237 @@ export default function DashboardPage() {
       : `${monthLabels[startMonth - 1]}–${monthLabels[endMonth - 1]} · 2025`;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      {/* HEADER */}
-      <header className="border-b border-slate-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-900">
-              <span className="text-sm font-semibold tracking-tight text-white">
-                GP
-              </span>
+    <div className="page-root">
+      <div className="page-container">
+        {/* HEADER / BRANDING */}
+        <header className="page-header">
+          <div className="brand">
+            {/* Se tiver uma logo real, troca esse div por <img className="brand-logo" src="/logo-gp.png" /> */}
+            <div className="brand-logo" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>GP</span>
             </div>
             <div>
-              <h1 className="text-lg font-semibold tracking-tight text-slate-900">
-                GP Asfalto · Manutenção 2025
-              </h1>
-              <p className="text-xs text-slate-500">
-                Comparativo de custos · GP Asfalto x GOINFRA
-              </p>
+              <div className="brand-text-main">GP Asfalto</div>
+              <div className="brand-text-sub">Dashboard de Manutenção 2025</div>
             </div>
           </div>
 
-          <div className="hidden text-right text-xs text-slate-500 md:block">
-            <p className="font-medium text-slate-600">Visão consolidada</p>
-            <p>{periodLabel}</p>
+          <div className="header-right">
+            <div className="header-pill">
+              <span>Visão consolidada</span>
+              <strong>{periodLabel}</strong>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* MAIN */}
-      <main className="mx-auto max-w-6xl px-4 py-6 lg:px-6 lg:py-8 space-y-6">
-        {/* PRIMEIRO CARD: FILTROS + RESUMO RÁPIDO */}
-        <section className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4 sm:px-6 sm:py-5 space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-4">
+        {/* FILTROS */}
+        <section className="section-card">
+          <div className="section-header">
             <div>
-              <h2 className="text-sm font-semibold tracking-tight text-slate-900">
-                Overview do período
-              </h2>
-              <p className="text-xs text-slate-500">
+              <div className="section-title">Overview do período</div>
+              <div className="section-subtitle">
                 Selecione equipamento e meses para atualizar os indicadores.
-              </p>
-            </div>
-            <div className="hidden text-xs text-slate-500 sm:block">
-              {selectedEquip === "all"
-                ? "Frota completa."
-                : `Equipamento: ${selectedEquip}`}
+              </div>
             </div>
           </div>
 
-          <div className="mt-1 flex flex-wrap gap-4">
-            {/* Equipamento */}
-            <div className="min-w-[200px]">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Equipamento
-              </span>
-              <select
-                value={selectedEquip}
-                onChange={(e) =>
-                  setSelectedEquip(
-                    e.target.value === "all" ? "all" : e.target.value
-                  )
-                }
-                className="mt-1 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
-              >
-                <option value="all">Todos os equipamentos</option>
-                {equipmentOptions.map((eq) => (
-                  <option key={eq} value={eq}>
-                    {eq}
-                  </option>
-                ))}
-              </select>
-            </div>
+          <div className="filter-bar">
+            <div className="filter-label">Filtros</div>
+            <div className="filter-group">
+              {/* Equipamento */}
+              <div className="filter-chip">
+                <span style={{ marginRight: 6 }}>Equipamento:</span>
+                <select
+                  value={selectedEquip}
+                  onChange={(e) =>
+                    setSelectedEquip(
+                      e.target.value === "all" ? "all" : e.target.value
+                    )
+                  }
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    fontSize: "0.8rem",
+                    outline: "none",
+                  }}
+                >
+                  <option value="all">Todos</option>
+                  {equipmentOptions.map((eq) => (
+                    <option key={eq} value={eq}>
+                      {eq}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            {/* Mês inicial */}
-            <div className="min-w-[120px]">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Mês inicial
-              </span>
-              <select
-                value={startMonth}
-                onChange={(e) => {
-                  const val = Number(e.target.value);
-                  setStartMonth(val);
-                  if (val > endMonth) setEndMonth(val);
-                }}
-                className="mt-1 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
-              >
-                {monthOptions.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+              {/* Mês inicial */}
+              <div className="filter-chip">
+                <span style={{ marginRight: 6 }}>Mês inicial:</span>
+                <select
+                  value={startMonth}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setStartMonth(val);
+                    if (val > endMonth) setEndMonth(val);
+                  }}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    fontSize: "0.8rem",
+                    outline: "none",
+                  }}
+                >
+                  {monthOptions.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            {/* Mês final */}
-            <div className="min-w-[120px]">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-                Mês final
-              </span>
-              <select
-                value={endMonth}
-                onChange={(e) => {
-                  const val = Number(e.target.value);
-                  setEndMonth(val);
-                  if (val < startMonth) setStartMonth(val);
-                }}
-                className="mt-1 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
-              >
-                {monthOptions.map((m) => (
-                  <option key={m.value} value={m.value}>
-                    {m.label}
-                  </option>
-                ))}
-              </select>
-            </div>
+              {/* Mês final */}
+              <div className="filter-chip">
+                <span style={{ marginRight: 6 }}>Mês final:</span>
+                <select
+                  value={endMonth}
+                  onChange={(e) => {
+                    const val = Number(e.target.value);
+                    setEndMonth(val);
+                    if (val < startMonth) setStartMonth(val);
+                  }}
+                  style={{
+                    border: "none",
+                    background: "transparent",
+                    fontSize: "0.8rem",
+                    outline: "none",
+                  }}
+                >
+                  {monthOptions.map((m) => (
+                    <option key={m.value} value={m.value}>
+                      {m.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
 
-            <div className="flex-1 text-xs text-slate-500 sm:hidden">
-              {selectedEquip === "all"
-                ? "Frota completa."
-                : `Equipamento: ${selectedEquip}`}
+              {/* Texto da frota / equipamento atual */}
+              <div className="filter-chip">
+                <span>
+                  {selectedEquip === "all"
+                    ? "Frota completa no período."
+                    : `Equipamento: ${selectedEquip}`}
+                </span>
+              </div>
             </div>
           </div>
         </section>
 
-        {/* KPIs PRINCIPAIS */}
-        <section className="grid gap-4 md:grid-cols-4">
-          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Custo total GP
-            </p>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
+        {/* CARDS PRINCIPAIS */}
+        <section className="summary-grid">
+          <div className="summary-card">
+            <div className="summary-label">Custo total GP</div>
+            <div className="summary-value">
               {currency.format(summary.totalGp)}
-            </p>
+            </div>
+            <div className="summary-subvalue">
+              Soma das ordens de manutenção GP no período filtrado.
+            </div>
           </div>
 
-          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Custo total GOINFRA
-            </p>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
+          <div className="summary-card">
+            <div className="summary-label">Custo total GOINFRA</div>
+            <div className="summary-value">
               {currency.format(summary.totalGoinfra)}
-            </p>
+            </div>
+            <div className="summary-subvalue">
+              Horas trabalhadas × custo/hora de referência GOINFRA.
+            </div>
           </div>
 
-          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Diferença (GP – GOINFRA)
-            </p>
-            <p
-              className={`mt-2 text-2xl font-semibold tracking-tight ${
-                summary.diff > 0 ? "text-rose-600" : "text-emerald-600"
-              }`}
+          <div className="summary-card">
+            <div className="summary-label">Diferença (GP – GOINFRA)</div>
+            <div
+              className="summary-value"
+              style={{
+                color: summary.diff > 0 ? "#dc2626" : "#16a34a",
+              }}
             >
               {currency.format(summary.diff)}
-            </p>
+            </div>
+            <div className="summary-subvalue">
+              Valor positivo indica custo maior na operação GP em relação ao
+              parâmetro GOINFRA.
+            </div>
           </div>
 
-          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Horas trabalhadas
-            </p>
-            <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
+          <div className="summary-card">
+            <div className="summary-label">Horas trabalhadas</div>
+            <div className="summary-value">
               {summary.totalHoras.toLocaleString("pt-BR", {
                 maximumFractionDigits: 1,
               })}
-            </p>
+            </div>
+            <div className="summary-subvalue">
+              Soma das horas de todos os equipamentos no período.
+            </div>
           </div>
         </section>
 
-        {/* KPIs DE CUSTO/HORA */}
-        <section className="grid gap-4 md:grid-cols-2">
-          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Custo hora GP Asfalto
-            </p>
-            <p className="mt-2 text-xl font-semibold tracking-tight text-slate-900">
+        {/* CARDS CUSTO/HORA */}
+        <section className="summary-grid">
+          <div className="summary-card">
+            <div className="summary-label">Custo hora GP Asfalto</div>
+            <div className="summary-value" style={{ fontSize: "1.4rem" }}>
               {summary.custoHoraGp != null
                 ? currency.format(summary.custoHoraGp)
                 : "—"}
-            </p>
+            </div>
+            <div className="summary-subvalue">
+              Custo total GP dividido pelas horas reais trabalhadas.
+            </div>
           </div>
 
-          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
-            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
-              Custo hora GOINFRA (médio)
-            </p>
-            <p className="mt-2 text-xl font-semibold tracking-tight text-slate-900">
+          <div className="summary-card">
+            <div className="summary-label">Custo hora GOINFRA (médio)</div>
+            <div className="summary-value" style={{ fontSize: "1.4rem" }}>
               {summary.custoHoraGoinfra != null
                 ? currency.format(summary.custoHoraGoinfra)
                 : "—"}
-            </p>
+            </div>
+            <div className="summary-subvalue">
+              Custo teórico ponderado pelas horas trabalhadas.
+            </div>
           </div>
         </section>
 
-        {/* GRÁFICO */}
-        <section className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4 sm:px-6 sm:py-5">
-          <div className="mb-3 flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-            <h2 className="text-sm font-semibold tracking-tight text-slate-900">
-              Custo mensal · GP (barras) x GOINFRA (linha)
-            </h2>
-            <span className="text-xs text-slate-500">
-              Valores acumulados por mês no período selecionado.
-            </span>
+        {/* GRÁFICO PRINCIPAL */}
+        <section className="section-card">
+          <div className="section-header">
+            <div>
+              <div className="section-title">
+                Custo mensal · GP (barras) x GOINFRA (linha)
+              </div>
+              <div className="section-subtitle">
+                Valores acumulados por mês no período selecionado.
+              </div>
+            </div>
           </div>
 
           {error && (
-            <div className="mb-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <div className="state-card" style={{ marginBottom: 12 }}>
               {error}
             </div>
           )}
 
           {loading ? (
-            <div className="flex h-72 items-center justify-center text-sm text-slate-500">
-              Carregando dados...
-            </div>
+            <div className="state-card">Carregando dados…</div>
           ) : (
-            <div className="h-80">
+            <div style={{ height: 320 }}>
               <Bar data={chartData as any} options={chartOptions as any} />
             </div>
           )}
         </section>
-      </main>
+      </div>
     </div>
   );
 }
