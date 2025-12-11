@@ -51,8 +51,8 @@ type OficinaRow = {
 type RankingMode = "percent" | "value";
 
 type ProcessedRow = EquipmentCostRow & {
-  oficina_share: number;   // rateio da oficina naquele mês/equip
-  custo_gp_total: number;  // custo_gp + rateio oficina
+  oficina_share: number; // rateio da oficina
+  custo_gp_total: number; // custo_gp + rateio
 };
 
 type EquipStat = {
@@ -62,8 +62,18 @@ type EquipStat = {
   totalHoras: number;
   custoHoraGp: number | null;
   custoHoraGoinfra: number | null;
-  diffHora: number | null;    // R$/h
-  diffPercent: number | null; // ex: 0.25 = 25% mais caro
+  diffHora: number | null;
+  diffPercent: number | null;
+};
+
+type CategoryStat = {
+  category: string;
+  totalGp: number;
+  totalGoinfra: number;
+  totalHoras: number;
+  custoHoraGp: number | null;
+  custoHoraGoinfra: number | null;
+  diffHora: number | null;
 };
 
 const monthLabels = [
@@ -85,6 +95,14 @@ const currency = new Intl.NumberFormat("pt-BR", {
   style: "currency",
   currency: "BRL",
 });
+
+// pega prefixo da categoria: RE-05 -> RE, VBA-02 -> VBA, PC02 -> PC02
+function getCategoryFromEquip(equipamento: string | null): string | null {
+  if (!equipamento) return null;
+  const idx = equipamento.indexOf("-");
+  if (idx === -1) return equipamento;
+  return equipamento.slice(0, idx);
+}
 
 export default function DashboardPage() {
   const [data, setData] = useState<EquipmentCostRow[]>([]);
@@ -143,7 +161,7 @@ export default function DashboardPage() {
     return Array.from(set).sort();
   }, [data]);
 
-  // Filtros aplicados aos equipamentos (sem TP-03)
+  // Filtros aplicados (sem TP-03)
   const filteredData = useMemo(
     () =>
       data.filter((row) => {
@@ -156,7 +174,7 @@ export default function DashboardPage() {
     [data, selectedEquip, startMonth, endMonth]
   );
 
-  // Mapa: mês -> custo total da oficina no mês
+  // Mapa: mês -> custo total da oficina
   const oficinaByMonth = useMemo(() => {
     const map: { [mes: number]: number } = {};
     oficinaData.forEach((row) => {
@@ -239,7 +257,7 @@ export default function DashboardPage() {
     return monthlyAggregates[mes]?.goinfra ?? 0;
   });
 
-  // Resumo geral (já com rateio da oficina embutido em GP quando ativo)
+  // Resumo geral
   const summary = useMemo(() => {
     let totalGp = 0;
     let totalGoinfra = 0;
@@ -266,7 +284,7 @@ export default function DashboardPage() {
     };
   }, [processedFilteredData]);
 
-  // Estatísticas por equipamento para TOP 5 (usando custo_gp_total)
+  // Estatísticas por equipamento (TOP 5)
   const equipStats: EquipStat[] = useMemo(() => {
     type Acc = {
       equipamento: string;
@@ -346,7 +364,65 @@ export default function DashboardPage() {
     return stats;
   }, [processedFilteredData]);
 
-  // TOP 5 mais caros / mais baratos por hora
+  // === NOVO: estatísticas por CATEGORIA (prefixo) ===
+  const categoryStats: CategoryStat[] = useMemo(() => {
+    type Acc = {
+      category: string;
+      totalGp: number;
+      totalGoinfra: number;
+      totalHoras: number;
+    };
+
+    const map = new Map<string, Acc>();
+
+    processedFilteredData.forEach((row) => {
+      const cat = getCategoryFromEquip(row.equipamento);
+      if (!cat) return;
+
+      const horas = row.horas_trab_mes ?? 0;
+      const gp = row.custo_gp_total;
+      const go = row.custo_goinfra ?? 0;
+
+      const current: Acc =
+        map.get(cat) || { category: cat, totalGp: 0, totalGoinfra: 0, totalHoras: 0 };
+
+      current.totalGp += gp;
+      current.totalGoinfra += go;
+      current.totalHoras += horas;
+
+      map.set(cat, current);
+    });
+
+    const list: CategoryStat[] = [];
+
+    for (const acc of map.values()) {
+      const custoHoraGp =
+        acc.totalHoras > 0 ? acc.totalGp / acc.totalHoras : null;
+      const custoHoraGoinfra =
+        acc.totalHoras > 0 ? acc.totalGoinfra / acc.totalHoras : null;
+      const diffHora =
+        custoHoraGp != null && custoHoraGoinfra != null
+          ? custoHoraGp - custoHoraGoinfra
+          : null;
+
+      list.push({
+        category: acc.category,
+        totalGp: acc.totalGp,
+        totalGoinfra: acc.totalGoinfra,
+        totalHoras: acc.totalHoras,
+        custoHoraGp,
+        custoHoraGoinfra,
+        diffHora,
+      });
+    }
+
+    // classificar por diferença de custo/hora (maior -> menor)
+    list.sort((a, b) => (b.diffHora ?? 0) - (a.diffHora ?? 0));
+
+    return list;
+  }, [processedFilteredData]);
+
+  // TOP 5 mais caros / baratos
   const topMaisCaros: EquipStat[] = useMemo(() => {
     const valid = equipStats.filter((s) => {
       if (s.totalHoras <= 0) return false;
@@ -381,7 +457,7 @@ export default function DashboardPage() {
     return sorted.slice(0, 5);
   }, [equipStats, rankingMode]);
 
-  // Dados do gráfico (barras empilhadas + linha)
+  // Dados gráfico mensal (barras empilhadas + linha)
   const datasets: any[] = [
     {
       type: "bar" as const,
@@ -451,9 +527,67 @@ export default function DashboardPage() {
       },
     },
     scales: {
-      x: {
-        grid: { display: false },
+      x: { grid: { display: false } },
+      y: {
+        beginAtZero: true,
+        grid: { color: "#e5e7eb" },
+        ticks: {
+          callback: (value: any) => currency.format(Number(value)),
+        },
       },
+    },
+  };
+
+  // === Dados gráfico por categoria ===
+  const categoryChartData: any = {
+    labels: categoryStats.map((c) => c.category),
+    datasets: [
+      {
+        type: "bar" as const,
+        label: "GP / h",
+        data: categoryStats.map((c) => c.custoHoraGp ?? 0),
+        backgroundColor: "#fb4b37",
+        borderRadius: 10,
+        maxBarThickness: 40,
+      },
+      {
+        type: "bar" as const,
+        label: "GOINFRA / h",
+        data: categoryStats.map((c) => c.custoHoraGoinfra ?? 0),
+        backgroundColor: "#4b5563",
+        borderRadius: 10,
+        maxBarThickness: 40,
+      },
+    ],
+  };
+
+  const categoryChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false as const,
+    plugins: {
+      legend: {
+        position: "top" as const,
+        labels: {
+          usePointStyle: true,
+          font: {
+            size: 11,
+            family:
+              "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+          },
+        },
+      },
+      tooltip: {
+        callbacks: {
+          label: (context: any) => {
+            const label = context.dataset.label || "";
+            const value = context.parsed.y || 0;
+            return `${label}: ${currency.format(value)}`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: { grid: { display: false } },
       y: {
         beginAtZero: true,
         grid: { color: "#e5e7eb" },
@@ -684,9 +818,6 @@ export default function DashboardPage() {
             >
               {currency.format(summary.diff)}
             </div>
-            <div className="summary-subvalue">
-              Valor positivo indica custo maior na operação GP vs GOINFRA.
-            </div>
           </div>
 
           <div className="summary-card">
@@ -712,8 +843,8 @@ export default function DashboardPage() {
                 : "—"}
             </div>
             <div className="summary-subvalue">
-              Custo total GP (incluindo rateio da oficina quando ativo) dividido
-              pelas horas reais trabalhadas.
+              Custo total GP dividido pelas horas reais trabalhadas
+              (incluindo rateio da oficina quando ativo).
             </div>
           </div>
 
@@ -730,9 +861,8 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* TOGGLE DE RANKING + TOP 5 */}
+        {/* TOGGLE + TOP 5 */}
         <section>
-          {/* Toggle de modo de ranking */}
           <div
             style={{
               display: "flex",
@@ -937,7 +1067,7 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* GRÁFICO PRINCIPAL */}
+        {/* GRÁFICO PRINCIPAL MENSAL */}
         <section className="section-card">
           <div className="section-header">
             <div>
@@ -962,6 +1092,36 @@ export default function DashboardPage() {
           ) : (
             <div style={{ height: 320 }}>
               <Bar data={chartData} options={chartOptions as any} />
+            </div>
+          )}
+        </section>
+
+        {/* NOVO: GRÁFICO POR CATEGORIA */}
+        <section className="section-card">
+          <div className="section-header">
+            <div>
+              <div className="section-title">
+                Custo por categoria de equipamento (R$/h) · GP x GOINFRA
+              </div>
+              <div className="section-subtitle">
+                Agrupa códigos por prefixo (RE, VBA, UA, TP, PC...) considerando
+                o período e filtros atuais.
+              </div>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="state-card">Carregando dados…</div>
+          ) : categoryStats.length === 0 ? (
+            <div className="state-card">
+              Nenhuma categoria com dados para o filtro atual.
+            </div>
+          ) : (
+            <div style={{ height: 260 }}>
+              <Bar
+                data={categoryChartData}
+                options={categoryChartOptions as any}
+              />
             </div>
           )}
         </section>
