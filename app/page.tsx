@@ -43,6 +43,29 @@ type EquipmentCostRow = {
   diff_hora_gp_goinfra: number | null;
 };
 
+type OficinaRow = {
+  mes_ano: string | null;
+  valor_menor: number | null;
+};
+
+type RankingMode = "percent" | "value";
+
+type ProcessedRow = EquipmentCostRow & {
+  oficina_share: number;   // rateio da oficina naquele mês/equip
+  custo_gp_total: number;  // custo_gp + rateio oficina
+};
+
+type EquipStat = {
+  equipamento: string;
+  totalGp: number;
+  totalGoinfra: number;
+  totalHoras: number;
+  custoHoraGp: number | null;
+  custoHoraGoinfra: number | null;
+  diffHora: number | null;    // R$/h
+  diffPercent: number | null; // ex: 0.25 = 25% mais caro
+};
+
 const monthLabels = [
   "Jan",
   "Fev",
@@ -63,54 +86,53 @@ const currency = new Intl.NumberFormat("pt-BR", {
   currency: "BRL",
 });
 
-type RankingMode = "percent" | "value";
-
-type EquipStat = {
-  equipamento: string;
-  totalGp: number;
-  totalGoinfra: number;
-  totalHoras: number;
-  custoHoraGp: number | null;
-  custoHoraGoinfra: number | null;
-  diffHora: number | null; // R$/h
-  diffPercent: number | null; // ex: 0.25 = 25% mais caro
-};
-
 export default function DashboardPage() {
   const [data, setData] = useState<EquipmentCostRow[]>([]);
+  const [oficinaData, setOficinaData] = useState<OficinaRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedEquip, setSelectedEquip] = useState<"all" | string>("all");
   const [startMonth, setStartMonth] = useState(1);
   const [endMonth, setEndMonth] = useState(12);
   const [error, setError] = useState<string | null>(null);
   const [rankingMode, setRankingMode] = useState<RankingMode>("percent");
+  const [includeOficina, setIncludeOficina] = useState<boolean>(true);
 
-  // === FETCH: view equipment_costs_2025_v ===
+  // === FETCH: equipment_costs_2025_v + oficina_costs_by_month ===
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
       setError(null);
 
-      const { data, error } = await supabase
-        .from("equipment_costs_2025_v")
-        .select("*")
-        .eq("ano", 2025);
+      const [equipRes, oficinaRes] = await Promise.all([
+        supabase
+          .from("equipment_costs_2025_v")
+          .select("*")
+          .eq("ano", 2025),
+        supabase.from("oficina_costs_by_month").select("*"),
+      ]);
 
-      if (error) {
-        console.error(error);
+      if (equipRes.error) {
+        console.error(equipRes.error);
         setError("Erro ao carregar dados de custos.");
         setLoading(false);
         return;
       }
+      if (oficinaRes.error) {
+        console.error(oficinaRes.error);
+        setError("Erro ao carregar custos da oficina.");
+        setLoading(false);
+        return;
+      }
 
-      setData((data || []) as EquipmentCostRow[]);
+      setData((equipRes.data || []) as EquipmentCostRow[]);
+      setOficinaData((oficinaRes.data || []) as OficinaRow[]);
       setLoading(false);
     };
 
     fetchData();
   }, []);
 
-  // Equipamentos disponíveis (já excluindo TP-03 da análise inteira)
+  // Equipamentos disponíveis (já excluindo TP-03)
   const equipmentOptions = useMemo(() => {
     const set = new Set<string>();
     data.forEach((row) => {
@@ -121,7 +143,7 @@ export default function DashboardPage() {
     return Array.from(set).sort();
   }, [data]);
 
-  // Filtros aplicados (ignorando TP-03)
+  // Filtros aplicados aos equipamentos (sem TP-03)
   const filteredData = useMemo(
     () =>
       data.filter((row) => {
@@ -134,39 +156,97 @@ export default function DashboardPage() {
     [data, selectedEquip, startMonth, endMonth]
   );
 
-  // Agregação mensal (barras = GP, linha = GOINFRA)
-  const monthlyAggregates = useMemo(() => {
-    const result: { [mes: number]: { gp: number; goinfra: number } } = {};
+  // Mapa: mês -> custo total da oficina no mês
+  const oficinaByMonth = useMemo(() => {
+    const map: { [mes: number]: number } = {};
+    oficinaData.forEach((row) => {
+      if (!row.mes_ano) return;
+      const parts = row.mes_ano.split("-");
+      if (parts.length < 2) return;
+      const mes = Number(parts[1]);
+      if (!Number.isFinite(mes)) return;
+      const val = row.valor_menor ?? 0;
+      map[mes] = (map[mes] ?? 0) + val;
+    });
+    return map;
+  }, [oficinaData]);
 
-    filteredData.forEach((row) => {
-      if (!result[row.mes]) {
-        result[row.mes] = { gp: 0, goinfra: 0 };
+  // Mapa: mês -> soma de custo_gp de todos os equipamentos (base p/ rateio)
+  const gpTotalsByMonth = useMemo(() => {
+    const map: { [mes: number]: number } = {};
+    data.forEach((row) => {
+      if (row.equipamento === "TP-03") return;
+      const mes = row.mes;
+      const gp = row.custo_gp ?? 0;
+      map[mes] = (map[mes] ?? 0) + gp;
+    });
+    return map;
+  }, [data]);
+
+  // Processamento: aplica rateio da oficina em cada row
+  const processedFilteredData: ProcessedRow[] = useMemo(() => {
+    return filteredData.map((row) => {
+      const directGp = row.custo_gp ?? 0;
+      const mes = row.mes;
+      const totalGpMes = gpTotalsByMonth[mes] ?? 0;
+      const oficinaMes = includeOficina ? oficinaByMonth[mes] ?? 0 : 0;
+
+      let share = 0;
+      if (includeOficina && totalGpMes > 0 && oficinaMes > 0) {
+        share = (directGp / totalGpMes) * oficinaMes;
       }
-      result[row.mes].gp += row.custo_gp ?? 0;
-      result[row.mes].goinfra += row.custo_goinfra ?? 0;
+
+      const custo_gp_total = directGp + share;
+
+      return {
+        ...row,
+        oficina_share: share,
+        custo_gp_total,
+      };
+    });
+  }, [filteredData, gpTotalsByMonth, oficinaByMonth, includeOficina]);
+
+  // Agregação mensal (barras empilhadas GP + oficina, linha GOINFRA)
+  const monthlyAggregates = useMemo(() => {
+    const result: {
+      [mes: number]: { gpDireto: number; oficina: number; goinfra: number };
+    } = {};
+
+    processedFilteredData.forEach((row) => {
+      const mes = row.mes;
+      if (!result[mes]) {
+        result[mes] = { gpDireto: 0, oficina: 0, goinfra: 0 };
+      }
+      result[mes].gpDireto += row.custo_gp ?? 0;
+      result[mes].oficina += row.oficina_share;
+      result[mes].goinfra += row.custo_goinfra ?? 0;
     });
 
     return result;
-  }, [filteredData]);
+  }, [processedFilteredData]);
 
   const chartLabels = monthLabels.slice(startMonth - 1, endMonth);
-  const barData = chartLabels.map((_, idx) => {
-    const monthNumber = startMonth + idx;
-    return monthlyAggregates[monthNumber]?.gp ?? 0;
+  const barGpData = chartLabels.map((_, idx) => {
+    const mes = startMonth + idx;
+    return monthlyAggregates[mes]?.gpDireto ?? 0;
+  });
+  const barOficinaData = chartLabels.map((_, idx) => {
+    const mes = startMonth + idx;
+    return monthlyAggregates[mes]?.oficina ?? 0;
   });
   const lineData = chartLabels.map((_, idx) => {
-    const monthNumber = startMonth + idx;
-    return monthlyAggregates[monthNumber]?.goinfra ?? 0;
+    const mes = startMonth + idx;
+    return monthlyAggregates[mes]?.goinfra ?? 0;
   });
 
-  // Resumo geral
+  // Resumo geral (já com rateio da oficina embutido em GP quando ativo)
   const summary = useMemo(() => {
     let totalGp = 0;
     let totalGoinfra = 0;
     let totalHoras = 0;
 
-    filteredData.forEach((row) => {
-      totalGp += row.custo_gp ?? 0;
+    processedFilteredData.forEach((row) => {
+      totalGp += row.custo_gp_total;
       totalGoinfra += row.custo_goinfra ?? 0;
       totalHoras += row.horas_trab_mes ?? 0;
     });
@@ -184,9 +264,9 @@ export default function DashboardPage() {
       custoHoraGp,
       custoHoraGoinfra,
     };
-  }, [filteredData]);
+  }, [processedFilteredData]);
 
-  // === Estatísticas por equipamento para TOP 5 ===
+  // Estatísticas por equipamento para TOP 5 (usando custo_gp_total)
   const equipStats: EquipStat[] = useMemo(() => {
     type Acc = {
       equipamento: string;
@@ -198,12 +278,12 @@ export default function DashboardPage() {
 
     const map = new Map<string, Acc>();
 
-    filteredData.forEach((row) => {
+    processedFilteredData.forEach((row) => {
       const eq = row.equipamento;
       if (!eq) return;
 
       const horas = row.horas_trab_mes ?? 0;
-      const gp = row.custo_gp ?? 0;
+      const gpTotal = row.custo_gp_total;
       const go = row.custo_goinfra ?? 0;
 
       const current: Acc =
@@ -215,11 +295,10 @@ export default function DashboardPage() {
           custoHoraGoinfraRef: null,
         };
 
-      current.totalGp += gp;
+      current.totalGp += gpTotal;
       current.totalGoinfra += go;
       current.totalHoras += horas;
 
-      // guarda o custo hora de referência GOINFRA se vier preenchido
       if (row.custo_hora_goinfra != null) {
         current.custoHoraGoinfraRef = row.custo_hora_goinfra;
       }
@@ -265,7 +344,7 @@ export default function DashboardPage() {
     }
 
     return stats;
-  }, [filteredData]);
+  }, [processedFilteredData]);
 
   // TOP 5 mais caros / mais baratos por hora
   const topMaisCaros: EquipStat[] = useMemo(() => {
@@ -302,31 +381,48 @@ export default function DashboardPage() {
     return sorted.slice(0, 5);
   }, [equipStats, rankingMode]);
 
-  const chartData = {
+  // Dados do gráfico (barras empilhadas + linha)
+  const datasets: any[] = [
+    {
+      type: "bar" as const,
+      label: "Custo GP Asfalto (R$)",
+      data: barGpData,
+      backgroundColor: "#fb4b37",
+      borderRadius: 10,
+      maxBarThickness: 40,
+      stack: "gp",
+    },
+  ];
+
+  if (includeOficina) {
+    datasets.push({
+      type: "bar" as const,
+      label: "Rateio oficina (R$)",
+      data: barOficinaData,
+      backgroundColor: "#ff8a73",
+      borderRadius: 10,
+      maxBarThickness: 40,
+      stack: "gp",
+    });
+  }
+
+  datasets.push({
+    type: "line" as const,
+    label: "Custo GOINFRA (R$)",
+    data: lineData,
+    borderColor: "#111827",
+    borderWidth: 2,
+    tension: 0.25,
+    pointRadius: 4,
+    pointBorderWidth: 2,
+    pointBackgroundColor: "#ffffff",
+    pointBorderColor: "#111827",
+    yAxisID: "y",
+  });
+
+  const chartData: any = {
     labels: chartLabels,
-    datasets: [
-      {
-        type: "bar" as const,
-        label: "Custo GP Asfalto (R$)",
-        data: barData,
-        backgroundColor: "#fb4b37",
-        borderRadius: 10,
-        maxBarThickness: 40,
-      },
-      {
-        type: "line" as const,
-        label: "Custo GOINFRA (R$)",
-        data: lineData,
-        borderColor: "#111827",
-        borderWidth: 2,
-        tension: 0.25,
-        pointRadius: 4,
-        pointBorderWidth: 2,
-        pointBackgroundColor: "#ffffff",
-        pointBorderColor: "#111827",
-        yAxisID: "y",
-      },
-    ],
+    datasets,
   };
 
   const chartOptions = {
@@ -386,23 +482,35 @@ export default function DashboardPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        {/* HEADER / BRANDING COM LOGO */}
-        <header className="page-header">
-          <div className="brand">
+        {/* HEADER / LOGO CENTRALIZADA */}
+        <header
+          className="page-header"
+          style={{
+            flexDirection: "column",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <div
+            className="brand"
+            style={{
+              flexDirection: "column",
+              alignItems: "center",
+              gap: "8px",
+            }}
+          >
             <img
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
-              className="brand-logo"
               style={{
-                width: 72,
-                height: 72,
-                borderRadius: 20,
-                border: "1px solid #e5e7eb",
-                background: "#ffffff",
+                width: 120,
+                height: 120,
                 objectFit: "contain",
+                border: "none",
+                background: "transparent",
               }}
             />
-            <div>
+            <div style={{ textAlign: "center" }}>
               <div className="brand-text-main">
                 Dashboard de Manutenção 2025 - GP Asfalto
               </div>
@@ -412,7 +520,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="header-right">
+          <div style={{ marginTop: 4 }}>
             <div className="header-pill">
               <span>Período</span>
               <strong>{periodLabel}</strong>
@@ -510,7 +618,27 @@ export default function DashboardPage() {
                 </select>
               </div>
 
-              {/* Texto do filtro */}
+              {/* Incluir/retirar custo da oficina */}
+              <div className="filter-chip">
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={includeOficina}
+                    onChange={(e) => setIncludeOficina(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  <span>Incluir custo da oficina</span>
+                </label>
+              </div>
+
+              {/* Descrição do filtro */}
               <div className="filter-chip">
                 <span>
                   {selectedEquip === "all"
@@ -530,7 +658,9 @@ export default function DashboardPage() {
               {currency.format(summary.totalGp)}
             </div>
             <div className="summary-subvalue">
-              Soma das ordens de manutenção GP no período filtrado.
+              {includeOficina
+                ? "Soma das ordens de manutenção GP + rateio da oficina no período filtrado."
+                : "Soma das ordens de manutenção GP no período filtrado (sem oficina)."}
             </div>
           </div>
 
@@ -582,7 +712,8 @@ export default function DashboardPage() {
                 : "—"}
             </div>
             <div className="summary-subvalue">
-              Custo total GP dividido pelas horas reais trabalhadas.
+              Custo total GP (incluindo rateio da oficina quando ativo) dividido
+              pelas horas reais trabalhadas.
             </div>
           </div>
 
@@ -814,7 +945,8 @@ export default function DashboardPage() {
                 Custo mensal · GP (barras) x GOINFRA (linha)
               </div>
               <div className="section-subtitle">
-                Valores acumulados por mês no período selecionado.
+                Barras empilhadas: GP direto + rateio da oficina. Linha: custo
+                teórico GOINFRA.
               </div>
             </div>
           </div>
@@ -829,7 +961,7 @@ export default function DashboardPage() {
             <div className="state-card">Carregando dados…</div>
           ) : (
             <div style={{ height: 320 }}>
-              <Bar data={chartData as any} options={chartOptions as any} />
+              <Bar data={chartData} options={chartOptions as any} />
             </div>
           )}
         </section>
