@@ -74,6 +74,7 @@ type CategoryStat = {
   custoHoraGp: number | null;
   custoHoraGoinfra: number | null;
   diffHora: number | null;
+  diffPercent: number | null;
 };
 
 const monthLabels = [
@@ -122,10 +123,7 @@ export default function DashboardPage() {
       setError(null);
 
       const [equipRes, oficinaRes] = await Promise.all([
-        supabase
-          .from("equipment_costs_2025_v")
-          .select("*")
-          .eq("ano", 2025),
+        supabase.from("equipment_costs_2025_v").select("*").eq("ano", 2025),
         supabase.from("oficina_costs_by_month").select("*"),
       ]);
 
@@ -384,7 +382,12 @@ export default function DashboardPage() {
       const go = row.custo_goinfra ?? 0;
 
       const current: Acc =
-        map.get(cat) || { category: cat, totalGp: 0, totalGoinfra: 0, totalHoras: 0 };
+        map.get(cat) || {
+          category: cat,
+          totalGp: 0,
+          totalGoinfra: 0,
+          totalHoras: 0,
+        };
 
       current.totalGp += gp;
       current.totalGoinfra += go;
@@ -405,6 +408,13 @@ export default function DashboardPage() {
           ? custoHoraGp - custoHoraGoinfra
           : null;
 
+      const diffPercent =
+        custoHoraGp != null &&
+        custoHoraGoinfra != null &&
+        custoHoraGoinfra > 0
+          ? custoHoraGp / custoHoraGoinfra - 1
+          : null;
+
       list.push({
         category: acc.category,
         totalGp: acc.totalGp,
@@ -413,11 +423,16 @@ export default function DashboardPage() {
         custoHoraGp,
         custoHoraGoinfra,
         diffHora,
+        diffPercent,
       });
     }
 
-    // classificar por diferença de custo/hora (maior -> menor)
-    list.sort((a, b) => (b.diffHora ?? 0) - (a.diffHora ?? 0));
+    // ordenar do melhor para o GP (menor % / mais negativo) até o pior
+    list.sort((a, b) => {
+      const aVal = a.diffPercent ?? 0;
+      const bVal = b.diffPercent ?? 0;
+      return aVal - bVal;
+    });
 
     return list;
   }, [processedFilteredData]);
@@ -467,6 +482,7 @@ export default function DashboardPage() {
       borderRadius: 10,
       maxBarThickness: 40,
       stack: "gp",
+      order: 1,
     },
   ];
 
@@ -479,6 +495,7 @@ export default function DashboardPage() {
       borderRadius: 10,
       maxBarThickness: 40,
       stack: "gp",
+      order: 1,
     });
   }
 
@@ -486,14 +503,15 @@ export default function DashboardPage() {
     type: "line" as const,
     label: "Custo GOINFRA (R$)",
     data: lineData,
-    borderColor: "#111827",
-    borderWidth: 2,
+    borderColor: "#4b5563", // cinza escuro, igual ao gráfico de categorias
+    borderWidth: 3,
     tension: 0.25,
     pointRadius: 4,
     pointBorderWidth: 2,
     pointBackgroundColor: "#ffffff",
-    pointBorderColor: "#111827",
+    pointBorderColor: "#4b5563",
     yAxisID: "y",
+    order: 3, // desenha a linha na frente das barras
   });
 
   const chartData: any = {
@@ -549,6 +567,7 @@ export default function DashboardPage() {
         backgroundColor: "#fb4b37",
         borderRadius: 10,
         maxBarThickness: 40,
+        yAxisID: "y",
       },
       {
         type: "bar" as const,
@@ -557,6 +576,21 @@ export default function DashboardPage() {
         backgroundColor: "#4b5563",
         borderRadius: 10,
         maxBarThickness: 40,
+        yAxisID: "y",
+      },
+      {
+        type: "line" as const,
+        label: "Diferença % (GP vs GOINFRA)",
+        data: categoryStats.map((c) =>
+          c.diffPercent != null ? c.diffPercent * 100 : 0
+        ),
+        borderColor: "#0f766e",
+        borderWidth: 2,
+        tension: 0.25,
+        pointRadius: 3,
+        pointBackgroundColor: "#0f766e",
+        pointBorderColor: "#0f766e",
+        yAxisID: "y1",
       },
     ],
   };
@@ -579,9 +613,13 @@ export default function DashboardPage() {
       tooltip: {
         callbacks: {
           label: (context: any) => {
-            const label = context.dataset.label || "";
+            const datasetLabel = context.dataset.label || "";
             const value = context.parsed.y || 0;
-            return `${label}: ${currency.format(value)}`;
+            // dataset da direita é percentual
+            if (context.dataset.yAxisID === "y1") {
+              return `${datasetLabel}: ${value.toFixed(1)}%`;
+            }
+            return `${datasetLabel}: ${currency.format(value)}`;
           },
         },
       },
@@ -593,6 +631,14 @@ export default function DashboardPage() {
         grid: { color: "#e5e7eb" },
         ticks: {
           callback: (value: any) => currency.format(Number(value)),
+        },
+      },
+      y1: {
+        position: "right" as const,
+        beginAtZero: true,
+        grid: { display: false },
+        ticks: {
+          callback: (value: any) => `${value.toFixed(0)}%`,
         },
       },
     },
@@ -1104,8 +1150,9 @@ export default function DashboardPage() {
                 Custo por categoria de equipamento (R$/h) · GP x GOINFRA
               </div>
               <div className="section-subtitle">
-                Agrupa códigos por prefixo (RE, VBA, UA, TP, PC...) considerando
-                o período e filtros atuais.
+                Agrupa códigos por prefixo (RE, VBA, UA, TP, PC...) e ordena do
+                melhor resultado para GP (à esquerda) até o pior (à direita),
+                com linha de diferença percentual.
               </div>
             </div>
           </div>
