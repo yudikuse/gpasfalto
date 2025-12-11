@@ -51,8 +51,9 @@ type OficinaRow = {
 type RankingMode = "percent" | "value";
 
 type ProcessedRow = EquipmentCostRow & {
-  oficina_share: number; // rateio da oficina
-  custo_gp_total: number; // custo_gp + rateio
+  oficina_share: number;
+  mao_obra_share: number;
+  custo_gp_total: number;
 };
 
 type EquipStat = {
@@ -97,6 +98,9 @@ const currency = new Intl.NumberFormat("pt-BR", {
   currency: "BRL",
 });
 
+// valor fixo mensal de mão de obra para rateio
+const MAO_OBRA_MENSAL = 88000;
+
 // pega prefixo da categoria: RE-05 -> RE, VBA-02 -> VBA, PC02 -> PC02
 function getCategoryFromEquip(equipamento: string | null): string | null {
   if (!equipamento) return null;
@@ -115,6 +119,7 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
   const [rankingMode, setRankingMode] = useState<RankingMode>("percent");
   const [includeOficina, setIncludeOficina] = useState<boolean>(true);
+  const [includeMaoObra, setIncludeMaoObra] = useState<boolean>(true);
 
   // === FETCH: equipment_costs_2025_v + oficina_costs_by_month ===
   useEffect(() => {
@@ -199,42 +204,63 @@ export default function DashboardPage() {
     return map;
   }, [data]);
 
-  // Processamento: aplica rateio da oficina em cada row
+  // Processamento: aplica rateio da oficina e da mão de obra em cada row
   const processedFilteredData: ProcessedRow[] = useMemo(() => {
     return filteredData.map((row) => {
       const directGp = row.custo_gp ?? 0;
       const mes = row.mes;
       const totalGpMes = gpTotalsByMonth[mes] ?? 0;
       const oficinaMes = includeOficina ? oficinaByMonth[mes] ?? 0 : 0;
+      const maoObraMes = includeMaoObra ? MAO_OBRA_MENSAL : 0;
 
-      let share = 0;
-      if (includeOficina && totalGpMes > 0 && oficinaMes > 0) {
-        share = (directGp / totalGpMes) * oficinaMes;
+      let oficinaShare = 0;
+      let maoObraShare = 0;
+
+      if (totalGpMes > 0) {
+        if (includeOficina && oficinaMes > 0) {
+          oficinaShare = (directGp / totalGpMes) * oficinaMes;
+        }
+        if (includeMaoObra && maoObraMes > 0) {
+          maoObraShare = (directGp / totalGpMes) * maoObraMes;
+        }
       }
 
-      const custo_gp_total = directGp + share;
+      const custo_gp_total = directGp + oficinaShare + maoObraShare;
 
       return {
         ...row,
-        oficina_share: share,
+        oficina_share: oficinaShare,
+        mao_obra_share: maoObraShare,
         custo_gp_total,
       };
     });
-  }, [filteredData, gpTotalsByMonth, oficinaByMonth, includeOficina]);
+  }, [
+    filteredData,
+    gpTotalsByMonth,
+    oficinaByMonth,
+    includeOficina,
+    includeMaoObra,
+  ]);
 
-  // Agregação mensal (barras empilhadas GP + oficina, linha GOINFRA)
+  // Agregação mensal (barras empilhadas GP + oficina + mão de obra, linha GOINFRA)
   const monthlyAggregates = useMemo(() => {
     const result: {
-      [mes: number]: { gpDireto: number; oficina: number; goinfra: number };
+      [mes: number]: {
+        gpDireto: number;
+        oficina: number;
+        maoObra: number;
+        goinfra: number;
+      };
     } = {};
 
     processedFilteredData.forEach((row) => {
       const mes = row.mes;
       if (!result[mes]) {
-        result[mes] = { gpDireto: 0, oficina: 0, goinfra: 0 };
+        result[mes] = { gpDireto: 0, oficina: 0, maoObra: 0, goinfra: 0 };
       }
       result[mes].gpDireto += row.custo_gp ?? 0;
       result[mes].oficina += row.oficina_share;
+      result[mes].maoObra += row.mao_obra_share;
       result[mes].goinfra += row.custo_goinfra ?? 0;
     });
 
@@ -249,6 +275,10 @@ export default function DashboardPage() {
   const barOficinaData = chartLabels.map((_, idx) => {
     const mes = startMonth + idx;
     return monthlyAggregates[mes]?.oficina ?? 0;
+  });
+  const barMaoObraData = chartLabels.map((_, idx) => {
+    const mes = startMonth + idx;
+    return monthlyAggregates[mes]?.maoObra ?? 0;
   });
   const lineData = chartLabels.map((_, idx) => {
     const mes = startMonth + idx;
@@ -362,7 +392,7 @@ export default function DashboardPage() {
     return stats;
   }, [processedFilteredData]);
 
-  // === NOVO: estatísticas por CATEGORIA (prefixo) ===
+  // === Estatísticas por CATEGORIA (prefixo) ===
   const categoryStats: CategoryStat[] = useMemo(() => {
     type Acc = {
       category: string;
@@ -499,11 +529,24 @@ export default function DashboardPage() {
     });
   }
 
+  if (includeMaoObra) {
+    datasets.push({
+      type: "bar" as const,
+      label: "Mão de obra (R$)",
+      data: barMaoObraData,
+      backgroundColor: "#fdba74",
+      borderRadius: 10,
+      maxBarThickness: 40,
+      stack: "gp",
+      order: 1,
+    });
+  }
+
   datasets.push({
     type: "line" as const,
     label: "Custo GOINFRA (R$)",
     data: lineData,
-    borderColor: "#4b5563", // cinza escuro, igual ao gráfico de categorias
+    borderColor: "#4b5563", // cinza escuro
     borderWidth: 3,
     tension: 0.25,
     pointRadius: 4,
@@ -511,7 +554,7 @@ export default function DashboardPage() {
     pointBackgroundColor: "#ffffff",
     pointBorderColor: "#4b5563",
     yAxisID: "y",
-    order: 3, // desenha a linha na frente das barras
+    order: 99, // sempre desenhar por cima das barras
   });
 
   const chartData: any = {
@@ -615,7 +658,6 @@ export default function DashboardPage() {
           label: (context: any) => {
             const datasetLabel = context.dataset.label || "";
             const value = context.parsed.y || 0;
-            // dataset da direita é percentual
             if (context.dataset.yAxisID === "y1") {
               return `${datasetLabel}: ${value.toFixed(1)}%`;
             }
@@ -818,13 +860,24 @@ export default function DashboardPage() {
                 </label>
               </div>
 
-              {/* Descrição do filtro */}
+              {/* Incluir/retirar custo de mão de obra */}
               <div className="filter-chip">
-                <span>
-                  {selectedEquip === "all"
-                    ? "Frota completa no período (sem TP-03)."
-                    : `Equipamento: ${selectedEquip}`}
-                </span>
+                <label
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    cursor: "pointer",
+                  }}
+                >
+                  <input
+                    type="checkbox"
+                    checked={includeMaoObra}
+                    onChange={(e) => setIncludeMaoObra(e.target.checked)}
+                    style={{ margin: 0 }}
+                  />
+                  <span>Incluir custo de mão de obra</span>
+                </label>
               </div>
             </div>
           </div>
@@ -838,9 +891,9 @@ export default function DashboardPage() {
               {currency.format(summary.totalGp)}
             </div>
             <div className="summary-subvalue">
-              {includeOficina
-                ? "Soma das ordens de manutenção GP + rateio da oficina no período filtrado."
-                : "Soma das ordens de manutenção GP no período filtrado (sem oficina)."}
+              {includeOficina || includeMaoObra
+                ? "Soma das ordens de manutenção GP + rateios (oficina / mão de obra) no período filtrado."
+                : "Soma das ordens de manutenção GP no período filtrado (sem rateios)."}
             </div>
           </div>
 
@@ -890,7 +943,7 @@ export default function DashboardPage() {
             </div>
             <div className="summary-subvalue">
               Custo total GP dividido pelas horas reais trabalhadas
-              (incluindo rateio da oficina quando ativo).
+              (incluindo rateios ativos).
             </div>
           </div>
 
@@ -1121,8 +1174,8 @@ export default function DashboardPage() {
                 Custo mensal · GP (barras) x GOINFRA (linha)
               </div>
               <div className="section-subtitle">
-                Barras empilhadas: GP direto + rateio da oficina. Linha: custo
-                teórico GOINFRA.
+                Barras empilhadas: GP direto + rateio da oficina + mão de obra.
+                Linha: custo teórico GOINFRA.
               </div>
             </div>
           </div>
@@ -1142,7 +1195,7 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* NOVO: GRÁFICO POR CATEGORIA */}
+        {/* GRÁFICO POR CATEGORIA */}
         <section className="section-card">
           <div className="section-header">
             <div>
