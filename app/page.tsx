@@ -71,7 +71,7 @@ export default function DashboardPage() {
   const [endMonth, setEndMonth] = useState(12);
   const [error, setError] = useState<string | null>(null);
 
-  // 1) Buscar dados da view equipment_costs_2025_v (CUSTO GOINFRA CERTO AQUI)
+  // BUSCA: view equipment_costs_2025_v (dados corretos de custo)
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -96,28 +96,28 @@ export default function DashboardPage() {
     fetchData();
   }, []);
 
-  // Lista de equipamentos disponíveis para o filtro
+  // Equipamentos para o filtro
   const equipmentOptions = useMemo(() => {
     const set = new Set<string>();
     data.forEach((row) => set.add(row.equipamento));
     return Array.from(set).sort();
   }, [data]);
 
-  // Aplicar filtros (equipamento + range de meses)
-  const filteredData = useMemo(() => {
-    return data.filter((row) => {
-      const inEquip =
-        selectedEquip === "all" || row.equipamento === selectedEquip;
-      const inMonth = row.mes >= startMonth && row.mes <= endMonth;
-      return inEquip && inMonth;
-    });
-  }, [data, selectedEquip, startMonth, endMonth]);
+  // Filtros (equipamento + meses)
+  const filteredData = useMemo(
+    () =>
+      data.filter((row) => {
+        const inEquip =
+          selectedEquip === "all" || row.equipamento === selectedEquip;
+        const inMonth = row.mes >= startMonth && row.mes <= endMonth;
+        return inEquip && inMonth;
+      }),
+    [data, selectedEquip, startMonth, endMonth]
+  );
 
-  // Agregar por mês para gerar as séries de barras (GP) e linha (GOINFRA)
+  // Agregação mensal (barras GP, linha GOINFRA)
   const monthlyAggregates = useMemo(() => {
-    const result: {
-      [mes: number]: { gp: number; goinfra: number };
-    } = {};
+    const result: { [mes: number]: { gp: number; goinfra: number } } = {};
 
     filteredData.forEach((row) => {
       if (!result[row.mes]) {
@@ -130,7 +130,7 @@ export default function DashboardPage() {
     return result;
   }, [filteredData]);
 
-  // Labels e dados só dentro do range selecionado
+  // Dados do gráfico, mantendo a mesma lógica
   const chartLabels = monthLabels.slice(startMonth - 1, endMonth);
   const barData = chartLabels.map((_, idx) => {
     const monthNumber = startMonth + idx;
@@ -141,7 +141,7 @@ export default function DashboardPage() {
     return monthlyAggregates[monthNumber]?.goinfra ?? 0;
   });
 
-  // Totais e resumo para os cards
+  // Resumo para cards
   const summary = useMemo(() => {
     let totalGp = 0;
     let totalGoinfra = 0;
@@ -176,20 +176,20 @@ export default function DashboardPage() {
         label: "Custo GP Asfalto (R$)",
         data: barData,
         backgroundColor: "#fb4b37",
-        borderRadius: 8,
-        maxBarThickness: 40,
+        borderRadius: 10,
+        maxBarThickness: 42,
       },
       {
         type: "line" as const,
         label: "Custo GOINFRA (R$)",
         data: lineData,
-        borderColor: "#1f2937",
+        borderColor: "#111827",
         borderWidth: 2,
         tension: 0.25,
         pointRadius: 4,
         pointBorderWidth: 2,
         pointBackgroundColor: "#ffffff",
-        pointBorderColor: "#1f2937",
+        pointBorderColor: "#111827",
         yAxisID: "y",
       },
     ],
@@ -204,7 +204,8 @@ export default function DashboardPage() {
         labels: {
           font: {
             size: 11,
-            family: "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI'",
+            family:
+              "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
           },
           usePointStyle: true,
         },
@@ -250,49 +251,63 @@ export default function DashboardPage() {
     value: index + 1,
   }));
 
+  const periodLabel =
+    startMonth === 1 && endMonth === 12
+      ? "Jan–Dez 2025"
+      : `${monthLabels[startMonth - 1]}–${monthLabels[endMonth - 1]} · 2025`;
+
   return (
-    <div className="min-h-screen bg-slate-100 text-slate-900">
-      {/* HEADER COM "LOGO" */}
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      {/* HEADER */}
       <header className="border-b border-slate-200 bg-white/90 backdrop-blur">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-6 py-5">
+        <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
           <div className="flex items-center gap-3">
-            {/* Logo simples GP Asfalto */}
-            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-900">
-              <span className="text-base font-semibold tracking-tight text-white">
+            <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-slate-900">
+              <span className="text-sm font-semibold tracking-tight text-white">
                 GP
               </span>
             </div>
             <div>
-              <h1 className="text-xl font-semibold tracking-tight text-slate-900">
+              <h1 className="text-lg font-semibold tracking-tight text-slate-900">
                 GP Asfalto · Manutenção 2025
               </h1>
               <p className="text-xs text-slate-500">
-                Comparativo de custos: GP Asfalto x GOINFRA, por período e
-                equipamento.
+                Comparativo de custos · GP Asfalto x GOINFRA
               </p>
             </div>
           </div>
 
           <div className="hidden text-right text-xs text-slate-500 md:block">
-            <div>Visão consolidada</div>
-            <div>
-              {startMonth === 1 && endMonth === 12
-                ? "Jan–Dez 2025"
-                : `${monthLabels[startMonth - 1]}–${
-                    monthLabels[endMonth - 1]
-                  } / 2025`}
-            </div>
+            <p className="font-medium text-slate-600">Visão consolidada</p>
+            <p>{periodLabel}</p>
           </div>
         </div>
       </header>
 
-      {/* CONTENT */}
-      <main className="mx-auto max-w-7xl px-6 py-6 space-y-6">
-        {/* FILTROS */}
-        <section className="rounded-2xl bg-white/90 p-4 shadow-sm ring-1 ring-slate-100">
-          <div className="flex flex-wrap items-end gap-4">
-            <div className="min-w-[220px]">
-              <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
+      {/* MAIN */}
+      <main className="mx-auto max-w-6xl px-4 py-6 lg:px-6 lg:py-8 space-y-6">
+        {/* PRIMEIRO CARD: FILTROS + RESUMO RÁPIDO */}
+        <section className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4 sm:px-6 sm:py-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-sm font-semibold tracking-tight text-slate-900">
+                Overview do período
+              </h2>
+              <p className="text-xs text-slate-500">
+                Selecione equipamento e meses para atualizar os indicadores.
+              </p>
+            </div>
+            <div className="hidden text-xs text-slate-500 sm:block">
+              {selectedEquip === "all"
+                ? "Frota completa."
+                : `Equipamento: ${selectedEquip}`}
+            </div>
+          </div>
+
+          <div className="mt-1 flex flex-wrap gap-4">
+            {/* Equipamento */}
+            <div className="min-w-[200px]">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
                 Equipamento
               </span>
               <select
@@ -302,7 +317,7 @@ export default function DashboardPage() {
                     e.target.value === "all" ? "all" : e.target.value
                   )
                 }
-                className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
+                className="mt-1 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
               >
                 <option value="all">Todos os equipamentos</option>
                 {equipmentOptions.map((eq) => (
@@ -313,146 +328,141 @@ export default function DashboardPage() {
               </select>
             </div>
 
-            <div className="flex flex-1 flex-wrap gap-4">
-              <div className="min-w-[120px]">
-                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  Mês inicial
-                </span>
-                <select
-                  value={startMonth}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setStartMonth(val);
-                    if (val > endMonth) setEndMonth(val);
-                  }}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
-                >
-                  {monthOptions.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {/* Mês inicial */}
+            <div className="min-w-[120px]">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Mês inicial
+              </span>
+              <select
+                value={startMonth}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setStartMonth(val);
+                  if (val > endMonth) setEndMonth(val);
+                }}
+                className="mt-1 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
+              >
+                {monthOptions.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-              <div className="min-w-[120px]">
-                <span className="text-xs font-medium uppercase tracking-wide text-slate-500">
-                  Mês final
-                </span>
-                <select
-                  value={endMonth}
-                  onChange={(e) => {
-                    const val = Number(e.target.value);
-                    setEndMonth(val);
-                    if (val < startMonth) setStartMonth(val);
-                  }}
-                  className="mt-1 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
-                >
-                  {monthOptions.map((m) => (
-                    <option key={m.value} value={m.value}>
-                      {m.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+            {/* Mês final */}
+            <div className="min-w-[120px]">
+              <span className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+                Mês final
+              </span>
+              <select
+                value={endMonth}
+                onChange={(e) => {
+                  const val = Number(e.target.value);
+                  setEndMonth(val);
+                  if (val < startMonth) setStartMonth(val);
+                }}
+                className="mt-1 w-full rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-400 focus:bg-white"
+              >
+                {monthOptions.map((m) => (
+                  <option key={m.value} value={m.value}>
+                    {m.label}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-              <div className="flex-1 text-xs text-slate-500 md:text-right">
-                {selectedEquip === "all"
-                  ? "Visão geral da frota no período selecionado."
-                  : `Equipamento: ${selectedEquip}`}
-              </div>
+            <div className="flex-1 text-xs text-slate-500 sm:hidden">
+              {selectedEquip === "all"
+                ? "Frota completa."
+                : `Equipamento: ${selectedEquip}`}
             </div>
           </div>
         </section>
 
-        {/* CARDS DE RESUMO */}
-        <section className="grid gap-5 md:grid-cols-3">
-          <div className="rounded-2xl bg-white/90 p-4 shadow-sm ring-1 ring-slate-100">
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Custo total GP Asfalto
-            </div>
-            <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
+        {/* KPIs PRINCIPAIS */}
+        <section className="grid gap-4 md:grid-cols-4">
+          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Custo total GP
+            </p>
+            <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
               {currency.format(summary.totalGp)}
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Soma de todas as ordens de manutenção GP no período filtrado.
             </p>
           </div>
 
-          <div className="rounded-2xl bg-white/90 p-4 shadow-sm ring-1 ring-slate-100">
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
               Custo total GOINFRA
-            </div>
-            <div className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
+            </p>
+            <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
               {currency.format(summary.totalGoinfra)}
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Horas trabalhadas × custo/hora de referência GOINFRA.
             </p>
           </div>
 
-          <div className="rounded-2xl bg-white/90 p-4 shadow-sm ring-1 ring-slate-100">
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Diferença total (GP – GOINFRA)
-            </div>
-            <div
+          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Diferença (GP – GOINFRA)
+            </p>
+            <p
               className={`mt-2 text-2xl font-semibold tracking-tight ${
                 summary.diff > 0 ? "text-rose-600" : "text-emerald-600"
               }`}
             >
               {currency.format(summary.diff)}
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Valor positivo indica custo maior na operação GP em relação ao
-              parâmetro GOINFRA.
+            </p>
+          </div>
+
+          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Horas trabalhadas
+            </p>
+            <p className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">
+              {summary.totalHoras.toLocaleString("pt-BR", {
+                maximumFractionDigits: 1,
+              })}
             </p>
           </div>
         </section>
 
-        {/* CARD CUSTO HORA */}
-        <section className="grid gap-5 md:grid-cols-2">
-          <div className="rounded-2xl bg-white/90 p-4 shadow-sm ring-1 ring-slate-100">
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+        {/* KPIs DE CUSTO/HORA */}
+        <section className="grid gap-4 md:grid-cols-2">
+          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
               Custo hora GP Asfalto
-            </div>
-            <div className="mt-2 text-xl font-semibold tracking-tight text-slate-900">
+            </p>
+            <p className="mt-2 text-xl font-semibold tracking-tight text-slate-900">
               {summary.custoHoraGp != null
                 ? currency.format(summary.custoHoraGp)
                 : "—"}
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Custo total GP dividido pelas horas reais trabalhadas no período.
             </p>
           </div>
 
-          <div className="rounded-2xl bg-white/90 p-4 shadow-sm ring-1 ring-slate-100">
-            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Custo hora GOINFRA (médio no período)
-            </div>
-            <div className="mt-2 text-xl font-semibold tracking-tight text-slate-900">
+          <div className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4">
+            <p className="text-[11px] font-medium uppercase tracking-wide text-slate-500">
+              Custo hora GOINFRA (médio)
+            </p>
+            <p className="mt-2 text-xl font-semibold tracking-tight text-slate-900">
               {summary.custoHoraGoinfra != null
                 ? currency.format(summary.custoHoraGoinfra)
                 : "—"}
-            </div>
-            <p className="mt-1 text-xs text-slate-500">
-              Custo teórico de referência ponderado pelas horas trabalhadas.
             </p>
           </div>
         </section>
 
-        {/* GRÁFICO PRINCIPAL */}
-        <section className="rounded-2xl bg-white/90 p-4 shadow-sm ring-1 ring-slate-100">
+        {/* GRÁFICO */}
+        <section className="rounded-3xl bg-white shadow-sm ring-1 ring-slate-100 px-4 py-4 sm:px-6 sm:py-5">
           <div className="mb-3 flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
             <h2 className="text-sm font-semibold tracking-tight text-slate-900">
-              Custo mensal – GP (barras) x GOINFRA (linha)
+              Custo mensal · GP (barras) x GOINFRA (linha)
             </h2>
             <span className="text-xs text-slate-500">
-              Valores acumulados por mês no período filtrado.
+              Valores acumulados por mês no período selecionado.
             </span>
           </div>
 
           {error && (
-            <div className="mb-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            <div className="mb-3 rounded-xl bg-rose-50 px-3 py-2 text-sm text-rose-700">
               {error}
             </div>
           )}
