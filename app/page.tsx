@@ -78,6 +78,12 @@ type CategoryStat = {
   diffPercent: number | null;
 };
 
+type ParetoStat = {
+  equipamento: string;
+  diffTotal: number;
+  cumPercent: number;
+};
+
 const monthLabels = [
   "Jan",
   "Fev",
@@ -455,6 +461,41 @@ export default function DashboardPage() {
     return list;
   }, [processedFilteredData]);
 
+  const paretoStats: ParetoStat[] = useMemo(() => {
+    const map = new Map<string, number>();
+
+    processedFilteredData.forEach((row) => {
+      const eq = row.equipamento;
+      if (!eq) return;
+      const gp = row.custo_gp_total;
+      const go = row.custo_goinfra ?? 0;
+      const diff = gp - go;
+      map.set(eq, (map.get(eq) ?? 0) + diff);
+    });
+
+    let arr: ParetoStat[] = [];
+    for (const [equipamento, diffTotal] of map.entries()) {
+      if (diffTotal > 0) {
+        arr.push({ equipamento, diffTotal, cumPercent: 0 });
+      }
+    }
+
+    arr.sort((a, b) => b.diffTotal - a.diffTotal);
+
+    const total = arr.reduce((sum, s) => sum + s.diffTotal, 0);
+    let running = 0;
+
+    arr = arr.map((s) => {
+      running += s.diffTotal;
+      return {
+        ...s,
+        cumPercent: total > 0 ? (running / total) * 100 : 0,
+      };
+    });
+
+    return arr;
+  }, [processedFilteredData]);
+
   const topMaisCaros: EquipStat[] = useMemo(() => {
     const valid = equipStats.filter((s) => {
       if (s.totalHoras <= 0) return false;
@@ -489,7 +530,7 @@ export default function DashboardPage() {
     return sorted.slice(0, 5);
   }, [equipStats, rankingMode]);
 
-  // ====== GRÁFICO MENSAL (AQUI VAI A CORREÇÃO DA LINHA) ======
+  // ====== GRÁFICO MENSAL (linha sempre à frente) ======
   const datasets: any[] = [
     {
       type: "bar" as const,
@@ -532,7 +573,6 @@ export default function DashboardPage() {
     });
   }
 
-  // LINHA GOINFRA: z bem maior + order alto + fill false
   datasets.push({
     type: "line" as const,
     label: "Custo GOINFRA (R$)",
@@ -591,7 +631,6 @@ export default function DashboardPage() {
       },
     },
   };
-  // ====== FIM DO GRÁFICO MENSAL ======
 
   const categoryChartData: any = {
     labels: categoryStats.map((c) => c.category),
@@ -679,6 +718,81 @@ export default function DashboardPage() {
     },
   };
 
+  const paretoChartData: any = {
+    labels: paretoStats.map((p) => p.equipamento),
+    datasets: [
+      {
+        type: "bar" as const,
+        label: "Diferença (R$) – GP acima do GOINFRA",
+        data: paretoStats.map((p) => p.diffTotal),
+        backgroundColor: "#fb4b37",
+        borderRadius: 10,
+        maxBarThickness: 40,
+        yAxisID: "y",
+      },
+      {
+        type: "line" as const,
+        label: "% acumulado do prejuízo",
+        data: paretoStats.map((p) => p.cumPercent),
+        borderColor: "#0f766e",
+        borderWidth: 2,
+        tension: 0.25,
+        pointRadius: 3,
+        pointBackgroundColor: "#0f766e",
+        pointBorderColor: "#0f766e",
+        yAxisID: "y1",
+      },
+    ],
+  };
+
+  const paretoChartOptions = {
+    responsive: true,
+    maintainAspectRatio: false as const,
+    plugins: {
+      legend: {
+        position: "top" as const,
+        labels: {
+          usePointStyle: true,
+          font: {
+            size: 11,
+            family:
+              "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+          },
+        },
+      },
+      tooltip: {
+        callbacks: {
+          label: (context: any) => {
+            const datasetLabel = context.dataset.label || "";
+            const value = context.parsed.y || 0;
+            if (context.dataset.yAxisID === "y1") {
+              return `${datasetLabel}: ${value.toFixed(1)}%`;
+            }
+            return `${datasetLabel}: ${currency.format(value)}`;
+          },
+        },
+      },
+    },
+    scales: {
+      x: { grid: { display: false } },
+      y: {
+        beginAtZero: true,
+        grid: { color: "#e5e7eb" },
+        ticks: {
+          callback: (value: any) => currency.format(Number(value)),
+        },
+      },
+      y1: {
+        position: "right" as const,
+        beginAtZero: true,
+        grid: { display: false },
+        ticks: {
+          callback: (value: any) => `${value.toFixed(0)}%`,
+        },
+      },
+    },
+  };
+
   const monthOptions = monthLabels.map((label, index) => ({
     label,
     value: index + 1,
@@ -718,8 +832,8 @@ export default function DashboardPage() {
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
               style={{
-                width: 240,
-                height: 240,
+                width: 120,
+                height: 120,
                 objectFit: "contain",
                 border: "none",
                 background: "transparent",
@@ -1209,6 +1323,36 @@ export default function DashboardPage() {
               <Bar
                 data={categoryChartData}
                 options={categoryChartOptions as any}
+              />
+            </div>
+          )}
+        </section>
+
+        {/* PARETO DE PREJUÍZO */}
+        <section className="section-card">
+          <div className="section-header">
+            <div>
+              <div className="section-title">
+                Pareto de prejuízo por equipamento (R$) · GP x GOINFRA
+              </div>
+              <div className="section-subtitle">
+                Ordena do maior prejuízo (GP acima do GOINFRA) à esquerda até o
+                menor à direita. Linha mostra o % acumulado do prejuízo.
+              </div>
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="state-card">Carregando dados…</div>
+          ) : paretoStats.length === 0 ? (
+            <div className="state-card">
+              Nenhum equipamento com prejuízo (GP &le; GOINFRA) no filtro atual.
+            </div>
+          ) : (
+            <div style={{ height: 260 }}>
+              <Bar
+                data={paretoChartData}
+                options={paretoChartOptions as any}
               />
             </div>
           )}
