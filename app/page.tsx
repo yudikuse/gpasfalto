@@ -71,7 +71,7 @@ export default function DashboardPage() {
   const [endMonth, setEndMonth] = useState(12);
   const [error, setError] = useState<string | null>(null);
 
-  // === FETCH: usa view equipment_costs_2025_v ===
+  // === FETCH: view equipment_costs_2025_v (dados corretos) ===
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -140,7 +140,7 @@ export default function DashboardPage() {
     return monthlyAggregates[monthNumber]?.goinfra ?? 0;
   });
 
-  // Resumo para cards
+  // Resumo geral
   const summary = useMemo(() => {
     let totalGp = 0;
     let totalGoinfra = 0;
@@ -165,6 +165,68 @@ export default function DashboardPage() {
       custoHoraGp,
       custoHoraGoinfra,
     };
+  }, [filteredData]);
+
+  // === TOP 5 MAIS CAROS / MAIS BARATOS POR HORA (GP x GOINFRA) ===
+  type EquipStat = {
+    equipamento: string;
+    totalGp: number;
+    totalGoinfra: number;
+    totalHoras: number;
+    custoHoraGp?: number;
+    custoHoraGoinfra?: number;
+    diffHora?: number;
+  };
+
+  const { topMaisCaros, topMaisBaratos } = useMemo(() => {
+    const map = new Map<string, EquipStat>();
+
+    filteredData.forEach((row) => {
+      const eq = row.equipamento;
+      if (!eq) return;
+
+      const horas = row.horas_trab_mes ?? 0;
+      const gp = row.custo_gp ?? 0;
+      const go = row.custo_goinfra ?? 0;
+
+      const current = map.get(eq) || {
+        equipamento: eq,
+        totalGp: 0,
+        totalGoinfra: 0,
+        totalHoras: 0,
+      };
+
+      current.totalGp += gp;
+      current.totalGoinfra += go;
+      current.totalHoras += horas;
+
+      map.set(eq, current);
+    });
+
+    const stats: EquipStat[] = Array.from(map.values()).map((s) => {
+      if (s.totalHoras > 0) {
+        s.custoHoraGp = s.totalGp / s.totalHoras;
+        s.custoHoraGoinfra = s.totalGoinfra / s.totalHoras;
+        if (s.custoHoraGp != null && s.custoHoraGoinfra != null) {
+          s.diffHora = s.custoHoraGp - s.custoHoraGoinfra;
+        }
+      }
+      return s;
+    });
+
+    const valid = stats.filter(
+      (s) => s.totalHoras > 0 && s.diffHora != null
+    ) as Required<EquipStat>[];
+
+    const topMaisCaros = [...valid]
+      .sort((a, b) => b.diffHora - a.diffHora)
+      .slice(0, 5);
+
+    const topMaisBaratos = [...valid]
+      .sort((a, b) => a.diffHora - b.diffHora)
+      .slice(0, 5);
+
+    return { topMaisCaros, topMaisBaratos };
   }, [filteredData]);
 
   const chartData = {
@@ -246,22 +308,37 @@ export default function DashboardPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        {/* HEADER / BRANDING */}
+        {/* HEADER / BRANDING COM LOGO GRANDE */}
         <header className="page-header">
           <div className="brand">
-            {/* Se tiver uma logo real, troca esse div por <img className="brand-logo" src="/logo-gp.png" /> */}
-            <div className="brand-logo" style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
-              <span style={{ fontWeight: 600, fontSize: "0.9rem" }}>GP</span>
+            {/* Troca o src abaixo para o arquivo real da logo: /logo-gp-asfalto.png */}
+            <div
+              className="brand-logo"
+              style={{
+                width: 72,
+                height: 72,
+                borderRadius: 20,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              {/* fallback caso a logo ainda não exista */}
+              <span style={{ fontWeight: 600, fontSize: "1rem" }}>GP</span>
             </div>
             <div>
-              <div className="brand-text-main">GP Asfalto</div>
-              <div className="brand-text-sub">Dashboard de Manutenção 2025</div>
+              <div className="brand-text-main">
+                Dashboard de Manutenção 2025 - GP Asfalto
+              </div>
+              <div className="brand-text-sub">
+                Comparativo de custos de manutenção · GP Asfalto x GOINFRA
+              </div>
             </div>
           </div>
 
           <div className="header-right">
             <div className="header-pill">
-              <span>Visão consolidada</span>
+              <span>Período</span>
               <strong>{periodLabel}</strong>
             </div>
           </div>
@@ -357,7 +434,7 @@ export default function DashboardPage() {
                 </select>
               </div>
 
-              {/* Texto da frota / equipamento atual */}
+              {/* Texto do filtro */}
               <div className="filter-chip">
                 <span>
                   {selectedEquip === "all"
@@ -443,6 +520,132 @@ export default function DashboardPage() {
             </div>
             <div className="summary-subvalue">
               Custo teórico ponderado pelas horas trabalhadas.
+            </div>
+          </div>
+        </section>
+
+        {/* TOP 5 MAIS CAROS / MAIS BARATOS POR HORA */}
+        <section className="summary-grid">
+          <div className="section-card">
+            <div className="section-header">
+              <div>
+                <div className="section-title">
+                  Top 5 · Mais caros por hora (GP x GOINFRA)
+                </div>
+                <div className="section-subtitle">
+                  Diferença de custo/hora: GP – GOINFRA (maior &gt; pior).
+                </div>
+              </div>
+            </div>
+            <div className="table-wrapper">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Equipamento</th>
+                    <th>Horas</th>
+                    <th>GP / h</th>
+                    <th>GOINFRA / h</th>
+                    <th>Diferença</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topMaisCaros.length === 0 && (
+                    <tr>
+                      <td colSpan={5}>Sem dados para o filtro atual.</td>
+                    </tr>
+                  )}
+                  {topMaisCaros.map((s) => (
+                    <tr key={s.equipamento}>
+                      <td>{s.equipamento}</td>
+                      <td>
+                        {s.totalHoras.toLocaleString("pt-BR", {
+                          maximumFractionDigits: 1,
+                        })}
+                      </td>
+                      <td>
+                        {s.custoHoraGp != null
+                          ? currency.format(s.custoHoraGp)
+                          : "—"}
+                      </td>
+                      <td>
+                        {s.custoHoraGoinfra != null
+                          ? currency.format(s.custoHoraGoinfra)
+                          : "—"}
+                      </td>
+                      <td
+                        style={{
+                          color: s.diffHora! > 0 ? "#dc2626" : "#16a34a",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {currency.format(s.diffHora!)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div className="section-card">
+            <div className="section-header">
+              <div>
+                <div className="section-title">
+                  Top 5 · Mais baratos por hora (GP x GOINFRA)
+                </div>
+                <div className="section-subtitle">
+                  Diferença de custo/hora: GP – GOINFRA (mais negativo &gt;
+                  melhor).
+                </div>
+              </div>
+            </div>
+            <div className="table-wrapper">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>Equipamento</th>
+                    <th>Horas</th>
+                    <th>GP / h</th>
+                    <th>GOINFRA / h</th>
+                    <th>Diferença</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topMaisBaratos.length === 0 && (
+                    <tr>
+                      <td colSpan={5}>Sem dados para o filtro atual.</td>
+                    </tr>
+                  )}
+                  {topMaisBaratos.map((s) => (
+                    <tr key={s.equipamento}>
+                      <td>{s.equipamento}</td>
+                      <td>
+                        {s.totalHoras.toLocaleString("pt-BR", {
+                          maximumFractionDigits: 1,
+                        })}
+                      </td>
+                      <td>
+                        {s.custoHoraGp != null
+                          ? currency.format(s.custoHoraGp)
+                          : "—"}
+                      </td>
+                      <td>
+                        {s.custoHoraGoinfra != null
+                          ? currency.format(s.custoHoraGoinfra)
+                          : "—"}
+                      </td>
+                      <td
+                        style={{
+                          color: s.diffHora! > 0 ? "#dc2626" : "#16a34a",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {currency.format(s.diffHora!)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </section>
