@@ -101,7 +101,6 @@ const currency = new Intl.NumberFormat("pt-BR", {
 // valor fixo mensal de mão de obra para rateio
 const MAO_OBRA_MENSAL = 88000;
 
-// pega prefixo da categoria: RE-05 -> RE, VBA-02 -> VBA, PC02 -> PC02
 function getCategoryFromEquip(equipamento: string | null): string | null {
   if (!equipamento) return null;
   const idx = equipamento.indexOf("-");
@@ -121,7 +120,6 @@ export default function DashboardPage() {
   const [includeOficina, setIncludeOficina] = useState<boolean>(true);
   const [includeMaoObra, setIncludeMaoObra] = useState<boolean>(true);
 
-  // === FETCH: equipment_costs_2025_v + oficina_costs_by_month ===
   useEffect(() => {
     const fetchData = async () => {
       setLoading(true);
@@ -153,7 +151,6 @@ export default function DashboardPage() {
     fetchData();
   }, []);
 
-  // Equipamentos disponíveis (já excluindo TP-03)
   const equipmentOptions = useMemo(() => {
     const set = new Set<string>();
     data.forEach((row) => {
@@ -164,7 +161,6 @@ export default function DashboardPage() {
     return Array.from(set).sort();
   }, [data]);
 
-  // Filtros aplicados (sem TP-03)
   const filteredData = useMemo(
     () =>
       data.filter((row) => {
@@ -177,7 +173,6 @@ export default function DashboardPage() {
     [data, selectedEquip, startMonth, endMonth]
   );
 
-  // Mapa: mês -> custo total da oficina
   const oficinaByMonth = useMemo(() => {
     const map: { [mes: number]: number } = {};
     oficinaData.forEach((row) => {
@@ -192,7 +187,6 @@ export default function DashboardPage() {
     return map;
   }, [oficinaData]);
 
-  // Mapa: mês -> soma de custo_gp de todos os equipamentos (base p/ rateio)
   const gpTotalsByMonth = useMemo(() => {
     const map: { [mes: number]: number } = {};
     data.forEach((row) => {
@@ -204,7 +198,6 @@ export default function DashboardPage() {
     return map;
   }, [data]);
 
-  // Processamento: aplica rateio da oficina e da mão de obra em cada row
   const processedFilteredData: ProcessedRow[] = useMemo(() => {
     return filteredData.map((row) => {
       const directGp = row.custo_gp ?? 0;
@@ -242,7 +235,6 @@ export default function DashboardPage() {
     includeMaoObra,
   ]);
 
-  // Agregação mensal (barras empilhadas GP + oficina + mão de obra, linha GOINFRA)
   const monthlyAggregates = useMemo(() => {
     const result: {
       [mes: number]: {
@@ -285,7 +277,6 @@ export default function DashboardPage() {
     return monthlyAggregates[mes]?.goinfra ?? 0;
   });
 
-  // Resumo geral
   const summary = useMemo(() => {
     let totalGp = 0;
     let totalGoinfra = 0;
@@ -312,7 +303,6 @@ export default function DashboardPage() {
     };
   }, [processedFilteredData]);
 
-  // Estatísticas por equipamento (TOP 5)
   const equipStats: EquipStat[] = useMemo(() => {
     type Acc = {
       equipamento: string;
@@ -392,7 +382,6 @@ export default function DashboardPage() {
     return stats;
   }, [processedFilteredData]);
 
-  // === Estatísticas por CATEGORIA (prefixo) ===
   const categoryStats: CategoryStat[] = useMemo(() => {
     type Acc = {
       category: string;
@@ -457,7 +446,6 @@ export default function DashboardPage() {
       });
     }
 
-    // ordenar do melhor para o GP (menor % / mais negativo) até o pior
     list.sort((a, b) => {
       const aVal = a.diffPercent ?? 0;
       const bVal = b.diffPercent ?? 0;
@@ -467,7 +455,6 @@ export default function DashboardPage() {
     return list;
   }, [processedFilteredData]);
 
-  // TOP 5 mais caros / baratos
   const topMaisCaros: EquipStat[] = useMemo(() => {
     const valid = equipStats.filter((s) => {
       if (s.totalHoras <= 0) return false;
@@ -502,7 +489,7 @@ export default function DashboardPage() {
     return sorted.slice(0, 5);
   }, [equipStats, rankingMode]);
 
-  // Dados gráfico mensal (barras empilhadas + linha)
+  // ====== GRÁFICO MENSAL (AQUI VAI A CORREÇÃO DA LINHA) ======
   const datasets: any[] = [
     {
       type: "bar" as const,
@@ -513,6 +500,7 @@ export default function DashboardPage() {
       maxBarThickness: 40,
       stack: "gp",
       order: 1,
+      z: 0,
     },
   ];
 
@@ -526,6 +514,7 @@ export default function DashboardPage() {
       maxBarThickness: 40,
       stack: "gp",
       order: 1,
+      z: 0,
     });
   }
 
@@ -539,14 +528,16 @@ export default function DashboardPage() {
       maxBarThickness: 40,
       stack: "gp",
       order: 1,
+      z: 0,
     });
   }
 
+  // LINHA GOINFRA: z bem maior + order alto + fill false
   datasets.push({
     type: "line" as const,
     label: "Custo GOINFRA (R$)",
     data: lineData,
-    borderColor: "#4b5563", // cinza escuro
+    borderColor: "#4b5563",
     borderWidth: 3,
     tension: 0.25,
     pointRadius: 4,
@@ -554,7 +545,9 @@ export default function DashboardPage() {
     pointBackgroundColor: "#ffffff",
     pointBorderColor: "#4b5563",
     yAxisID: "y",
-    order: 99, // sempre desenhar por cima das barras
+    order: 999,
+    z: 100,
+    fill: false,
   });
 
   const chartData: any = {
@@ -598,8 +591,8 @@ export default function DashboardPage() {
       },
     },
   };
+  // ====== FIM DO GRÁFICO MENSAL ======
 
-  // === Dados gráfico por categoria ===
   const categoryChartData: any = {
     labels: categoryStats.map((c) => c.category),
     datasets: [
@@ -764,7 +757,6 @@ export default function DashboardPage() {
           <div className="filter-bar">
             <div className="filter-label">Filtros</div>
             <div className="filter-group">
-              {/* Equipamento */}
               <div className="filter-chip">
                 <span style={{ marginRight: 6 }}>Equipamento:</span>
                 <select
@@ -790,7 +782,6 @@ export default function DashboardPage() {
                 </select>
               </div>
 
-              {/* Mês inicial */}
               <div className="filter-chip">
                 <span style={{ marginRight: 6 }}>Mês inicial:</span>
                 <select
@@ -815,7 +806,6 @@ export default function DashboardPage() {
                 </select>
               </div>
 
-              {/* Mês final */}
               <div className="filter-chip">
                 <span style={{ marginRight: 6 }}>Mês final:</span>
                 <select
@@ -840,7 +830,6 @@ export default function DashboardPage() {
                 </select>
               </div>
 
-              {/* Incluir/retirar custo da oficina */}
               <div className="filter-chip">
                 <label
                   style={{
@@ -860,7 +849,6 @@ export default function DashboardPage() {
                 </label>
               </div>
 
-              {/* Incluir/retirar custo de mão de obra */}
               <div className="filter-chip">
                 <label
                   style={{
@@ -1166,7 +1154,7 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        {/* GRÁFICO PRINCIPAL MENSAL */}
+        {/* GRÁFICO MENSAL */}
         <section className="section-card">
           <div className="section-header">
             <div>
