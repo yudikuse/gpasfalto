@@ -1,16 +1,16 @@
-/* ===== ORDEM DE COMPRA (OC) – FORMULÁRIO MOBILE/DESKTOP ===== */
+/* ===== ORDEM DE COMPRA (OC) – LAYOUT ESTILO FIGMA ===== */
 
 .oc-root {
   min-height: 100vh;
   background: #f3f4f6;
-  padding: 24px 12px;
   display: flex;
   justify-content: center;
+  padding: 24px 12px;
 }
 
-.oc-container {
+.oc-page {
   width: 100%;
-  max-width: 960px;
+  max-width: 480px;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -19,47 +19,29 @@
 /* Header */
 
 .oc-header-title {
-  font-size: 1.5rem;
+  font-size: 1.1rem;
   font-weight: 600;
   color: #111827;
   margin: 0;
 }
 
 .oc-header-sub {
-  font-size: 0.85rem;
-  color: #6b7280;
-  margin: 4px 0 0 0;
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin: 2px 0 0 0;
 }
 
-/* Grid principal */
-
-.oc-main-grid {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-/* desktop */
-@media (min-width: 768px) {
-  .oc-main-grid {
-    display: grid;
-    grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr);
-    align-items: flex-start;
-    gap: 20px;
-  }
-}
-
-/* Cards */
+/* Card genérico */
 
 .oc-card {
-  background: var(--gp-surface);
+  background: #ffffff;
   border-radius: 18px;
-  padding: 16px 18px;
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+  padding: 14px 16px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
 }
 
 .oc-card-title {
-  font-size: 0.9rem;
+  font-size: 0.8rem;
   font-weight: 600;
   color: #111827;
   margin: 0 0 8px 0;
@@ -76,45 +58,41 @@
 .oc-type-btn {
   border-radius: 14px;
   border: 1px solid #e5e7eb;
-  background: #f9fafb;
+  background: #ffffff;
+  padding: 10px 10px;
   font-size: 0.8rem;
   color: #374151;
-  padding: 8px 10px;
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 6px;
   cursor: pointer;
+  transition: background 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
 }
 
-.oc-type-btn span {
-  display: block;
-}
-
-.oc-type-btn-icon {
+.oc-type-icon {
   font-size: 1rem;
 }
 
 .oc-type-btn--active {
-  border-color: #059669;
-  background: #ecfdf5;
-  color: #047857;
-  box-shadow: 0 4px 10px rgba(5, 150, 105, 0.2);
+  border-color: #10b981;
+  box-shadow: 0 4px 12px rgba(16, 185, 129, 0.25);
+  background: #f9fffc;
 }
 
-/* Campos do formulário */
+/* Campos */
 
 .oc-fields {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .oc-field-label {
   font-size: 0.75rem;
   font-weight: 500;
   color: #374151;
-  margin-bottom: 3px;
+  margin-bottom: 2px;
 }
 
 .oc-input,
@@ -124,7 +102,7 @@
   border: 1px solid #e5e7eb;
   background: #f9fafb;
   padding: 8px 10px;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   color: #111827;
 }
 
@@ -136,8 +114,8 @@
 .oc-input:focus,
 .oc-textarea:focus {
   outline: none;
-  border-color: #059669;
-  box-shadow: 0 0 0 1px #05966933;
+  border-color: #10b981;
+  box-shadow: 0 0 0 1px #10b98133;
   background: #ffffff;
 }
 
@@ -149,9 +127,32 @@
 /* Itens */
 
 .oc-items-empty {
+  margin-top: 6px;
   font-size: 0.75rem;
   color: #9ca3af;
-  margin-top: 6px;
+}
+
+.oc-add-item {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px dashed #d1fae5;
+  background: #f0fdf4;
+  padding: 8px 10px;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: #047857;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.oc-item-list {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
 .oc-item-block {
@@ -159,10 +160,10 @@
   border: 1px solid #e5e7eb;
   background: #f9fafb;
   padding: 8px 10px;
+  font-size: 0.78rem;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  font-size: 0.8rem;
 }
 
 .oc-item-row {
@@ -177,7 +178,7 @@
 .oc-item-label {
   font-size: 0.7rem;
   font-weight: 500;
-  color: #374151;
+  color: #4b5563;
   margin-bottom: 2px;
 }
 
@@ -196,16 +197,16 @@
 
 .oc-item-input:focus {
   outline: none;
-  border-color: #059669;
-  box-shadow: 0 0 0 1px #05966933;
+  border-color: #10b981;
+  box-shadow: 0 0 0 1px #10b98133;
 }
 
 .oc-item-remove {
   align-self: flex-end;
-  border-radius: 8px;
+  border-radius: 999px;
   border: 1px solid #e5e7eb;
   background: #ffffff;
-  padding: 4px 8px;
+  padding: 4px 10px;
   font-size: 0.7rem;
   color: #6b7280;
   cursor: pointer;
@@ -215,33 +216,21 @@
   background: #f3f4f6;
 }
 
-/* Botão adicionar item */
-
-.oc-add-item {
-  width: 100%;
-  border-radius: 999px;
-  border: 1px dashed #6ee7b7;
-  background: #ecfdf5;
-  padding: 8px 10px;
-  font-size: 0.8rem;
-  font-weight: 500;
-  color: #047857;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  cursor: pointer;
-}
-
 /* Preview WhatsApp */
 
-.oc-preview-toggle {
+.oc-preview-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 500;
+  color: #111827;
   cursor: pointer;
+}
+
+.oc-preview-toggle {
+  font-size: 0.7rem;
+  color: #6b7280;
 }
 
 .oc-preview-box {
@@ -261,6 +250,7 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
+  margin-top: 4px;
 }
 
 .oc-btn {
@@ -274,12 +264,12 @@
 }
 
 .oc-btn-primary {
-  background: #059669;
+  background: #16a34a;
   color: #ffffff;
 }
 
 .oc-btn-primary:hover {
-  background: #047857;
+  background: #15803d;
 }
 
 .oc-btn-outline {
@@ -309,11 +299,4 @@
 .oc-error {
   font-size: 0.75rem;
   color: #b91c1c;
-}
-
-/* Responsivo extra: limite de largura pro mobile pra parecer app */
-@media (max-width: 480px) {
-  .oc-container {
-    max-width: 420px;
-  }
 }
