@@ -78,10 +78,9 @@ type CategoryStat = {
   diffPercent: number | null;
 };
 
-type ParetoStat = {
+type HeatmapRow = {
   equipamento: string;
-  diffTotal: number;
-  cumPercent: number;
+  values: (number | null)[];
 };
 
 const monthLabels = [
@@ -112,6 +111,24 @@ function getCategoryFromEquip(equipamento: string | null): string | null {
   const idx = equipamento.indexOf("-");
   if (idx === -1) return equipamento;
   return equipamento.slice(0, idx);
+}
+
+// cor da célula do mapa de calor (diffPercent em %)
+function getHeatColor(value: number | null, maxAbs: number): string {
+  if (value == null) return "#f9fafb";
+
+  const clamped = Math.max(-maxAbs, Math.min(maxAbs, value));
+  const ratio = Math.abs(clamped) / (maxAbs || 1);
+
+  if (clamped >= 0) {
+    // vermelho (pior que GOINFRA)
+    const lightness = 95 - 35 * ratio; // 95 → 60
+    return `hsl(0, 85%, ${lightness}%)`;
+  } else {
+    // verde (melhor que GOINFRA)
+    const lightness = 94 - 34 * ratio; // 94 → 60
+    return `hsl(150, 60%, ${lightness}%)`;
+  }
 }
 
 export default function DashboardPage() {
@@ -461,40 +478,68 @@ export default function DashboardPage() {
     return list;
   }, [processedFilteredData]);
 
-  const paretoStats: ParetoStat[] = useMemo(() => {
-    const map = new Map<string, number>();
+  // ====== MAPA DE CALOR mês × equipamento (diferença % de custo/hora) ======
+  const heatmapData = useMemo(() => {
+    const monthNumbers: number[] = [];
+    for (let m = startMonth; m <= endMonth; m++) {
+      monthNumbers.push(m);
+    }
+
+    const byEquip: Record<
+      string,
+      Record<number, { gp: number; go: number; horas: number }>
+    > = {};
 
     processedFilteredData.forEach((row) => {
       const eq = row.equipamento;
       if (!eq) return;
-      const gp = row.custo_gp_total;
-      const go = row.custo_goinfra ?? 0;
-      const diff = gp - go;
-      map.set(eq, (map.get(eq) ?? 0) + diff);
-    });
+      const mes = row.mes;
+      if (mes < startMonth || mes > endMonth) return;
 
-    let arr: ParetoStat[] = [];
-    for (const [equipamento, diffTotal] of map.entries()) {
-      if (diffTotal > 0) {
-        arr.push({ equipamento, diffTotal, cumPercent: 0 });
+      if (!byEquip[eq]) {
+        byEquip[eq] = {};
       }
-    }
+      if (!byEquip[eq][mes]) {
+        byEquip[eq][mes] = { gp: 0, go: 0, horas: 0 };
+      }
 
-    arr.sort((a, b) => b.diffTotal - a.diffTotal);
-
-    const total = arr.reduce((sum, s) => sum + s.diffTotal, 0);
-    let running = 0;
-
-    arr = arr.map((s) => {
-      running += s.diffTotal;
-      return {
-        ...s,
-        cumPercent: total > 0 ? (running / total) * 100 : 0,
-      };
+      const cell = byEquip[eq][mes];
+      cell.gp += row.custo_gp_total;
+      cell.go += row.custo_goinfra ?? 0;
+      cell.horas += row.horas_trab_mes ?? 0;
     });
 
-    return arr;
-  }, [processedFilteredData]);
+    const equips = Object.keys(byEquip).sort();
+    let maxAbs = 0;
+
+    const rows: HeatmapRow[] = equips.map((eq) => {
+      const cells = byEquip[eq];
+      const values = monthNumbers.map((m) => {
+        const c = cells[m];
+        if (!c || c.horas <= 0) return null;
+
+        const custoHoraGp = c.gp / c.horas;
+        const custoHoraGo = c.go / c.horas;
+        if (!Number.isFinite(custoHoraGp) || !Number.isFinite(custoHoraGo) || custoHoraGo === 0) {
+          return null;
+        }
+
+        const diffPercent = (custoHoraGp / custoHoraGo - 1) * 100;
+        if (Math.abs(diffPercent) > maxAbs) {
+          maxAbs = Math.abs(diffPercent);
+        }
+        return diffPercent;
+      });
+
+      return { equipamento: eq, values };
+    });
+
+    return {
+      monthNumbers,
+      rows,
+      maxAbs: maxAbs || 1,
+    };
+  }, [processedFilteredData, startMonth, endMonth]);
 
   const topMaisCaros: EquipStat[] = useMemo(() => {
     const valid = equipStats.filter((s) => {
@@ -530,7 +575,7 @@ export default function DashboardPage() {
     return sorted.slice(0, 5);
   }, [equipStats, rankingMode]);
 
-  // ====== GRÁFICO MENSAL (linha sempre à frente) ======
+  // ====== GRÁFICO MENSAL (linha SEMPRE à frente) ======
   const datasets: any[] = [
     {
       type: "bar" as const,
@@ -671,81 +716,6 @@ export default function DashboardPage() {
   };
 
   const categoryChartOptions = {
-    responsive: true,
-    maintainAspectRatio: false as const,
-    plugins: {
-      legend: {
-        position: "top" as const,
-        labels: {
-          usePointStyle: true,
-          font: {
-            size: 11,
-            family:
-              "system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
-          },
-        },
-      },
-      tooltip: {
-        callbacks: {
-          label: (context: any) => {
-            const datasetLabel = context.dataset.label || "";
-            const value = context.parsed.y || 0;
-            if (context.dataset.yAxisID === "y1") {
-              return `${datasetLabel}: ${value.toFixed(1)}%`;
-            }
-            return `${datasetLabel}: ${currency.format(value)}`;
-          },
-        },
-      },
-    },
-    scales: {
-      x: { grid: { display: false } },
-      y: {
-        beginAtZero: true,
-        grid: { color: "#e5e7eb" },
-        ticks: {
-          callback: (value: any) => currency.format(Number(value)),
-        },
-      },
-      y1: {
-        position: "right" as const,
-        beginAtZero: true,
-        grid: { display: false },
-        ticks: {
-          callback: (value: any) => `${value.toFixed(0)}%`,
-        },
-      },
-    },
-  };
-
-  const paretoChartData: any = {
-    labels: paretoStats.map((p) => p.equipamento),
-    datasets: [
-      {
-        type: "bar" as const,
-        label: "Diferença (R$) – GP acima do GOINFRA",
-        data: paretoStats.map((p) => p.diffTotal),
-        backgroundColor: "#fb4b37",
-        borderRadius: 10,
-        maxBarThickness: 40,
-        yAxisID: "y",
-      },
-      {
-        type: "line" as const,
-        label: "% acumulado do prejuízo",
-        data: paretoStats.map((p) => p.cumPercent),
-        borderColor: "#0f766e",
-        borderWidth: 2,
-        tension: 0.25,
-        pointRadius: 3,
-        pointBackgroundColor: "#0f766e",
-        pointBorderColor: "#0f766e",
-        yAxisID: "y1",
-      },
-    ],
-  };
-
-  const paretoChartOptions = {
     responsive: true,
     maintainAspectRatio: false as const,
     plugins: {
@@ -1328,32 +1298,83 @@ export default function DashboardPage() {
           )}
         </section>
 
-        {/* PARETO DE PREJUÍZO */}
+        {/* MAPA DE CALOR MÊS × EQUIPAMENTO */}
         <section className="section-card">
           <div className="section-header">
             <div>
               <div className="section-title">
-                Pareto de prejuízo por equipamento (R$) · GP x GOINFRA
+                Mapa de calor · mês × equipamento (diferença % de custo/hora)
               </div>
               <div className="section-subtitle">
-                Ordena do maior prejuízo (GP acima do GOINFRA) à esquerda até o
-                menor à direita. Linha mostra o % acumulado do prejuízo.
+                Linhas = equipamentos; colunas = meses. Vermelho indica meses em
+                que o GP ficou mais caro que o GOINFRA; verde indica economia.
               </div>
             </div>
           </div>
 
           {loading ? (
             <div className="state-card">Carregando dados…</div>
-          ) : paretoStats.length === 0 ? (
+          ) : heatmapData.rows.length === 0 ? (
             <div className="state-card">
-              Nenhum equipamento com prejuízo (GP &le; GOINFRA) no filtro atual.
+              Nenhum dado para construir o mapa de calor com os filtros
+              atuais.
             </div>
           ) : (
-            <div style={{ height: 260 }}>
-              <Bar
-                data={paretoChartData}
-                options={paretoChartOptions as any}
-              />
+            <div className="table-wrapper">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th style={{ position: "sticky", left: 0, background: "#fff" }}>
+                      Equip.
+                    </th>
+                    {heatmapData.monthNumbers.map((m) => (
+                      <th key={m}>{monthLabels[m - 1]}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {heatmapData.rows.map((row) => (
+                    <tr key={row.equipamento}>
+                      <td
+                        style={{
+                          position: "sticky",
+                          left: 0,
+                          background: "#fff",
+                          fontWeight: 600,
+                        }}
+                      >
+                        {row.equipamento}
+                      </td>
+                      {row.values.map((val, idx) => {
+                        const bg = getHeatColor(val, heatmapData.maxAbs);
+                        const label =
+                          val != null
+                            ? `${val >= 0 ? "+" : ""}${val.toFixed(1)}%`
+                            : "";
+                        return (
+                          <td
+                            key={idx}
+                            style={{
+                              background: bg,
+                              textAlign: "center",
+                              fontSize: "0.75rem",
+                              padding: "4px 6px",
+                              borderRadius: 4,
+                            }}
+                            title={
+                              val != null
+                                ? `Diferença de custo/hora: ${label} (GP vs GOINFRA)`
+                                : "Sem dados no período"
+                            }
+                          >
+                            {label}
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
         </section>
