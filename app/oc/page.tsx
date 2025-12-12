@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect, useMemo, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
@@ -48,9 +50,12 @@ function onlyDigits(s: string) {
 }
 
 function normalizeDecimalPtBR(input: string) {
+  // mantém apenas dígitos e uma vírgula
   let s = (input || "").replace(/[^\d,]/g, "");
   const parts = s.split(",");
-  if (parts.length > 2) s = parts[0] + "," + parts.slice(1).join("");
+  if (parts.length > 2) {
+    s = parts[0] + "," + parts.slice(1).join("");
+  }
   const [a, b] = s.split(",");
   const dec = (b || "").slice(0, 2);
   return dec.length ? `${a || "0"},${dec}` : a || "";
@@ -62,6 +67,7 @@ function formatBRLFromNumber(n: number | null) {
 }
 
 function parseBRLToNumber(value: string) {
+  // "R$ 4.342,34" -> 4342.34
   if (!value) return null;
   const s = value
     .replace(/\s/g, "")
@@ -73,6 +79,7 @@ function parseBRLToNumber(value: string) {
 }
 
 function formatBRLFromDigits(digits: string) {
+  // digits "434234" => R$ 4.342,34
   const d = digits.replace(/[^\d]/g, "");
   if (!d) return "";
   const cents = Number(d);
@@ -84,6 +91,20 @@ function toWhatsappText(lines: string[]) {
   return lines.filter(Boolean).join("\n");
 }
 
+// aceita ANON_KEY ou sua variável "publishable default"
+function getSupabaseEnv() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+
+  const key =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    // fallback para o que você mostrou no print
+    (process.env as any).NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT ||
+    (process.env as any).NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    "";
+
+  return { url, key };
+}
+
 export default function OCPage() {
   const [tipo, setTipo] = useState<OrderType>("MANUTENCAO");
 
@@ -91,22 +112,22 @@ export default function OCPage() {
   const [idGerado, setIdGerado] = useState<string>("-");
   const [numeroOC, setNumeroOC] = useState<string>("");
 
-  // campos base
+  // campos base (padrão manutenção)
   const [equipamento, setEquipamento] = useState<string>("");
   const [obra, setObra] = useState<string>("");
   const [operador, setOperador] = useState<string>("");
-  const [horimetro, setHorimetro] = useState<string>("");
+  const [horimetro, setHorimetro] = useState<string>(""); // pt-BR decimal
   const [localEntrega, setLocalEntrega] = useState<string>("");
   const [observacoes, setObservacoes] = useState<string>("");
 
-  // fornecedores
+  // fornecedores (até 3)
   const [qtdFornecedores, setQtdFornecedores] = useState<number>(1);
   const [forn1, setForn1] = useState<string>("");
   const [forn2, setForn2] = useState<string>("");
   const [forn3, setForn3] = useState<string>("");
-  const [preco1, setPreco1] = useState<string>("");
-  const [preco2, setPreco2] = useState<string>("");
-  const [preco3, setPreco3] = useState<string>("");
+  const [preco1, setPreco1] = useState<string>(""); // BRL
+  const [preco2, setPreco2] = useState<string>(""); // BRL
+  const [preco3, setPreco3] = useState<string>(""); // BRL
 
   const [items, setItems] = useState<ItemRow[]>([]);
   const [expandedPreview, setExpandedPreview] = useState<boolean>(false);
@@ -119,20 +140,25 @@ export default function OCPage() {
   const [savedOrderId, setSavedOrderId] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
 
-  // ✅ Lazy init do Supabase (evita quebrar no build/prerender)
-  const supabase = useMemo<SupabaseClient | null>(() => {
-    const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-    const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  // ✅ SUPABASE SÓ NO CLIENT + SEM ESCOPO GLOBAL
+  const supabase: SupabaseClient | null = useMemo(() => {
+    if (typeof window === "undefined") return null;
+    const { url, key } = getSupabaseEnv();
     if (!url || !key) return null;
     return createClient(url, key);
   }, []);
 
+  const missingEnv = useMemo(() => {
+    const { url, key } = getSupabaseEnv();
+    return !url || !key;
+  }, []);
+
   // ====== load defaults (OC sequencial + listas) ======
   useEffect(() => {
-    (async () => {
-      if (!supabase) return;
+    if (!supabase) return;
 
-      // 1) OC sequencial
+    (async () => {
+      // 1) OC sequencial (editável)
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
@@ -155,7 +181,7 @@ export default function OCPage() {
         setNumeroOC("OC20000");
       }
 
-      // 2) equipamentos
+      // 2) equipamentos (tenta buscar numa tabela “equipment_hours”; se falhar, segue só livre)
       try {
         const { data } = await supabase
           .from("equipment_hours")
@@ -174,12 +200,12 @@ export default function OCPage() {
         setEquipmentOptions([]);
       }
 
-      // 3) fornecedores
+      // 3) fornecedores (puxa de orders_2025_raw nas colunas novas)
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
           .select("fornecedor_1,fornecedor_2,fornecedor_3")
-          .limit(700)
+          .limit(500)
           .order("id", { ascending: false });
 
         const all = (data || []).flatMap((r: any) => [
@@ -223,7 +249,7 @@ export default function OCPage() {
     };
   }, [preco1, preco2, preco3, forn1, forn2, forn3, qtdFornecedores]);
 
-  // ====== preview whatsapp ======
+  // ====== preview whatsapp (mais bonito) ======
   const whatsappPreview = useMemo(() => {
     const titulo =
       tipo === "ABASTECIMENTO"
@@ -268,19 +294,29 @@ export default function OCPage() {
     }
 
     const fornLines: string[] = [];
+    const f1 = forn1.trim();
+    const f2 = forn2.trim();
+    const f3 = forn3.trim();
+
+    const p1 = preco1.trim();
+    const p2 = preco2.trim();
+    const p3 = preco3.trim();
+
     if (tipo === "MANUTENCAO") {
       fornLines.push("", "*🏷️ Cotações*");
-      fornLines.push(`1) ${forn1.trim() || "-"} ${preco1 ? `— ${preco1}` : ""}`.trim());
+      fornLines.push(`1) ${f1 || "-"} ${p1 ? `— ${p1}` : ""}`.trim());
       if (qtdFornecedores >= 2)
-        fornLines.push(`2) ${forn2.trim() || "-"} ${preco2 ? `— ${preco2}` : ""}`.trim());
+        fornLines.push(`2) ${f2 || "-"} ${p2 ? `— ${p2}` : ""}`.trim());
       if (qtdFornecedores >= 3)
-        fornLines.push(`3) ${forn3.trim() || "-"} ${preco3 ? `— ${preco3}` : ""}`.trim());
+        fornLines.push(`3) ${f3 || "-"} ${p3 ? `— ${p3}` : ""}`.trim());
 
       fornLines.push(
         "",
         `*✅ Aprovado automático:* SIM`,
         `*💰 Menor preço considerado:* ${
-          computed.valorMenor !== null ? formatBRLFromNumber(computed.valorMenor) : "-"
+          computed.valorMenor !== null
+            ? formatBRLFromNumber(computed.valorMenor)
+            : "-"
         }`
       );
       if (computed.fornecedorVencedor) {
@@ -310,6 +346,7 @@ export default function OCPage() {
     computed.fornecedorVencedor,
   ]);
 
+  // ====== actions ======
   function addItem() {
     setItems((prev) => [...prev, { qtd: "", descricao: "", valor: "" }]);
     setSaved(false);
@@ -318,7 +355,9 @@ export default function OCPage() {
   }
 
   function updateItem(i: number, patch: Partial<ItemRow>) {
-    setItems((prev) => prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+    setItems((prev) =>
+      prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row))
+    );
     setSaved(false);
     setSavedOrderId(null);
     setIdGerado("-");
@@ -342,16 +381,15 @@ export default function OCPage() {
 
   async function saveOrder() {
     setErrorMsg("");
-
-    if (!supabase) {
-      setErrorMsg(
-        "Variáveis do Supabase não configuradas no deploy (NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY)."
-      );
-      return;
-    }
-
     setSaving(true);
+
     try {
+      if (!supabase) {
+        throw new Error(
+          "Supabase não configurado. Verifique NEXT_PUBLIC_SUPABASE_URL e a chave pública."
+        );
+      }
+
       const payload: any = {
         date: nowDateBr(),
         time: nowTime(),
@@ -383,15 +421,24 @@ export default function OCPage() {
         aprovado_auto: true,
 
         fornecedor_1: tipo === "MANUTENCAO" ? (forn1 || null) : null,
-        fornecedor_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
-        fornecedor_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? (forn3 || null) : null,
+        fornecedor_2:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
+        fornecedor_3:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? (forn3 || null) : null,
 
         preco_1: tipo === "MANUTENCAO" ? parseBRLToNumber(preco1) : null,
-        preco_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? parseBRLToNumber(preco2) : null,
-        preco_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? parseBRLToNumber(preco3) : null,
+        preco_2:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 2
+            ? parseBRLToNumber(preco2)
+            : null,
+        preco_3:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 3
+            ? parseBRLToNumber(preco3)
+            : null,
 
         valor_menor: tipo === "MANUTENCAO" ? computed.valorMenor : null,
-        fornecedor_vencedor: tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
+        fornecedor_vencedor:
+          tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
       };
 
       const { data: inserted, error: err1 } = await supabase
@@ -440,27 +487,34 @@ export default function OCPage() {
 
   return (
     <>
-      {/* Material Symbols (Google) */}
       <style jsx global>{`
         @import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,300,0,0");
+
         .msi {
           font-family: "Material Symbols Outlined";
           font-weight: 300;
           font-style: normal;
           font-size: 22px;
           line-height: 1;
+          letter-spacing: normal;
+          text-transform: none;
           display: inline-block;
+          white-space: nowrap;
+          word-wrap: normal;
+          direction: ltr;
           -webkit-font-feature-settings: "liga";
           -webkit-font-smoothing: antialiased;
           color: var(--gp-muted);
         }
+
         .oc-root {
           min-height: 100vh;
           background: radial-gradient(circle at top, #f9fafb 0, #f3f4f6 45%, #e5e7eb);
           display: flex;
           justify-content: center;
-          padding: 34px 16px 46px;
+          padding: 32px 16px;
         }
+
         .oc-container {
           width: 100%;
           max-width: 760px;
@@ -468,61 +522,71 @@ export default function OCPage() {
           flex-direction: column;
           gap: 16px;
         }
+
         .oc-hero {
           text-align: center;
-          padding: 8px 14px 0;
+          padding: 18px 14px 6px;
         }
+
         .oc-logo {
           display: flex;
           justify-content: center;
-          margin-bottom: 12px;
+          margin-bottom: 10px;
         }
+
         .oc-logo img {
-          height: 108px;
+          height: 86px; /* LOGO MAIOR */
           width: auto;
           display: block;
           object-fit: contain;
         }
+
         .oc-title {
           margin: 0;
           font-size: 34px;
-          font-weight: 750;
+          font-weight: 700;
           letter-spacing: -0.02em;
           color: var(--gp-text);
         }
+
         .oc-subtitle {
           margin-top: 6px;
           font-size: 13px;
           color: var(--gp-muted-soft);
         }
+
         .section-card {
           border-radius: 18px;
           padding: 18px 20px;
           background: var(--gp-surface);
           box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06);
         }
+
         .section-title {
           font-size: 14px;
           font-weight: 700;
           margin: 0;
           color: var(--gp-text);
         }
+
         .section-sub {
           margin-top: 4px;
           font-size: 12px;
           color: var(--gp-muted-soft);
         }
+
         .type-grid {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 10px;
           margin-top: 12px;
         }
+
         .type-btn {
           border: 1px solid #e5e7eb;
           background: #fff;
           border-radius: 14px;
-          padding: 14px 10px;
+          padding: 12px 10px;
           cursor: pointer;
           display: flex;
           flex-direction: column;
@@ -532,35 +596,42 @@ export default function OCPage() {
           box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
           transition: transform 0.04s ease, border-color 0.08s ease, background 0.08s ease;
         }
+
         .type-btn:hover {
           transform: translateY(-1px);
         }
+
         .type-btn strong {
           font-size: 13px;
-          font-weight: 650;
+          font-weight: 600;
           color: var(--gp-text);
         }
+
         .type-btn.active {
           border-color: #10b981;
           background: #ecfdf5;
           box-shadow: 0 14px 34px rgba(16, 185, 129, 0.12);
         }
+
         .grid-2 {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
           gap: 12px;
           margin-top: 12px;
         }
+
         .field {
           display: flex;
           flex-direction: column;
-          gap: 7px;
+          gap: 6px;
         }
+
         .label {
           font-size: 12px;
-          font-weight: 650;
+          font-weight: 600;
           color: #111827;
         }
+
         .input,
         .textarea,
         .select {
@@ -568,36 +639,52 @@ export default function OCPage() {
           border: 1px solid #e5e7eb;
           background: #fff;
           border-radius: 12px;
-          padding: 12px 12px;
+          padding: 11px 12px;
           font-size: 14px;
           outline: none;
         }
+
         .input:focus,
-        .textarea:focus,
-        .select:focus {
+        .textarea:focus {
           border-color: #cbd5e1;
           box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.15);
         }
+
         .textarea {
-          min-height: 106px;
+          min-height: 96px;
           resize: vertical;
         }
+
         .row {
           display: grid;
           grid-template-columns: 1fr 1fr;
           gap: 12px;
         }
+
         .muted {
           font-size: 12px;
           color: var(--gp-muted-soft);
         }
+
         .items-header {
           display: flex;
-          align-items: flex-start;
+          align-items: center;
           justify-content: space-between;
           gap: 10px;
           margin-top: 4px;
         }
+
+        .config-card {
+          border-radius: 18px;
+          padding: 14px 16px;
+          background: #fff7ed;
+          border: 1px solid #fed7aa;
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+          color: #9a3412;
+          font-size: 13px;
+          font-weight: 700;
+        }
+
         .btn-add {
           width: 100%;
           border: 1px dashed #a7f3d0;
@@ -605,38 +692,43 @@ export default function OCPage() {
           color: #047857;
           border-radius: 14px;
           padding: 12px;
-          font-weight: 800;
+          font-weight: 700;
           cursor: pointer;
         }
+
         .item-card {
           margin-top: 12px;
           border: 1px solid #eef2f7;
           border-radius: 16px;
-          padding: 16px;
+          padding: 14px;
           background: #ffffff;
           box-shadow: 0 10px 20px rgba(15, 23, 42, 0.03);
         }
-        .item-row {
+
+        .item-grid {
           display: grid;
           grid-template-columns: 140px 1fr;
           gap: 12px;
         }
-        .item-row-2 {
+
+        .item-grid-2 {
           display: grid;
-          grid-template-columns: 1fr 140px;
+          grid-template-columns: 1fr 130px;
           gap: 12px;
           margin-top: 12px;
           align-items: end;
         }
+
         .btn-remove {
           border: 1px solid #e5e7eb;
           background: #fff;
           border-radius: 12px;
-          padding: 12px 12px;
+          padding: 11px 12px;
           cursor: pointer;
           color: var(--gp-muted);
-          font-weight: 700;
+          font-weight: 600;
         }
+
         .preview-toggle {
           width: 100%;
           border: 1px solid #a7f3d0;
@@ -644,12 +736,13 @@ export default function OCPage() {
           border-radius: 14px;
           padding: 12px;
           cursor: pointer;
-          font-weight: 800;
+          font-weight: 700;
           color: #047857;
           display: flex;
           align-items: center;
           justify-content: space-between;
         }
+
         .preview-box {
           margin-top: 12px;
           border: 1px solid #eef2f7;
@@ -657,54 +750,61 @@ export default function OCPage() {
           background: #ffffff;
           padding: 14px;
           white-space: pre-wrap;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
-            "Courier New", monospace;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+            "Liberation Mono", "Courier New", monospace;
           font-size: 13px;
-          line-height: 1.5;
+          line-height: 1.4;
           color: #0f172a;
         }
+
         .actions {
           display: grid;
           grid-template-columns: 1fr;
           gap: 10px;
         }
+
         .btn-primary {
           border: none;
           background: #059669;
           color: #fff;
           border-radius: 14px;
           padding: 13px 14px;
-          font-weight: 900;
+          font-weight: 800;
           cursor: pointer;
         }
+
         .btn-primary:disabled {
           opacity: 0.6;
           cursor: not-allowed;
         }
+
         .btn-secondary {
           border: 1px solid #e5e7eb;
           background: #fff;
           border-radius: 14px;
           padding: 13px 14px;
-          font-weight: 900;
+          font-weight: 800;
           cursor: pointer;
           color: #0f172a;
         }
+
         .btn-whats {
           border: none;
           background: #22c55e;
           color: #fff;
           border-radius: 14px;
           padding: 13px 14px;
-          font-weight: 950;
+          font-weight: 900;
           cursor: pointer;
         }
+
         .err {
           margin-top: 10px;
           color: #b91c1c;
           font-size: 13px;
-          font-weight: 700;
+          font-weight: 600;
         }
+
         @media (max-width: 560px) {
           .oc-title {
             font-size: 28px;
@@ -713,12 +813,14 @@ export default function OCPage() {
           .grid-2 {
             grid-template-columns: 1fr;
           }
-          .item-row,
-          .item-row-2 {
+          .item-grid {
+            grid-template-columns: 1fr;
+          }
+          .item-grid-2 {
             grid-template-columns: 1fr;
           }
           .oc-logo img {
-            height: 92px;
+            height: 74px;
           }
         }
       `}</style>
@@ -733,19 +835,14 @@ export default function OCPage() {
             <div className="oc-subtitle">Criar OC rápida e padrão para WhatsApp</div>
           </div>
 
-          {!supabase ? (
-            <section className="section-card">
-              <h2 className="section-title">Configuração necessária</h2>
-              <div className="section-sub" style={{ marginTop: 8 }}>
-                Configure no Vercel as variáveis:
-                <br />
-                <strong>NEXT_PUBLIC_SUPABASE_URL</strong> e{" "}
-                <strong>NEXT_PUBLIC_SUPABASE_ANON_KEY</strong>
-              </div>
-            </section>
-          ) : null}
+          {missingEnv && (
+            <div className="config-card">
+              Configuração necessária no Vercel: defina{" "}
+              <strong>NEXT_PUBLIC_SUPABASE_URL</strong> e a chave pública{" "}
+              (<strong>NEXT_PUBLIC_SUPABASE_ANON_KEY</strong> ou sua variável publishable).
+            </div>
+          )}
 
-          {/* Tipo */}
           <section className="section-card">
             <h2 className="section-title">Tipo de Pedido</h2>
             <div className="type-grid">
@@ -768,7 +865,6 @@ export default function OCPage() {
             </div>
           </section>
 
-          {/* Dados */}
           <section className="section-card">
             <div className="items-header">
               <div>
@@ -908,12 +1004,10 @@ export default function OCPage() {
                     <div className="label" style={{ marginBottom: 4 }}>
                       Fornecedores (cotações)
                     </div>
-                    <div className="muted">
-                      Escolha 1–3 fornecedores e informe os preços.
-                    </div>
+                    <div className="muted">Escolha 1–3 fornecedores e informe os preços.</div>
                   </div>
 
-                  <div className="field" style={{ width: 150 }}>
+                  <div className="field" style={{ width: 140 }}>
                     <div className="label">Qtd</div>
                     <select
                       className="select"
@@ -1062,7 +1156,6 @@ export default function OCPage() {
             )}
           </section>
 
-          {/* Itens */}
           <section className="section-card">
             <h2 className="section-title">Itens da ordem</h2>
 
@@ -1078,7 +1171,7 @@ export default function OCPage() {
               ) : (
                 items.map((it, idx) => (
                   <div key={idx} className="item-card">
-                    <div className="item-row">
+                    <div className="item-grid">
                       <div className="field">
                         <div className="label">Quantidade</div>
                         <input
@@ -1104,7 +1197,7 @@ export default function OCPage() {
                       </div>
                     </div>
 
-                    <div className="item-row-2">
+                    <div className="item-grid-2">
                       <div className="field">
                         <div className="label">Valor (opcional)</div>
                         <input
@@ -1129,7 +1222,6 @@ export default function OCPage() {
             </div>
           </section>
 
-          {/* Preview + ações */}
           <section className="section-card">
             <button
               className="preview-toggle"
@@ -1151,7 +1243,7 @@ export default function OCPage() {
 
               {saved && (
                 <>
-                  <button className="btn-secondary" type="button" onClick={async () => navigator.clipboard.writeText(whatsappPreview)}>
+                  <button className="btn-secondary" type="button" onClick={copyText}>
                     Copiar mensagem
                   </button>
                   <button className="btn-whats" type="button" onClick={openWhatsapp}>
