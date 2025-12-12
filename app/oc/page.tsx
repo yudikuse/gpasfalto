@@ -8,7 +8,13 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-type OrderType = "COMPRA" | "ABASTECIMENTO" | "MANUTENCAO" | "SERVICOS" | "PECAS" | "OUTRO";
+type OrderType =
+  | "COMPRA"
+  | "ABASTECIMENTO"
+  | "MANUTENCAO"
+  | "SERVICOS"
+  | "PECAS"
+  | "OUTRO";
 
 type ItemRow = {
   qtd: string; // mascarado (inteiro)
@@ -31,7 +37,10 @@ function nowDateBr() {
 
 function nowTime() {
   const d = new Date();
-  return `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`;
+  return `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(
+    d.getSeconds(),
+    2
+  )}`;
 }
 
 function mesAno() {
@@ -44,7 +53,7 @@ function onlyDigits(s: string) {
 }
 
 function normalizeDecimalPtBR(input: string) {
-  // mantém apenas dígitos e uma vírgula
+  // mantém apenas dígitos e uma vírgula, 2 casas decimais
   let s = (input || "").replace(/[^\d,]/g, "");
   const parts = s.split(",");
   if (parts.length > 2) {
@@ -52,15 +61,7 @@ function normalizeDecimalPtBR(input: string) {
   }
   const [a, b] = s.split(",");
   const dec = (b || "").slice(0, 2);
-  return dec.length ? `${a || "0"},${dec}` : (a || "");
-}
-
-function parsePtBRNumberToJs(s: string) {
-  // "1.234,50" -> 1234.5 (mas aqui já vem sem ponto de milhar)
-  if (!s) return null;
-  const cleaned = s.replace(/\./g, "").replace(",", ".");
-  const n = Number(cleaned);
-  return Number.isFinite(n) ? n : null;
+  return dec.length ? `${a || "0"},${dec}` : a || "";
 }
 
 function formatBRLFromNumber(n: number | null) {
@@ -71,7 +72,11 @@ function formatBRLFromNumber(n: number | null) {
 function parseBRLToNumber(value: string) {
   // "R$ 4.342,34" -> 4342.34
   if (!value) return null;
-  const s = value.replace(/\s/g, "").replace("R$", "").replace(/\./g, "").replace(",", ".");
+  const s = value
+    .replace(/\s/g, "")
+    .replace("R$", "")
+    .replace(/\./g, "")
+    .replace(",", ".");
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
@@ -150,7 +155,7 @@ export default function OCPage() {
         setNumeroOC("OC20000");
       }
 
-      // 2) equipamentos (tenta buscar numa tabela “equipment_hours”; se falhar, segue só livre)
+      // 2) equipamentos
       try {
         const { data } = await supabase
           .from("equipment_hours")
@@ -158,19 +163,23 @@ export default function OCPage() {
           .not("codigo_equipamento", "is", null);
 
         const opts = Array.from(
-          new Set((data || []).map((r: any) => String(r.codigo_equipamento).trim()).filter(Boolean))
+          new Set(
+            (data || [])
+              .map((r: any) => String(r.codigo_equipamento).trim())
+              .filter(Boolean)
+          )
         ).sort((a, b) => a.localeCompare(b));
         setEquipmentOptions(opts);
       } catch {
         setEquipmentOptions([]);
       }
 
-      // 3) fornecedores (puxa de orders_2025_raw nas colunas novas)
+      // 3) fornecedores (por enquanto: lê das próprias ordens)
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
           .select("fornecedor_1,fornecedor_2,fornecedor_3")
-          .limit(500)
+          .limit(700)
           .order("id", { ascending: false });
 
         const all = (data || []).flatMap((r: any) => [
@@ -196,8 +205,10 @@ export default function OCPage() {
     const p2 = parseBRLToNumber(preco2);
     const p3 = parseBRLToNumber(preco3);
 
-    const candidates: { idx: 1 | 2 | 3; price: number; supplier: string }[] = [];
-    if (p1 !== null && forn1.trim()) candidates.push({ idx: 1, price: p1, supplier: forn1.trim() });
+    const candidates: { idx: 1 | 2 | 3; price: number; supplier: string }[] =
+      [];
+    if (p1 !== null && forn1.trim())
+      candidates.push({ idx: 1, price: p1, supplier: forn1.trim() });
     if (qtdFornecedores >= 2 && p2 !== null && forn2.trim())
       candidates.push({ idx: 2, price: p2, supplier: forn2.trim() });
     if (qtdFornecedores >= 3 && p3 !== null && forn3.trim())
@@ -212,7 +223,7 @@ export default function OCPage() {
     };
   }, [preco1, preco2, preco3, forn1, forn2, forn3, qtdFornecedores]);
 
-  // ====== preview whatsapp (mais bonito) ======
+  // ====== preview whatsapp ======
   const whatsappPreview = useMemo(() => {
     const titulo =
       tipo === "ABASTECIMENTO"
@@ -268,13 +279,19 @@ export default function OCPage() {
     if (tipo === "MANUTENCAO") {
       fornLines.push("", "*🏷️ Cotações*");
       fornLines.push(`1) ${f1 || "-"} ${p1 ? `— ${p1}` : ""}`.trim());
-      if (qtdFornecedores >= 2) fornLines.push(`2) ${f2 || "-"} ${p2 ? `— ${p2}` : ""}`.trim());
-      if (qtdFornecedores >= 3) fornLines.push(`3) ${f3 || "-"} ${p3 ? `— ${p3}` : ""}`.trim());
+      if (qtdFornecedores >= 2)
+        fornLines.push(`2) ${f2 || "-"} ${p2 ? `— ${p2}` : ""}`.trim());
+      if (qtdFornecedores >= 3)
+        fornLines.push(`3) ${f3 || "-"} ${p3 ? `— ${p3}` : ""}`.trim());
 
       fornLines.push(
         "",
         `*✅ Aprovado automático:* SIM`,
-        `*💰 Menor preço considerado:* ${computed.valorMenor !== null ? formatBRLFromNumber(computed.valorMenor) : "-"}`
+        `*💰 Menor preço considerado:* ${
+          computed.valorMenor !== null
+            ? formatBRLFromNumber(computed.valorMenor)
+            : "-"
+        }`
       );
       if (computed.fornecedorVencedor) {
         fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
@@ -312,7 +329,9 @@ export default function OCPage() {
   }
 
   function updateItem(i: number, patch: Partial<ItemRow>) {
-    setItems((prev) => prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+    setItems((prev) =>
+      prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row))
+    );
     setSaved(false);
     setSavedOrderId(null);
     setIdGerado("-");
@@ -339,13 +358,11 @@ export default function OCPage() {
     setSaving(true);
 
     try {
-      // header
       const payload: any = {
         date: nowDateBr(),
         time: nowTime(),
         mes_ano: mesAno(),
 
-        // mantém compatível com seus tipos atuais
         tipo_registro:
           tipo === "MANUTENCAO"
             ? "PEDIDO_COMPRA_MANUTENCAO"
@@ -367,23 +384,29 @@ export default function OCPage() {
         local_entrega: localEntrega || null,
         observacoes: observacoes || null,
 
-        // texto para o whatsapp (continua guardando)
         texto_original: whatsappPreview,
 
-        // aprovacao automatica
         aprovado_auto: true,
 
-        // fornecedores (colunas novas)
         fornecedor_1: tipo === "MANUTENCAO" ? (forn1 || null) : null,
-        fornecedor_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
-        fornecedor_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? (forn3 || null) : null,
+        fornecedor_2:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
+        fornecedor_3:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? (forn3 || null) : null,
 
         preco_1: tipo === "MANUTENCAO" ? parseBRLToNumber(preco1) : null,
-        preco_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? parseBRLToNumber(preco2) : null,
-        preco_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? parseBRLToNumber(preco3) : null,
+        preco_2:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 2
+            ? parseBRLToNumber(preco2)
+            : null,
+        preco_3:
+          tipo === "MANUTENCAO" && qtdFornecedores >= 3
+            ? parseBRLToNumber(preco3)
+            : null,
 
         valor_menor: tipo === "MANUTENCAO" ? computed.valorMenor : null,
-        fornecedor_vencedor: tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
+        fornecedor_vencedor:
+          tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
       };
 
       const { data: inserted, error: err1 } = await supabase
@@ -398,7 +421,6 @@ export default function OCPage() {
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
-      // items
       if (items.length) {
         const rows = items.map((it) => ({
           ordem_id: orderId,
@@ -422,7 +444,6 @@ export default function OCPage() {
     }
   }
 
-  // ====== UI helpers ======
   const typeButtons = [
     { key: "COMPRA" as const, label: "Compra", icon: "shopping_cart" },
     { key: "ABASTECIMENTO" as const, label: "Abastecimento", icon: "local_gas_station" },
@@ -434,7 +455,6 @@ export default function OCPage() {
 
   return (
     <>
-      {/* Material Symbols (Google) */}
       <style jsx global>{`
         @import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,300,0,0");
 
@@ -442,14 +462,9 @@ export default function OCPage() {
           font-family: "Material Symbols Outlined";
           font-weight: 300;
           font-style: normal;
-          font-size: 20px;
+          font-size: 22px;
           line-height: 1;
-          letter-spacing: normal;
-          text-transform: none;
           display: inline-block;
-          white-space: nowrap;
-          word-wrap: normal;
-          direction: ltr;
           -webkit-font-feature-settings: "liga";
           -webkit-font-smoothing: antialiased;
           color: var(--gp-muted);
@@ -460,7 +475,7 @@ export default function OCPage() {
           background: radial-gradient(circle at top, #f9fafb 0, #f3f4f6 45%, #e5e7eb);
           display: flex;
           justify-content: center;
-          padding: 32px 16px;
+          padding: 34px 16px 46px;
         }
 
         .oc-container {
@@ -473,17 +488,17 @@ export default function OCPage() {
 
         .oc-hero {
           text-align: center;
-          padding: 18px 14px 6px;
+          padding: 8px 14px 0;
         }
 
         .oc-logo {
           display: flex;
           justify-content: center;
-          margin-bottom: 10px;
+          margin-bottom: 12px;
         }
 
         .oc-logo img {
-          height: 72px; /* >>> logo maior */
+          height: 108px; /* >>> maior, como você pediu */
           width: auto;
           display: block;
           object-fit: contain;
@@ -492,7 +507,7 @@ export default function OCPage() {
         .oc-title {
           margin: 0;
           font-size: 34px;
-          font-weight: 700;
+          font-weight: 750;
           letter-spacing: -0.02em;
           color: var(--gp-text);
         }
@@ -534,10 +549,10 @@ export default function OCPage() {
           border: 1px solid #e5e7eb;
           background: #fff;
           border-radius: 14px;
-          padding: 12px 10px;
+          padding: 14px 10px;
           cursor: pointer;
           display: flex;
-          flex-direction: column; /* ícone acima */
+          flex-direction: column;
           align-items: center;
           justify-content: center;
           gap: 8px;
@@ -551,7 +566,7 @@ export default function OCPage() {
 
         .type-btn strong {
           font-size: 13px;
-          font-weight: 600;
+          font-weight: 650;
           color: var(--gp-text);
         }
 
@@ -571,12 +586,12 @@ export default function OCPage() {
         .field {
           display: flex;
           flex-direction: column;
-          gap: 6px;
+          gap: 7px; /* + respiro */
         }
 
         .label {
           font-size: 12px;
-          font-weight: 600;
+          font-weight: 650;
           color: #111827;
         }
 
@@ -587,19 +602,20 @@ export default function OCPage() {
           border: 1px solid #e5e7eb;
           background: #fff;
           border-radius: 12px;
-          padding: 11px 12px;
+          padding: 12px 12px; /* + confortável */
           font-size: 14px;
           outline: none;
         }
 
         .input:focus,
-        .textarea:focus {
+        .textarea:focus,
+        .select:focus {
           border-color: #cbd5e1;
           box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.15);
         }
 
         .textarea {
-          min-height: 96px;
+          min-height: 106px;
           resize: vertical;
         }
 
@@ -616,7 +632,7 @@ export default function OCPage() {
 
         .items-header {
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: space-between;
           gap: 10px;
           margin-top: 4px;
@@ -629,28 +645,30 @@ export default function OCPage() {
           color: #047857;
           border-radius: 14px;
           padding: 12px;
-          font-weight: 700;
+          font-weight: 800;
           cursor: pointer;
         }
+
+        /* === ITENS: arrumado (sem grudar / fontes consistentes) === */
 
         .item-card {
           margin-top: 12px;
           border: 1px solid #eef2f7;
           border-radius: 16px;
-          padding: 14px;
+          padding: 16px;
           background: #ffffff;
           box-shadow: 0 10px 20px rgba(15, 23, 42, 0.03);
         }
 
-        .item-grid {
+        .item-row {
           display: grid;
           grid-template-columns: 140px 1fr;
           gap: 12px;
         }
 
-        .item-grid-2 {
+        .item-row-2 {
           display: grid;
-          grid-template-columns: 1fr 130px;
+          grid-template-columns: 1fr 140px;
           gap: 12px;
           margin-top: 12px;
           align-items: end;
@@ -660,10 +678,10 @@ export default function OCPage() {
           border: 1px solid #e5e7eb;
           background: #fff;
           border-radius: 12px;
-          padding: 11px 12px;
+          padding: 12px 12px;
           cursor: pointer;
           color: var(--gp-muted);
-          font-weight: 600;
+          font-weight: 700;
         }
 
         .preview-toggle {
@@ -673,7 +691,7 @@ export default function OCPage() {
           border-radius: 14px;
           padding: 12px;
           cursor: pointer;
-          font-weight: 700;
+          font-weight: 800;
           color: #047857;
           display: flex;
           align-items: center;
@@ -690,7 +708,7 @@ export default function OCPage() {
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
             "Courier New", monospace;
           font-size: 13px;
-          line-height: 1.4;
+          line-height: 1.5;
           color: #0f172a;
         }
 
@@ -706,7 +724,7 @@ export default function OCPage() {
           color: #fff;
           border-radius: 14px;
           padding: 13px 14px;
-          font-weight: 800;
+          font-weight: 900;
           cursor: pointer;
         }
 
@@ -720,7 +738,7 @@ export default function OCPage() {
           background: #fff;
           border-radius: 14px;
           padding: 13px 14px;
-          font-weight: 800;
+          font-weight: 900;
           cursor: pointer;
           color: #0f172a;
         }
@@ -731,7 +749,7 @@ export default function OCPage() {
           color: #fff;
           border-radius: 14px;
           padding: 13px 14px;
-          font-weight: 900;
+          font-weight: 950;
           cursor: pointer;
         }
 
@@ -739,7 +757,7 @@ export default function OCPage() {
           margin-top: 10px;
           color: #b91c1c;
           font-size: 13px;
-          font-weight: 600;
+          font-weight: 700;
         }
 
         @media (max-width: 560px) {
@@ -750,14 +768,14 @@ export default function OCPage() {
           .grid-2 {
             grid-template-columns: 1fr;
           }
-          .item-grid {
+          .item-row {
             grid-template-columns: 1fr;
           }
-          .item-grid-2 {
+          .item-row-2 {
             grid-template-columns: 1fr;
           }
           .oc-logo img {
-            height: 64px;
+            height: 92px;
           }
         }
       `}</style>
@@ -766,7 +784,6 @@ export default function OCPage() {
         <div className="oc-container">
           <div className="oc-hero">
             <div className="oc-logo">
-              {/* Logo igual o dashboard */}
               <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
             </div>
             <h1 className="oc-title">Registrar OC</h1>
@@ -937,10 +954,12 @@ export default function OCPage() {
                     <div className="label" style={{ marginBottom: 4 }}>
                       Fornecedores (cotações)
                     </div>
-                    <div className="muted">Escolha 1–3 fornecedores e informe os preços.</div>
+                    <div className="muted">
+                      Escolha 1–3 fornecedores e informe os preços.
+                    </div>
                   </div>
 
-                  <div className="field" style={{ width: 140 }}>
+                  <div className="field" style={{ width: 150 }}>
                     <div className="label">Qtd</div>
                     <select
                       className="select"
@@ -962,7 +981,18 @@ export default function OCPage() {
                 <div className="grid-2" style={{ marginTop: 10 }}>
                   <div className="field">
                     <div className="label">Fornecedor 1</div>
-                    <input className="input" value={forn1} onChange={(e) => setForn1(e.target.value)} list="supList" placeholder="Digite ou selecione" />
+                    <input
+                      className="input"
+                      value={forn1}
+                      onChange={(e) => {
+                        setForn1(e.target.value);
+                        setSaved(false);
+                        setSavedOrderId(null);
+                        setIdGerado("-");
+                      }}
+                      list="supList"
+                      placeholder="Digite ou selecione"
+                    />
                   </div>
                   <div className="field">
                     <div className="label">Preço 1</div>
@@ -984,7 +1014,18 @@ export default function OCPage() {
                     <>
                       <div className="field">
                         <div className="label">Fornecedor 2</div>
-                        <input className="input" value={forn2} onChange={(e) => setForn2(e.target.value)} list="supList" placeholder="Digite ou selecione" />
+                        <input
+                          className="input"
+                          value={forn2}
+                          onChange={(e) => {
+                            setForn2(e.target.value);
+                            setSaved(false);
+                            setSavedOrderId(null);
+                            setIdGerado("-");
+                          }}
+                          list="supList"
+                          placeholder="Digite ou selecione"
+                        />
                       </div>
                       <div className="field">
                         <div className="label">Preço 2</div>
@@ -1008,7 +1049,18 @@ export default function OCPage() {
                     <>
                       <div className="field">
                         <div className="label">Fornecedor 3</div>
-                        <input className="input" value={forn3} onChange={(e) => setForn3(e.target.value)} list="supList" placeholder="Digite ou selecione" />
+                        <input
+                          className="input"
+                          value={forn3}
+                          onChange={(e) => {
+                            setForn3(e.target.value);
+                            setSaved(false);
+                            setSavedOrderId(null);
+                            setIdGerado("-");
+                          }}
+                          list="supList"
+                          placeholder="Digite ou selecione"
+                        />
                       </div>
                       <div className="field">
                         <div className="label">Preço 3</div>
@@ -1038,12 +1090,17 @@ export default function OCPage() {
                 <div className="muted" style={{ marginTop: 10 }}>
                   Menor preço considerado:{" "}
                   <strong style={{ color: "#0f172a" }}>
-                    {computed.valorMenor !== null ? formatBRLFromNumber(computed.valorMenor) : "-"}
+                    {computed.valorMenor !== null
+                      ? formatBRLFromNumber(computed.valorMenor)
+                      : "-"}
                   </strong>
                   {computed.fornecedorVencedor ? (
                     <>
                       {" "}
-                      • Vencedor: <strong style={{ color: "#0f172a" }}>{computed.fornecedorVencedor}</strong>
+                      • Vencedor:{" "}
+                      <strong style={{ color: "#0f172a" }}>
+                        {computed.fornecedorVencedor}
+                      </strong>
                     </>
                   ) : null}
                 </div>
@@ -1067,7 +1124,7 @@ export default function OCPage() {
               ) : (
                 items.map((it, idx) => (
                   <div key={idx} className="item-card">
-                    <div className="item-grid">
+                    <div className="item-row">
                       <div className="field">
                         <div className="label">Quantidade</div>
                         <input
@@ -1075,7 +1132,7 @@ export default function OCPage() {
                           inputMode="numeric"
                           value={it.qtd}
                           onChange={(e) => {
-                            const v = onlyDigits(e.target.value).slice(0, 6); // até 999999
+                            const v = onlyDigits(e.target.value).slice(0, 6);
                             updateItem(idx, { qtd: v });
                           }}
                           placeholder="Ex: 2"
@@ -1093,7 +1150,7 @@ export default function OCPage() {
                       </div>
                     </div>
 
-                    <div className="item-grid-2">
+                    <div className="item-row-2">
                       <div className="field">
                         <div className="label">Valor (opcional)</div>
                         <input
@@ -1138,7 +1195,6 @@ export default function OCPage() {
                 {saving ? "Salvando..." : "Salvar"}
               </button>
 
-              {/* Só aparece depois de salvar */}
               {saved && (
                 <>
                   <button className="btn-secondary" type="button" onClick={copyText}>
