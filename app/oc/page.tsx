@@ -526,7 +526,7 @@ export default function OcPage() {
             src="/gpasfalto-logo.png"
             alt="GP Asfalto"
             style={{
-              height: 240,
+              height: 120,
               width: "auto",
               display: "block",
               margin: "0 auto 8px",
