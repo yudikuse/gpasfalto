@@ -1,294 +1,319 @@
-/* FILE: app/globals.css */
+/* ===== ORDEM DE COMPRA (OC) – FORMULÁRIO MOBILE/DESKTOP ===== */
 
-/* Paleta baseada na logo GP Asfalto – fundo claro */
-:root {
-  --gp-bg: #f3f4f6;            /* fundo da página */
-  --gp-surface: #ffffff;       /* cartões e seções */
-  --gp-surface-soft: #f9fafb;  /* áreas suaves */
-  --gp-accent: #ff4b2b;        /* vermelho/laranja da logo */
-  --gp-accent-soft: #ffe2d6;   /* versão suave do accent */
-  --gp-text: #111827;          /* texto principal */
-  --gp-muted: #6b7280;         /* texto secundário */
-  --gp-muted-soft: #9ca3af;    /* texto bem suave */
-}
-
-*,
-*::before,
-*::after {
-  box-sizing: border-box;
-}
-
-body {
-  margin: 0;
+.oc-root {
   min-height: 100vh;
-  background: var(--gp-bg);
-  color: var(--gp-text);
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
-}
-
-/* LAYOUT GERAL */
-
-.page-root {
-  min-height: 100vh;
-  background: radial-gradient(circle at top, #f9fafb 0, #f3f4f6 45%, #e5e7eb);
+  background: #f3f4f6;
+  padding: 24px 12px;
   display: flex;
   justify-content: center;
-  padding: 32px 16px;
 }
 
-.page-container {
+.oc-container {
   width: 100%;
-  max-width: 1120px;
+  max-width: 960px;
   display: flex;
   flex-direction: column;
-  gap: 24px;
-}
-
-/* CABEÇALHO / BRANDING */
-
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 16px;
 }
 
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 12px;
+/* Header */
+
+.oc-header-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #111827;
+  margin: 0;
 }
 
-.brand-logo {
-  width: 44px;
-  height: 44px;
+.oc-header-sub {
+  font-size: 0.85rem;
+  color: #6b7280;
+  margin: 4px 0 0 0;
+}
+
+/* Grid principal */
+
+.oc-main-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* desktop */
+@media (min-width: 768px) {
+  .oc-main-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 2fr) minmax(0, 1.4fr);
+    align-items: flex-start;
+    gap: 20px;
+  }
+}
+
+/* Cards */
+
+.oc-card {
+  background: var(--gp-surface);
+  border-radius: 18px;
+  padding: 16px 18px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
+}
+
+.oc-card-title {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #111827;
+  margin: 0 0 8px 0;
+}
+
+/* Tipo de pedido */
+
+.oc-type-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.oc-type-btn {
   border-radius: 14px;
   border: 1px solid #e5e7eb;
-  background: #ffffff;
-  object-fit: contain;
-}
-
-.brand-text-main {
-  font-size: 1.6rem;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-}
-
-.brand-text-sub {
+  background: #f9fafb;
   font-size: 0.8rem;
-  color: var(--gp-muted-soft);
-}
-
-.header-right {
-  text-align: right;
-  font-size: 0.75rem;
-  color: var(--gp-muted);
-}
-
-.header-pill {
-  display: inline-flex;
+  color: #374151;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: #ffffff;
-  border: 1px solid #e5e7eb;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  gap: 4px;
+  cursor: pointer;
 }
 
-/* FILTROS */
+.oc-type-btn span {
+  display: block;
+}
 
-.filter-bar {
+.oc-type-btn-icon {
+  font-size: 1rem;
+}
+
+.oc-type-btn--active {
+  border-color: #059669;
+  background: #ecfdf5;
+  color: #047857;
+  box-shadow: 0 4px 10px rgba(5, 150, 105, 0.2);
+}
+
+/* Campos do formulário */
+
+.oc-fields {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 10px;
-  padding: 10px 14px;
-  border-radius: 999px;
-  background: #ffffff;
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
 }
 
-.filter-label {
+.oc-field-label {
   font-size: 0.75rem;
-  color: var(--gp-muted-soft);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 3px;
 }
 
-.filter-group {
+.oc-input,
+.oc-textarea {
+  width: 100%;
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  padding: 8px 10px;
+  font-size: 0.85rem;
+  color: #111827;
+}
+
+.oc-input::placeholder,
+.oc-textarea::placeholder {
+  color: #9ca3af;
+}
+
+.oc-input:focus,
+.oc-textarea:focus {
+  outline: none;
+  border-color: #059669;
+  box-shadow: 0 0 0 1px #05966933;
+  background: #ffffff;
+}
+
+.oc-textarea {
+  resize: vertical;
+  min-height: 72px;
+}
+
+/* Itens */
+
+.oc-items-empty {
+  font-size: 0.75rem;
+  color: #9ca3af;
+  margin-top: 6px;
+}
+
+.oc-item-block {
+  border-radius: 12px;
+  border: 1px solid #e5e7eb;
+  background: #f9fafb;
+  padding: 8px 10px;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.8rem;
+}
+
+.oc-item-row {
+  display: flex;
   gap: 8px;
+}
+
+.oc-item-row > div {
   flex: 1;
 }
 
-.filter-chip {
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  border-radius: 999px;
-  font-size: 0.75rem;
-  color: var(--gp-muted);
-  background: var(--gp-surface-soft);
-  border: none;
-}
-
-/* CARDS RESUMO */
-
-.summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 16px;
-}
-
-.summary-card {
-  border-radius: 18px;
-  padding: 16px 18px;
-  background: var(--gp-surface);
-  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.summary-label {
+.oc-item-label {
   font-size: 0.7rem;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  color: var(--gp-muted-soft);
+  font-weight: 500;
+  color: #374151;
+  margin-bottom: 2px;
 }
 
-.summary-value {
-  font-size: 1.9rem;
-  font-weight: 600;
+.oc-item-input {
+  width: 100%;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  padding: 6px 8px;
+  font-size: 0.75rem;
 }
 
-.summary-subvalue {
+.oc-item-input::placeholder {
+  color: #9ca3af;
+}
+
+.oc-item-input:focus {
+  outline: none;
+  border-color: #059669;
+  box-shadow: 0 0 0 1px #05966933;
+}
+
+.oc-item-remove {
+  align-self: flex-end;
+  border-radius: 8px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  padding: 4px 8px;
+  font-size: 0.7rem;
+  color: #6b7280;
+  cursor: pointer;
+}
+
+.oc-item-remove:hover {
+  background: #f3f4f6;
+}
+
+/* Botão adicionar item */
+
+.oc-add-item {
+  width: 100%;
+  border-radius: 999px;
+  border: 1px dashed #6ee7b7;
+  background: #ecfdf5;
+  padding: 8px 10px;
   font-size: 0.8rem;
-  color: var(--gp-muted);
+  font-weight: 500;
+  color: #047857;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
 }
 
-/* SEÇÕES */
+/* Preview WhatsApp */
 
-.section-card {
-  border-radius: 18px;
-  padding: 18px 20px;
-  background: var(--gp-surface);
-  box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06);
-}
-
-.section-header {
+.oc-preview-toggle {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: 10px;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.oc-preview-box {
+  margin-top: 8px;
+  border-radius: 12px;
+  border: 1px solid #bbf7d0;
+  background: #ecfdf5;
+  padding: 10px 12px;
+  font-size: 0.78rem;
+  color: #065f46;
+  white-space: pre-wrap;
+}
+
+/* Ações */
+
+.oc-actions {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
-.section-title {
-  font-size: 0.95rem;
-  font-weight: 600;
-}
-
-.section-subtitle {
-  font-size: 0.75rem;
-  color: var(--gp-muted-soft);
-}
-
-/* TABELA */
-
-.table-wrapper {
-  overflow-x: auto;
-}
-
-.table {
+.oc-btn {
   width: 100%;
-  border-collapse: collapse;
-  font-size: 0.8rem;
+  border-radius: 999px;
+  border: none;
+  padding: 10px 14px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
 }
 
-.table th,
-.table td {
-  padding: 6px 10px;
-  text-align: left;
+.oc-btn-primary {
+  background: #059669;
+  color: #ffffff;
 }
 
-.table thead tr {
-  color: var(--gp-muted);
-  border-bottom: 1px solid #e5e7eb;
+.oc-btn-primary:hover {
+  background: #047857;
 }
 
-.table tbody tr {
-  border-bottom: 1px solid #f3f4f6;
+.oc-btn-outline {
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid #d1d5db;
 }
 
-.table tbody tr:hover {
+.oc-btn-outline:hover {
   background: #f9fafb;
 }
 
-.table td:last-child,
-.table th:last-child {
-  text-align: right;
-}
-
-/* GRÁFICO POR MÊS (BARRAS SIMPLES) */
-
-.chart-container {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.chart-bars {
-  display: flex;
-  align-items: flex-end;
-  gap: 10px;
-  height: 180px;
-}
-
-.chart-bar {
-  flex: 1;
-  border-radius: 999px 999px 0 0;
-  background: linear-gradient(
-    to top,
-    rgba(255, 75, 43, 0.15),
-    rgba(255, 75, 43, 0.9)
-  );
-  position: relative;
-  overflow: hidden;
-}
-
-.chart-bar-inner {
-  position: absolute;
-  inset: 0;
-}
-
-.chart-bar-label {
-  margin-top: 4px;
-  font-size: 0.7rem;
-  text-align: center;
-  color: var(--gp-muted);
-}
-
-.chart-bar-value {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  bottom: 6px;
-  font-size: 0.7rem;
+.oc-btn-whatsapp {
+  background: #25d366;
   color: #ffffff;
-  font-weight: 600;
-  text-shadow: 0 1px 3px rgba(15, 23, 42, 0.7);
 }
 
-/* ESTADOS */
+.oc-btn-whatsapp:hover {
+  background: #1ebe5b;
+}
 
-.state-card {
-  border-radius: 18px;
-  padding: 16px 18px;
-  background: var(--gp-surface);
-  border: 1px dashed #e5e7eb;
-  font-size: 0.9rem;
-  color: var(--gp-muted);
-  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
+.oc-feedback {
+  font-size: 0.75rem;
+  color: #047857;
+}
+
+.oc-error {
+  font-size: 0.75rem;
+  color: #b91c1c;
+}
+
+/* Responsivo extra: limite de largura pro mobile pra parecer app */
+@media (max-width: 480px) {
+  .oc-container {
+    max-width: 420px;
+  }
 }
