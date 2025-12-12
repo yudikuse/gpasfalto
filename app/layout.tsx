@@ -1,16 +1,25 @@
 // FILE: app/layout.tsx
 import "./globals.css";
-import type { ReactNode } from "react";
 
 export const metadata = {
-  title: "GP Asfalto – Dashboard de Manutenção 2025",
-  description:
-    "Dashboard de custos de manutenção da GP Asfalto baseado nas ordens de compra de 2025.",
+  title: "GP Asfalto",
+  description: "Painel GP Asfalto",
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode;
+}) {
   return (
     <html lang="pt-BR">
+      <head>
+        {/* Material Symbols (Google Icons) */}
+        <link
+          rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0"
+        />
+      </head>
       <body>{children}</body>
     </html>
   );
