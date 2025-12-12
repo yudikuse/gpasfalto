@@ -28,7 +28,7 @@ const ORDER_TYPE_LABELS: Record<OrderType, string> = {
   OUTRO: "Outro",
 };
 
-/** quais campos aparecem por tipo – padrão MANUTENÇÃO */
+// Campos por tipo (padrão MANUTENÇÃO)
 type OrderTypeConfig = {
   showEquipamento: boolean;
   showObra: boolean;
@@ -82,7 +82,6 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
   },
 };
 
-/** rótulo que vai para a coluna tipo_registro da orders_2025_raw */
 const ORDER_TYPE_DB_LABEL: Record<OrderType, string> = {
   MANUTENCAO: "PEDIDO_COMPRA_MANUTENCAO",
   COMPRA: "PEDIDO_COMPRA",
@@ -92,48 +91,81 @@ const ORDER_TYPE_DB_LABEL: Record<OrderType, string> = {
   OUTRO: "OC",
 };
 
-/** sugestões base – depois você troca pelos reais se quiser */
-const EQUIPAMENTOS_SUGESTOES_BASE = [
-  "UA-01",
-  "UA-02",
-  "UA-03",
-  "RC05",
-  "TP03",
-  "PC07",
-  "CG02",
-];
+const OBRAS_SUGESTOES = ["Usina", "Patrolamento", "Tapa-buraco", "Serviço interno"];
+const LOCAIS_SUGESTOES = ["Usina", "Oficina", "Almoxarifado", "Hidrovolt"];
+const OPERADORES_SUGESTOES = ["Marco Túlio", "João", "Carlos", "Rafael", "Bruno"];
 
-const OBRAS_SUGESTOES = [
-  "Usina",
-  "Patrolamento",
-  "Tapa-buraco",
-  "Serviço interno",
-  "Obra externa",
-];
+function Icon({ name }: { name: OrderType }) {
+  // Material Icons (Google) em SVG — cinza, sóbrio, alinhado
+  const common = {
+    width: 20,
+    height: 20,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    strokeWidth: 1.8,
+    strokeLinecap: "round" as const,
+    strokeLinejoin: "round" as const,
+  };
 
-const LOCAIS_SUGESTOES = [
-  "Usina",
-  "Oficina",
-  "Almoxarifado",
-  "Hidrovolt",
-  "Posto conveniado",
-];
-
-const OPERADORES_SUGESTOES = [
-  "Marco Túlio",
-  "João",
-  "Carlos",
-  "Rafael",
-  "Bruno",
-];
+  switch (name) {
+    case "COMPRA":
+      return (
+        <svg {...common}>
+          <path d="M6 6h15l-1.5 8h-12L6 6Z" />
+          <path d="M6 6 5 3H2" />
+          <path d="M9 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" />
+          <path d="M18 20a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" />
+        </svg>
+      );
+    case "ABASTECIMENTO":
+      return (
+        <svg {...common}>
+          <path d="M7 4h8v6H7V4Z" />
+          <path d="M15 7h2.5a1.5 1.5 0 0 1 1.5 1.5V20H7V10" />
+          <path d="M10 13h4" />
+        </svg>
+      );
+    case "MANUTENCAO":
+      return (
+        <svg {...common}>
+          <path d="M21 8a5 5 0 0 1-7 4.6L8.6 18 6 15.4l5.4-5.4A5 5 0 0 1 16 3l-2 2 3 3 2-2Z" />
+          <path d="M6 20l-2-2" />
+        </svg>
+      );
+    case "SERVICOS":
+      return (
+        <svg {...common}>
+          <path d="M7 3h10v18H7V3Z" />
+          <path d="M9 7h6" />
+          <path d="M9 11h6" />
+          <path d="M9 15h4" />
+        </svg>
+      );
+    case "PECAS":
+      return (
+        <svg {...common}>
+          <path d="M12 8a4 4 0 0 0-4 4v1H6v-1a6 6 0 0 1 12 0v1h-2v-1a4 4 0 0 0-4-4Z" />
+          <path d="M8 13h8v8H8v-8Z" />
+        </svg>
+      );
+    case "OUTRO":
+    default:
+      return (
+        <svg {...common}>
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </svg>
+      );
+  }
+}
 
 export default function OcPage() {
-  // padrão: MANUTENÇÃO
   const [orderType, setOrderType] = useState<OrderType>("MANUTENCAO");
 
-  // dados principais
   const [orderId, setOrderId] = useState<number | null>(null);
   const [numeroOc, setNumeroOc] = useState("");
+
   const [equipamento, setEquipamento] = useState("");
   const [obra, setObra] = useState("");
   const [operador, setOperador] = useState("");
@@ -143,7 +175,6 @@ export default function OcPage() {
 
   const [items, setItems] = useState<OrderItem[]>([]);
 
-  // estados auxiliares
   const [saving, setSaving] = useState(false);
   const [hasSaved, setHasSaved] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(true);
@@ -159,7 +190,7 @@ export default function OcPage() {
     setFeedback(null);
   }
 
-  /** carrega todos os códigos de equipamento existentes na tabela */
+  // TODOS equipamentos
   useEffect(() => {
     async function loadEquipamentos() {
       const { data, error } = await supabase
@@ -169,17 +200,15 @@ export default function OcPage() {
       if (!error && data) {
         const set = new Set<string>();
         data.forEach((row: any) => {
-          if (row.codigo_equipamento) {
-            set.add(String(row.codigo_equipamento));
-          }
+          if (row.codigo_equipamento) set.add(String(row.codigo_equipamento));
         });
-        setEquipOptionsFromDb(Array.from(set));
+        setEquipOptionsFromDb([...set].sort((a, b) => a.localeCompare(b)));
       }
     }
     loadEquipamentos();
   }, []);
 
-  /** sugere o próximo número de OC com base no último registro */
+  // Próxima OC sugerida (editável)
   useEffect(() => {
     async function loadNextOc() {
       const { data, error } = await supabase
@@ -190,117 +219,78 @@ export default function OcPage() {
         .limit(1);
 
       if (!error && data && data.length > 0) {
-        const last = data[0].numero_oc as string;
-        if (!last) return;
+        const last = String(data[0].numero_oc || "");
         const match = last.match(/(\d+)/);
         if (match) {
           const prefix = last.replace(match[1], "");
           const nextNum = String(parseInt(match[1], 10) + 1);
           setNumeroOc(prefix + nextNum);
-        } else {
-          setNumeroOc(last);
         }
       }
     }
     loadNextOc();
   }, []);
 
-  /** lista final de opções de equipamento (base + BD) */
-  const allEquipOptions = useMemo(() => {
-    const combined = [...EQUIPAMENTOS_SUGESTOES_BASE];
-    equipOptionsFromDb.forEach((code) => {
-      if (!combined.includes(code)) combined.push(code);
-    });
-    return combined.sort((a, b) => a.localeCompare(b));
-  }, [equipOptionsFromDb]);
-
   function addItem() {
     markDirty();
     setItems((prev) => [
       ...prev,
-      {
-        id: crypto.randomUUID(),
-        quantity: "",
-        description: "",
-        value: "",
-      },
+      { id: crypto.randomUUID(), quantity: "", description: "", value: "" },
     ]);
   }
 
   function updateItem(id: string, field: keyof OrderItem, value: string) {
     markDirty();
-    setItems((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, [field]: value } : item
-      )
-    );
+    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, [field]: value } : it)));
   }
 
   function removeItem(id: string) {
     markDirty();
-    setItems((prev) => prev.filter((item) => item.id !== id));
+    setItems((prev) => prev.filter((it) => it.id !== id));
   }
 
-  /** mensagem para WhatsApp com layout mais organizado */
   const previewText = useMemo(() => {
     const lines: string[] = [];
 
-    // título principal
-    if (orderType === "COMPRA") {
-      lines.push("*PEDIDO DE COMPRA*");
-    } else if (orderType === "ABASTECIMENTO") {
-      lines.push("*PEDIDO DE ABASTECIMENTO DE EQUIPAMENTOS*");
-    } else if (orderType === "MANUTENCAO") {
-      lines.push("*PEDIDO DE COMPRA MANUTENÇÃO*");
-    } else if (orderType === "PECAS") {
-      lines.push("*PEDIDO DE PEÇAS*");
-    } else if (orderType === "SERVICOS") {
-      lines.push("*PEDIDO DE SERVIÇOS*");
+    const header =
+      orderType === "COMPRA"
+        ? "🧾 *PEDIDO DE COMPRA*"
+        : orderType === "ABASTECIMENTO"
+        ? "⛽ *PEDIDO DE ABASTECIMENTO*"
+        : orderType === "MANUTENCAO"
+        ? "🛠️ *PEDIDO DE COMPRA – MANUTENÇÃO*"
+        : orderType === "PECAS"
+        ? "⚙️ *PEDIDO DE PEÇAS*"
+        : orderType === "SERVICOS"
+        ? "📄 *PEDIDO DE SERVIÇOS*"
+        : `📌 *PEDIDO – ${ORDER_TYPE_LABELS[orderType]}*`;
+
+    lines.push(header);
+    lines.push(`• *OC:* ${numeroOc || "-"}`);
+    lines.push(`• *ID:* ${orderId != null ? String(orderId) : "-"}`);
+    lines.push("");
+
+    if (config.showObra) lines.push(`• *Obra:* ${obra || "-"}`);
+    if (config.showEquipamento) lines.push(`• *Equipamento:* ${equipamento || "-"}`);
+    if (config.showOperador) lines.push(`• *Operador:* ${operador || "-"}`);
+    if (config.showHorimetro) lines.push(`• *Horímetro:* ${horimetro || "-"}`);
+    if (config.showLocalEntrega) lines.push(`• *Entrega:* ${localEntrega || "-"}`);
+
+    lines.push("");
+    lines.push("*Itens:*");
+
+    if (items.length === 0) {
+      lines.push("• (sem itens)");
     } else {
-      lines.push(`*PEDIDO – ${ORDER_TYPE_LABELS[orderType]}*`);
-    }
-
-    if (numeroOc) {
-      lines.push(`*OC:* ${numeroOc}`);
-    }
-    if (orderId != null) {
-      lines.push(`*ID:* ${orderId}`);
-    }
-
-    lines.push("────────────────────");
-
-    if (config.showObra && obra) lines.push(`*Obra:* ${obra}`);
-    if (config.showEquipamento && equipamento)
-      lines.push(`*Equipamento:* ${equipamento}`);
-    if (config.showOperador && operador) lines.push(`*Operador:* ${operador}`);
-    if (config.showHorimetro && horimetro)
-      lines.push(`*Horímetro:* ${horimetro}`);
-    if (config.showLocalEntrega && localEntrega)
-      lines.push(`*Local de entrega:* ${localEntrega}`);
-
-    if (
-      (config.showObra && obra) ||
-      (config.showEquipamento && equipamento) ||
-      (config.showOperador && operador) ||
-      (config.showHorimetro && horimetro) ||
-      (config.showLocalEntrega && localEntrega)
-    ) {
-      lines.push("────────────────────");
-    }
-
-    if (items.length > 0) {
-      lines.push("*Itens:*");
-      lines.push("");
       items.forEach((item) => {
-        const valorParte = item.value ? ` – R$ ${item.value}` : "";
-        const qtdParte = item.quantity ? `${item.quantity} ` : "";
-        lines.push(`• ${qtdParte}${item.description}${valorParte}`);
+        const valorParte = item.value ? ` — R$ ${item.value}` : "";
+        const qtdParte = item.quantity ? `${item.quantity}x ` : "";
+        lines.push(`• ${qtdParte}${item.description || "(sem descrição)"}${valorParte}`);
       });
     }
 
     if (observacoes) {
       lines.push("");
-      lines.push("────────────────────");
       lines.push(`*Obs:* ${observacoes}`);
     }
 
@@ -330,19 +320,10 @@ export default function OcPage() {
 
     try {
       const now = new Date();
-      const dateStr = now.toLocaleDateString("pt-BR"); // dd/mm/aaaa
-      const timeStr = now
-        .toLocaleTimeString("pt-BR", {
-          hour12: false,
-        })
-        .split(" ")[0]; // hh:mm:ss
-      const mesAno = `${now.getFullYear()}-${String(
-        now.getMonth() + 1
-      ).padStart(2, "0")}`;
-
+      const dateStr = now.toLocaleDateString("pt-BR");
+      const timeStr = now.toLocaleTimeString("pt-BR", { hour12: false }).split(" ")[0];
+      const mesAno = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
       const tipoRegistro = ORDER_TYPE_DB_LABEL[orderType];
-
-      // material/quantidade_texto principais = primeiro item
       const firstItem = items[0];
 
       const payload = {
@@ -371,18 +352,14 @@ export default function OcPage() {
         .select()
         .single();
 
-      if (insertError) {
-        throw new Error(insertError.message);
-      }
+      if (insertError) throw new Error(insertError.message);
 
       const newId = data.id as number;
       setOrderId(newId);
 
-      // grava itens detalhados
       if (items.length > 0) {
         const itemsPayload = items.map((item) => {
-          const qtdNumStr = item.quantity.replace(".", "").replace(",", ".");
-          const qtdNum = parseFloat(qtdNumStr);
+          const qtdNum = parseFloat(item.quantity.replace(".", "").replace(",", "."));
           return {
             ordem_id: newId,
             data: dateStr,
@@ -397,10 +374,7 @@ export default function OcPage() {
         const { error: itemsError } = await supabase
           .from("orders_2025_items")
           .insert(itemsPayload);
-
-        if (itemsError) {
-          console.error(itemsError);
-        }
+        if (itemsError) console.error(itemsError);
       }
 
       setHasSaved(true);
@@ -414,296 +388,191 @@ export default function OcPage() {
   }
 
   async function handleCopy() {
-    if (!previewText || !hasSaved) return;
-    try {
-      await navigator.clipboard.writeText(previewText);
-      setFeedback("Mensagem copiada para a área de transferência.");
-    } catch {
-      setError("Não foi possível copiar a mensagem.");
-    }
+    if (!hasSaved) return;
+    await navigator.clipboard.writeText(previewText);
+    setFeedback("Mensagem copiada.");
   }
 
   function handleWhatsapp() {
-    if (!previewText || !hasSaved) return;
-    const url = `https://wa.me/?text=${encodeURIComponent(previewText)}`;
-    window.open(url, "_blank");
+    if (!hasSaved) return;
+    window.open(`https://wa.me/?text=${encodeURIComponent(previewText)}`, "_blank");
   }
 
   return (
     <main className="page-root">
       <div className="page-container" style={{ maxWidth: 520 }}>
-        {/* Cabeçalho + logo central usando o mesmo "card" do dashboard */}
-        <div className="section-card" style={{ paddingBottom: 16 }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 6,
-            }}
-          >
-            <div
-              style={{
-                width: 52,
-                height: 52,
-                borderRadius: 18,
-                background: "#ffffff",
-                border: "1px solid #e5e7eb",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                fontWeight: 700,
-                fontSize: "1rem",
-                color: "#ff4b2b",
-                boxShadow: "0 8px 20px rgba(15,23,42,0.08)",
-              }}
-            >
-              GP
-            </div>
-            <div style={{ textAlign: "center" }}>
-              <h1
-                style={{
-                  margin: 0,
-                  fontSize: "1.1rem",
-                  fontWeight: 600,
-                }}
-              >
-                Registrar Ordem de Compra
-              </h1>
-              <p
-                style={{
-                  margin: "4px 0 0 0",
-                  fontSize: "0.8rem",
-                  color: "#9ca3af",
-                }}
-              >
-                Criar OC rápida e padrão para WhatsApp
-              </p>
+        {/* HEADER IGUAL “CARA” DO DASH (logo real, sem bolinha GP) */}
+        <header className="page-header">
+          <div className="brand">
+            <img className="brand-logo" src="/gpasfalto-logo.png" alt="GP Asfalto" />
+            <div>
+              <div className="brand-text-main">Registrar OC</div>
+              <div className="brand-text-sub">Criar OC rápida e padrão para WhatsApp</div>
             </div>
           </div>
-        </div>
-
-        {/* Tipo de pedido */}
-        <div className="section-card">
-          <div className="section-header" style={{ marginBottom: 8 }}>
-            <div className="section-title" style={{ fontSize: "0.85rem" }}>
-              Tipo de Pedido
-            </div>
+          <div className="header-right">
+            <span className="header-pill">OC</span>
           </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-              gap: 8,
-            }}
-          >
-            {(
-              [
-                "COMPRA",
-                "ABASTECIMENTO",
-                "MANUTENCAO",
-                "SERVICOS",
-                "PECAS",
-                "OUTRO",
-              ] as OrderType[]
-            ).map((type) => {
-              const selected = orderType === type;
+        </header>
 
-              const iconChar =
-                type === "COMPRA"
-                  ? "⬢"
-                  : type === "ABASTECIMENTO"
-                  ? "⬡"
-                  : type === "MANUTENCAO"
-                  ? "⬟"
-                  : type === "SERVICOS"
-                  ? "⬠"
-                  : type === "PECAS"
-                  ? "◆"
-                  : "＋";
+        {/* Tipo de pedido (ícone acima, cinza, alinhado) */}
+        <section className="section-card">
+          <div className="section-header" style={{ marginBottom: 10 }}>
+            <div className="section-title">Tipo de Pedido</div>
+          </div>
 
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+            {(Object.keys(ORDER_TYPE_LABELS) as OrderType[]).map((t) => {
+              const selected = orderType === t;
               return (
                 <button
-                  key={type}
+                  key={t}
                   type="button"
                   onClick={() => {
                     markDirty();
-                    setOrderType(type);
+                    setOrderType(t);
                   }}
                   style={{
                     borderRadius: 14,
-                    border: "1px solid #e5e7eb",
-                    background: "#ffffff",
-                    padding: "8px 10px",
-                    fontSize: "0.8rem",
-                    color: "#374151",
+                    border: "1px solid",
+                    borderColor: selected ? "#10b981" : "#e5e7eb",
+                    background: selected ? "#ecfdf5" : "#ffffff",
+                    padding: "10px 10px",
+                    cursor: "pointer",
                     display: "flex",
+                    flexDirection: "column",
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 6,
-                    cursor: "pointer",
-                    boxShadow: selected
-                      ? "0 4px 12px rgba(16,185,129,0.3)"
-                      : "none",
-                    borderColor: selected ? "#10b981" : "#e5e7eb",
+                    minHeight: 72,
                   }}
                 >
-                  <span
-                    style={{
-                      fontSize: "1rem",
-                      color: "#6b7280",
-                    }}
-                  >
-                    {iconChar}
-                  </span>
-                  <span>{ORDER_TYPE_LABELS[type]}</span>
+                  <div style={{ color: "#6b7280" }}>
+                    <Icon name={t} />
+                  </div>
+                  <div style={{ fontSize: "0.8rem", fontWeight: 500, color: "#374151" }}>
+                    {ORDER_TYPE_LABELS[t]}
+                  </div>
                 </button>
               );
             })}
           </div>
-        </div>
+        </section>
 
         {/* Dados essenciais */}
-        <div className="section-card">
-          <div className="section-header" style={{ marginBottom: 8 }}>
-            <div className="section-title" style={{ fontSize: "0.85rem" }}>
-              Dados Essenciais
-            </div>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {/* ID e OC */}
-            <div
-              style={{
-                display: "flex",
-                gap: 8,
-              }}
-            >
-              <div style={{ flex: 1 }}>
-                <Field
-                  label="ID"
-                  placeholder="-"
-                  value={orderId != null ? String(orderId) : ""}
-                  onChange={() => {}}
-                  readOnly
-                />
-              </div>
-              <div style={{ flex: 1 }}>
-                <Field
-                  label="OC"
-                  placeholder="OC2025..."
-                  value={numeroOc}
-                  onChange={(v) => {
-                    markDirty();
-                    setNumeroOc(v);
-                  }}
-                />
-              </div>
-            </div>
-
-            {config.showEquipamento && (
-              <Field
-                label="Equipamento"
-                placeholder="Digite ou selecione o equipamento"
-                value={equipamento}
-                onChange={(v) => {
-                  markDirty();
-                  setEquipamento(v);
-                }}
-                datalistId="equipamentos-list"
-              />
-            )}
-
-            {config.showObra && (
-              <Field
-                label="Obra"
-                placeholder="Nome da obra"
-                value={obra}
-                onChange={(v) => {
-                  markDirty();
-                  setObra(v);
-                }}
-                datalistId="obras-list"
-              />
-            )}
-
-            {config.showOperador && (
-              <Field
-                label="Operador"
-                placeholder="Nome do operador"
-                value={operador}
-                onChange={(v) => {
-                  markDirty();
-                  setOperador(v);
-                }}
-                datalistId="operadores-list"
-              />
-            )}
-
-            {config.showHorimetro && (
-              <Field
-                label="Horímetro"
-                placeholder="Ex: 1234h"
-                value={horimetro}
-                onChange={(v) => {
-                  markDirty();
-                  setHorimetro(v);
-                }}
-              />
-            )}
-
-            {config.showLocalEntrega && (
-              <Field
-                label="Local de entrega"
-                placeholder="Endereço ou local"
-                value={localEntrega}
-                onChange={(v) => {
-                  markDirty();
-                  setLocalEntrega(v);
-                }}
-                datalistId="locais-list"
-              />
-            )}
-
+        <section className="section-card">
+          <div className="section-header">
             <div>
-              <div
-                style={{
-                  fontSize: "0.75rem",
-                  fontWeight: 500,
-                  color: "#374151",
-                  marginBottom: 2,
-                }}
-              >
-                Observações
-              </div>
-              <textarea
-                style={{
-                  width: "100%",
-                  borderRadius: 12,
-                  border: "1px solid #e5e7eb",
-                  background: "#f9fafb",
-                  padding: "8px 10px",
-                  fontSize: "0.8rem",
-                  resize: "vertical",
-                  minHeight: 70,
-                }}
-                placeholder="Informações adicionais..."
-                value={observacoes}
-                onChange={(e) => {
-                  markDirty();
-                  setObservacoes(e.target.value);
-                }}
-              />
+              <div className="section-title">Dados Essenciais</div>
+              <div className="section-subtitle">Padrão: Manutenção</div>
             </div>
           </div>
-        </div>
+
+          <div style={{ display: "flex", gap: 10 }}>
+            <Field label="ID" value={orderId != null ? String(orderId) : ""} placeholder="-" readOnly />
+            <Field
+              label="OC"
+              value={numeroOc}
+              placeholder="OC2025..."
+              onChange={(v) => {
+                markDirty();
+                setNumeroOc(v);
+              }}
+            />
+          </div>
+
+          {config.showEquipamento && (
+            <Field
+              label="Equipamento"
+              value={equipamento}
+              placeholder="Digite ou selecione o equipamento"
+              onChange={(v) => {
+                markDirty();
+                setEquipamento(v);
+              }}
+              datalistId="equipamentos-list"
+            />
+          )}
+
+          {config.showObra && (
+            <Field
+              label="Obra"
+              value={obra}
+              placeholder="Nome da obra"
+              onChange={(v) => {
+                markDirty();
+                setObra(v);
+              }}
+              datalistId="obras-list"
+            />
+          )}
+
+          {config.showOperador && (
+            <Field
+              label="Operador"
+              value={operador}
+              placeholder="Nome do operador"
+              onChange={(v) => {
+                markDirty();
+                setOperador(v);
+              }}
+              datalistId="operadores-list"
+            />
+          )}
+
+          {config.showHorimetro && (
+            <Field
+              label="Horímetro"
+              value={horimetro}
+              placeholder="Ex: 1234h"
+              onChange={(v) => {
+                markDirty();
+                setHorimetro(v);
+              }}
+            />
+          )}
+
+          {config.showLocalEntrega && (
+            <Field
+              label="Local de entrega"
+              value={localEntrega}
+              placeholder="Endereço ou local"
+              onChange={(v) => {
+                markDirty();
+                setLocalEntrega(v);
+              }}
+              datalistId="locais-list"
+            />
+          )}
+
+          <div style={{ marginTop: 10 }}>
+            <div className="section-subtitle" style={{ marginBottom: 6 }}>
+              Observações
+            </div>
+            <textarea
+              style={{
+                width: "100%",
+                borderRadius: 12,
+                border: "1px solid #e5e7eb",
+                background: "#f9fafb",
+                padding: "10px 12px",
+                fontSize: "0.85rem",
+                minHeight: 80,
+              }}
+              placeholder="Informações adicionais..."
+              value={observacoes}
+              onChange={(e) => {
+                markDirty();
+                setObservacoes(e.target.value);
+              }}
+            />
+          </div>
+        </section>
 
         {/* Itens */}
-        <div className="section-card">
-          <div className="section-header" style={{ marginBottom: 8 }}>
-            <div className="section-title" style={{ fontSize: "0.85rem" }}>
-              Itens da ordem
-            </div>
+        <section className="section-card">
+          <div className="section-header" style={{ marginBottom: 10 }}>
+            <div className="section-title">Itens da ordem</div>
           </div>
 
           <button
@@ -714,110 +583,69 @@ export default function OcPage() {
               borderRadius: 12,
               border: "1px dashed #d1fae5",
               background: "#f0fdf4",
-              padding: "8px 10px",
-              fontSize: "0.8rem",
-              fontWeight: 500,
+              padding: "10px 12px",
+              fontSize: "0.85rem",
+              fontWeight: 600,
               color: "#047857",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: 6,
               cursor: "pointer",
             }}
           >
-            <span>＋</span>
-            <span>Adicionar item</span>
+            + Adicionar item
           </button>
 
-          {items.length === 0 && (
-            <p
-              style={{
-                marginTop: 6,
-                fontSize: "0.75rem",
-                color: "#9ca3af",
-              }}
-            >
+          {items.length === 0 ? (
+            <div style={{ marginTop: 10, color: "#9ca3af", fontSize: "0.85rem" }}>
               Nenhum item adicionado ainda.
-            </p>
-          )}
-
-          {items.length > 0 && (
-            <div
-              style={{
-                marginTop: 10,
-                display: "flex",
-                flexDirection: "column",
-                gap: 8,
-              }}
-            >
-              {items.map((item) => (
+            </div>
+          ) : (
+            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+              {items.map((it) => (
                 <div
-                  key={item.id}
+                  key={it.id}
                   style={{
-                    borderRadius: 12,
                     border: "1px solid #e5e7eb",
-                    background: "#f9fafb",
-                    padding: "8px 10px",
-                    fontSize: "0.78rem",
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 6,
+                    borderRadius: 14,
+                    background: "#ffffff",
+                    padding: 12,
                   }}
                 >
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <div style={{ flex: 1 }}>
-                      <ItemLabel>Quantidade</ItemLabel>
-                      <input
-                        style={itemInputStyle}
-                        placeholder="Ex: 2"
-                        value={item.quantity}
-                        onChange={(e) =>
-                          updateItem(item.id, "quantity", e.target.value)
-                        }
-                      />
-                    </div>
-                    <div style={{ flex: 2 }}>
-                      <ItemLabel>Descrição</ItemLabel>
-                      <input
-                        style={itemInputStyle}
-                        placeholder="Ex: mangueira hidráulica"
-                        value={item.description}
-                        onChange={(e) =>
-                          updateItem(item.id, "description", e.target.value)
-                        }
-                      />
-                    </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10 }}>
+                    <Field
+                      label="Quantidade"
+                      value={it.quantity}
+                      placeholder="Ex: 2"
+                      onChange={(v) => updateItem(it.id, "quantity", v)}
+                      small
+                    />
+                    <Field
+                      label="Descrição"
+                      value={it.description}
+                      placeholder="Ex: mangueira hidráulica"
+                      onChange={(v) => updateItem(it.id, "description", v)}
+                      small
+                    />
                   </div>
 
-                  <div
-                    style={{
-                      display: "flex",
-                      gap: 8,
-                      alignItems: "flex-end",
-                    }}
-                  >
-                    <div style={{ flex: 1 }}>
-                      <ItemLabel>Valor (opcional)</ItemLabel>
-                      <input
-                        style={itemInputStyle}
-                        placeholder="Ex: 250,00"
-                        value={item.value}
-                        onChange={(e) =>
-                          updateItem(item.id, "value", e.target.value)
-                        }
-                      />
-                    </div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginTop: 10 }}>
+                    <Field
+                      label="Valor (opcional)"
+                      value={it.value}
+                      placeholder="Ex: 250,00"
+                      onChange={(v) => updateItem(it.id, "value", v)}
+                      small
+                    />
                     <button
                       type="button"
-                      onClick={() => removeItem(item.id)}
+                      onClick={() => removeItem(it.id)}
                       style={{
+                        height: 38,
                         borderRadius: 999,
                         border: "1px solid #e5e7eb",
-                        background: "#ffffff",
-                        padding: "4px 10px",
-                        fontSize: "0.7rem",
-                        color: "#6b7280",
+                        background: "#fff",
+                        padding: "0 14px",
                         cursor: "pointer",
+                        color: "#6b7280",
+                        fontWeight: 600,
                       }}
                     >
                       Remover
@@ -827,147 +655,110 @@ export default function OcPage() {
               ))}
             </div>
           )}
-        </div>
+        </section>
 
-        {/* Preview */}
-        <div className="section-card">
+        {/* Prévia */}
+        <section className="section-card">
           <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              fontSize: "0.8rem",
-              fontWeight: 500,
-              cursor: "pointer",
-            }}
+            className="section-header"
+            style={{ cursor: "pointer" }}
             onClick={() => setPreviewOpen((v) => !v)}
           >
-            <span>Prévia da mensagem (WhatsApp)</span>
-            <span
-              style={{
-                fontSize: "0.7rem",
-                color: "#6b7280",
-              }}
-            >
-              {previewOpen ? "Recolher ▲" : "Mostrar ▼"}
-            </span>
+            <div className="section-title">Prévia da mensagem (WhatsApp)</div>
+            <div className="section-subtitle">{previewOpen ? "Recolher ▲" : "Mostrar ▼"}</div>
           </div>
 
           {previewOpen && (
             <div
               style={{
-                marginTop: 8,
-                borderRadius: 12,
-                border: "1px solid #bbf7d0",
+                marginTop: 10,
+                borderRadius: 14,
+                border: "1px solid #d1fae5",
                 background: "#ecfdf5",
-                padding: "10px 12px",
-                fontSize: "0.78rem",
-                color: "#065f46",
+                padding: 12,
                 whiteSpace: "pre-wrap",
+                fontSize: "0.9rem",
+                color: "#065f46",
               }}
             >
-              {previewText || "Preencha os campos para gerar a mensagem."}
+              {previewText}
             </div>
           )}
-        </div>
+        </section>
 
-        {/* Ações */}
-        <div className="section-card">
-          <div
+        {/* Ações — copiar/whats só depois de salvar */}
+        <section className="section-card">
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={saving}
             style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: 8,
+              width: "100%",
+              borderRadius: 999,
+              border: "none",
+              padding: "12px 14px",
+              fontSize: "0.95rem",
+              fontWeight: 700,
+              cursor: "pointer",
+              background: "#16a34a",
+              color: "#fff",
+              opacity: saving ? 0.75 : 1,
             }}
           >
-            <button
-              type="button"
-              onClick={handleSave}
-              disabled={saving}
-              style={{
-                width: "100%",
-                borderRadius: 999,
-                border: "none",
-                padding: "10px 14px",
-                fontSize: "0.85rem",
-                fontWeight: 600,
-                cursor: "pointer",
-                background: "#16a34a",
-                color: "#ffffff",
-                opacity: saving ? 0.7 : 1,
-              }}
-            >
-              {saving ? "Salvando..." : "Salvar"}
-            </button>
+            {saving ? "Salvando..." : "Salvar"}
+          </button>
 
-            {hasSaved && (
-              <>
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  style={{
-                    width: "100%",
-                    borderRadius: 999,
-                    border: "1px solid #d1d5db",
-                    padding: "10px 14px",
-                    fontSize: "0.85rem",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    background: "#ffffff",
-                    color: "#111827",
-                  }}
-                >
-                  Copiar mensagem
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleWhatsapp}
-                  style={{
-                    width: "100%",
-                    borderRadius: 999,
-                    border: "none",
-                    padding: "10px 14px",
-                    fontSize: "0.85rem",
-                    fontWeight: 600,
-                    cursor: "pointer",
-                    background: "#25d366",
-                    color: "#ffffff",
-                  }}
-                >
-                  Enviar no WhatsApp
-                </button>
-              </>
-            )}
-
-            {feedback && (
-              <p
+          {hasSaved && (
+            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+              <button
+                type="button"
+                onClick={handleCopy}
                 style={{
-                  margin: "4px 0 0 0",
-                  fontSize: "0.75rem",
-                  color: "#047857",
+                  width: "100%",
+                  borderRadius: 999,
+                  border: "1px solid #e5e7eb",
+                  padding: "12px 14px",
+                  fontSize: "0.95rem",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  background: "#fff",
+                  color: "#111827",
                 }}
               >
-                {feedback}
-              </p>
-            )}
-            {error && (
-              <p
+                Copiar mensagem
+              </button>
+
+              <button
+                type="button"
+                onClick={handleWhatsapp}
                 style={{
-                  margin: "4px 0 0 0",
-                  fontSize: "0.75rem",
-                  color: "#b91c1c",
+                  width: "100%",
+                  borderRadius: 999,
+                  border: "none",
+                  padding: "12px 14px",
+                  fontSize: "0.95rem",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  background: "#25d366",
+                  color: "#fff",
                 }}
               >
-                {error}
-              </p>
-            )}
-          </div>
-        </div>
+                Enviar no WhatsApp
+              </button>
+            </div>
+          )}
 
-        {/* datalists para autocomplete */}
+          {feedback && (
+            <div style={{ marginTop: 10, color: "#047857", fontWeight: 600 }}>{feedback}</div>
+          )}
+          {error && (
+            <div style={{ marginTop: 10, color: "#b91c1c", fontWeight: 600 }}>{error}</div>
+          )}
+        </section>
+
+        {/* datalists */}
         <datalist id="equipamentos-list">
-          {allEquipOptions.map((opt) => (
+          {equipOptionsFromDb.map((opt) => (
             <option key={opt} value={opt} />
           ))}
         </datalist>
@@ -991,41 +782,6 @@ export default function OcPage() {
   );
 }
 
-/** estilos auxiliares / componentes simples */
-
-const itemInputStyle = {
-  width: "100%",
-  borderRadius: 8,
-  border: "1px solid #e5e7eb",
-  background: "#ffffff",
-  padding: "6px 8px",
-  fontSize: "0.75rem",
-} as const;
-
-function ItemLabel(props: { children: any }) {
-  return (
-    <div
-      style={{
-        fontSize: "0.7rem",
-        fontWeight: 500,
-        color: "#4b5563",
-        marginBottom: 2,
-      }}
-    >
-      {props.children}
-    </div>
-  );
-}
-
-type FieldProps = {
-  label: string;
-  placeholder?: string;
-  value: string;
-  onChange: (value: string) => void;
-  datalistId?: string;
-  readOnly?: boolean;
-};
-
 function Field({
   label,
   placeholder,
@@ -1033,35 +789,35 @@ function Field({
   onChange,
   datalistId,
   readOnly,
-}: FieldProps) {
+  small,
+}: {
+  label: string;
+  placeholder?: string;
+  value: string;
+  onChange?: (v: string) => void;
+  datalistId?: string;
+  readOnly?: boolean;
+  small?: boolean;
+}) {
   return (
-    <div>
-      <div
-        style={{
-          fontSize: "0.75rem",
-          fontWeight: 500,
-          color: "#374151",
-          marginBottom: 2,
-        }}
-      >
+    <div style={{ width: "100%", marginTop: small ? 0 : 10 }}>
+      <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>
         {label}
       </div>
       <input
+        value={value}
+        readOnly={readOnly}
+        list={datalistId}
+        placeholder={placeholder}
+        onChange={(e) => onChange?.(e.target.value)}
         style={{
           width: "100%",
           borderRadius: 12,
           border: "1px solid #e5e7eb",
           background: readOnly ? "#f3f4f6" : "#f9fafb",
-          padding: "8px 10px",
-          fontSize: "0.8rem",
+          padding: small ? "8px 10px" : "10px 12px",
+          fontSize: "0.9rem",
         }}
-        placeholder={placeholder}
-        value={value}
-        onChange={(e) => {
-          if (!readOnly) onChange(e.target.value);
-        }}
-        list={datalistId}
-        readOnly={readOnly}
       />
     </div>
   );
