@@ -28,13 +28,13 @@ const ORDER_TYPE_LABELS: Record<OrderType, string> = {
   OUTRO: "Outro",
 };
 
-// Campos por tipo (padrão MANUTENÇÃO)
 type OrderTypeConfig = {
   showEquipamento: boolean;
   showObra: boolean;
   showOperador: boolean;
   showHorimetro: boolean;
   showLocalEntrega: boolean;
+  showFornecedores: boolean; // NOVO
 };
 
 const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
@@ -44,6 +44,7 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
     showOperador: true,
     showHorimetro: true,
     showLocalEntrega: true,
+    showFornecedores: true,
   },
   COMPRA: {
     showEquipamento: false,
@@ -51,6 +52,7 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
     showOperador: false,
     showHorimetro: false,
     showLocalEntrega: true,
+    showFornecedores: false,
   },
   ABASTECIMENTO: {
     showEquipamento: true,
@@ -58,6 +60,7 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
     showOperador: true,
     showHorimetro: true,
     showLocalEntrega: true,
+    showFornecedores: false,
   },
   SERVICOS: {
     showEquipamento: false,
@@ -65,6 +68,7 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
     showOperador: false,
     showHorimetro: false,
     showLocalEntrega: true,
+    showFornecedores: false,
   },
   PECAS: {
     showEquipamento: true,
@@ -72,6 +76,7 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
     showOperador: false,
     showHorimetro: true,
     showLocalEntrega: true,
+    showFornecedores: false,
   },
   OUTRO: {
     showEquipamento: false,
@@ -79,6 +84,7 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
     showOperador: false,
     showHorimetro: false,
     showLocalEntrega: true,
+    showFornecedores: false,
   },
 };
 
@@ -95,16 +101,15 @@ const ORDER_TYPE_DB_LABEL: Record<OrderType, string> = {
 const OBRAS_SUGESTOES = ["Usina", "Patrolamento", "Tapa-buraco", "Serviço interno"];
 const LOCAIS_SUGESTOES = ["Usina", "Oficina", "Almoxarifado", "Hidrovolt"];
 const OPERADORES_SUGESTOES = ["Marco Túlio", "João", "Carlos", "Rafael", "Bruno"];
+const FORNECEDORES_SUGESTOES = ["Fornecedor A", "Fornecedor B", "Fornecedor C"]; // livre + pode ajustar depois
 
 // ====== MÁSCARAS ======
 function maskInteger(raw: string) {
   const digits = raw.replace(/\D/g, "");
-  // evita começar com muitos zeros
   return digits.replace(/^0+(?=\d)/, "");
 }
 
 function maskDecimal2(raw: string) {
-  // permite só dígitos e vírgula; 1 vírgula; 2 decimais
   let v = raw.replace(/[^\d,]/g, "");
   const parts = v.split(",");
   const intPart = (parts[0] || "").replace(/^0+(?=\d)/, "");
@@ -114,7 +119,6 @@ function maskDecimal2(raw: string) {
 }
 
 function maskBRLMoney(raw: string) {
-  // Digita “solto” e vira moeda: 1.234,56
   const digits = raw.replace(/\D/g, "");
   if (!digits) return "";
   const asNumber = Number(digits) / 100;
@@ -124,15 +128,7 @@ function maskBRLMoney(raw: string) {
   });
 }
 
-function parseBRNumber(text: string) {
-  // "1.234,56" -> 1234.56
-  const cleaned = text.replace(/\./g, "").replace(",", ".");
-  const n = parseFloat(cleaned);
-  return Number.isFinite(n) ? n : null;
-}
-
 function Icon({ name }: { name: OrderType }) {
-  // SVGs sóbrios (cinza), alinhados, acima do texto
   const common = {
     width: 20,
     height: 20,
@@ -185,7 +181,6 @@ function Icon({ name }: { name: OrderType }) {
           <path d="M8 13h8v8H8v-8Z" />
         </svg>
       );
-    case "OUTRO":
     default:
       return (
         <svg {...common}>
@@ -196,6 +191,69 @@ function Icon({ name }: { name: OrderType }) {
   }
 }
 
+function Stepper({
+  label,
+  value,
+  min,
+  max,
+  onChange,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+      <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "#374151" }}>{label}</div>
+      <div
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 8,
+          border: "1px solid #e5e7eb",
+          background: "#fff",
+          borderRadius: 999,
+          padding: "6px 10px",
+        }}
+      >
+        <button
+          type="button"
+          onClick={() => onChange(Math.max(min, value - 1))}
+          style={stepBtn}
+          aria-label="Diminuir"
+        >
+          –
+        </button>
+        <div style={{ minWidth: 18, textAlign: "center", fontWeight: 700, color: "#111827" }}>
+          {value}
+        </div>
+        <button
+          type="button"
+          onClick={() => onChange(Math.min(max, value + 1))}
+          style={stepBtn}
+          aria-label="Aumentar"
+        >
+          +
+        </button>
+      </div>
+    </div>
+  );
+}
+
+const stepBtn: React.CSSProperties = {
+  width: 28,
+  height: 28,
+  borderRadius: 999,
+  border: "1px solid #e5e7eb",
+  background: "#f9fafb",
+  cursor: "pointer",
+  fontWeight: 800,
+  color: "#374151",
+  lineHeight: "28px",
+};
+
 export default function OcPage() {
   const [orderType, setOrderType] = useState<OrderType>("MANUTENCAO");
 
@@ -205,9 +263,15 @@ export default function OcPage() {
   const [equipamento, setEquipamento] = useState("");
   const [obra, setObra] = useState("");
   const [operador, setOperador] = useState("");
-  const [horimetro, setHorimetro] = useState(""); // máscara decimal2
+  const [horimetro, setHorimetro] = useState("");
   const [localEntrega, setLocalEntrega] = useState("");
   const [observacoes, setObservacoes] = useState("");
+
+  // FORNECEDORES (somente manutenção)
+  const [supplierCount, setSupplierCount] = useState(1);
+  const [supplier1, setSupplier1] = useState("");
+  const [supplier2, setSupplier2] = useState("");
+  const [supplier3, setSupplier3] = useState("");
 
   const [items, setItems] = useState<OrderItem[]>([]);
 
@@ -226,7 +290,13 @@ export default function OcPage() {
     setFeedback(null);
   }
 
-  // TODOS equipamentos (lendo do histórico)
+  // reset fornecedores ao trocar tipo (mantém simples)
+  useEffect(() => {
+    if (orderType !== "MANUTENCAO") return;
+    // quando volta pra manutenção, mantém valores (não zera)
+  }, [orderType]);
+
+  // TODOS equipamentos (histórico)
   useEffect(() => {
     async function loadEquipamentos() {
       const { data, error } = await supabase
@@ -285,6 +355,12 @@ export default function OcPage() {
     setItems((prev) => prev.filter((it) => it.id !== id));
   }
 
+  const suppliersList = useMemo(() => {
+    if (!config.showFornecedores) return [];
+    const list = [supplier1, supplier2, supplier3].slice(0, supplierCount).map((s) => s.trim()).filter(Boolean);
+    return list;
+  }, [config.showFornecedores, supplier1, supplier2, supplier3, supplierCount]);
+
   const previewText = useMemo(() => {
     const lines: string[] = [];
 
@@ -311,6 +387,16 @@ export default function OcPage() {
     if (config.showOperador) lines.push(`• *Operador:* ${operador || "-"}`);
     if (config.showHorimetro) lines.push(`• *Horímetro:* ${horimetro ? `${horimetro}h` : "-"}`);
     if (config.showLocalEntrega) lines.push(`• *Entrega:* ${localEntrega || "-"}`);
+
+    if (config.showFornecedores) {
+      lines.push("");
+      if (suppliersList.length === 0) {
+        lines.push("• *Fornecedores:* -");
+      } else {
+        lines.push("• *Fornecedores:*");
+        suppliersList.forEach((f, idx) => lines.push(`  ${idx + 1}) ${f}`));
+      }
+    }
 
     lines.push("");
     lines.push("*Itens:*");
@@ -343,6 +429,7 @@ export default function OcPage() {
     items,
     observacoes,
     config,
+    suppliersList,
   ]);
 
   async function handleSave() {
@@ -375,7 +462,7 @@ export default function OcPage() {
         placa: null,
         valor_menor: null,
         moeda: null,
-        texto_original: previewText || null,
+        texto_original: previewText || null, // fornecedores entram aqui também
       };
 
       const { data, error: insertError } = await supabase
@@ -433,7 +520,7 @@ export default function OcPage() {
   return (
     <main className="page-root">
       <div className="page-container" style={{ maxWidth: 520 }}>
-        {/* HEADER: logo centralizada igual no dashboard */}
+        {/* HEADER */}
         <header style={{ textAlign: "center", padding: "8px 0 2px" }}>
           <img
             src="/gpasfalto-logo.png"
@@ -442,14 +529,14 @@ export default function OcPage() {
               height: 34,
               width: "auto",
               display: "block",
-              margin: "0 auto 6px",
+              margin: "0 auto 8px",
               opacity: 0.95,
             }}
           />
-          <div style={{ fontSize: "1.6rem", fontWeight: 600, letterSpacing: "-0.02em" }}>
+          <div style={{ fontSize: "1.65rem", fontWeight: 650, letterSpacing: "-0.02em" }}>
             Registrar OC
           </div>
-          <div style={{ fontSize: "0.85rem", color: "var(--gp-muted-soft)", marginTop: 2 }}>
+          <div style={{ fontSize: "0.86rem", color: "var(--gp-muted-soft)", marginTop: 4 }}>
             Criar OC rápida e padrão para WhatsApp
           </div>
         </header>
@@ -476,20 +563,20 @@ export default function OcPage() {
                     border: "1px solid",
                     borderColor: selected ? "#10b981" : "#e5e7eb",
                     background: selected ? "#ecfdf5" : "#ffffff",
-                    padding: "10px 10px",
+                    padding: "12px 10px",
                     cursor: "pointer",
                     display: "flex",
                     flexDirection: "column",
                     alignItems: "center",
                     justifyContent: "center",
                     gap: 6,
-                    minHeight: 72,
+                    minHeight: 76,
                   }}
                 >
                   <div style={{ color: "#6b7280" }}>
                     <Icon name={t} />
                   </div>
-                  <div style={{ fontSize: "0.8rem", fontWeight: 500, color: "#374151" }}>
+                  <div style={{ fontSize: "0.82rem", fontWeight: 600, color: "#374151" }}>
                     {ORDER_TYPE_LABELS[t]}
                   </div>
                 </button>
@@ -507,7 +594,7 @@ export default function OcPage() {
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: 10 }}>
+          <div style={{ display: "flex", gap: 12, marginTop: 6 }}>
             <Field label="ID" value={orderId != null ? String(orderId) : ""} placeholder="-" readOnly />
             <Field
               label="OC"
@@ -586,7 +673,60 @@ export default function OcPage() {
             />
           )}
 
-          <div style={{ marginTop: 10 }}>
+          {/* FORNECEDORES (somente manutenção) */}
+          {config.showFornecedores && (
+            <div style={{ marginTop: 12 }}>
+              <Stepper
+                label="Fornecedores (até 3)"
+                value={supplierCount}
+                min={1}
+                max={3}
+                onChange={(n) => {
+                  markDirty();
+                  setSupplierCount(n);
+                }}
+              />
+
+              <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                <Field
+                  label="Fornecedor 1"
+                  value={supplier1}
+                  placeholder="Digite ou selecione"
+                  onChange={(v) => {
+                    markDirty();
+                    setSupplier1(v);
+                  }}
+                  datalistId="fornecedores-list"
+                />
+                {supplierCount >= 2 && (
+                  <Field
+                    label="Fornecedor 2"
+                    value={supplier2}
+                    placeholder="Digite ou selecione"
+                    onChange={(v) => {
+                      markDirty();
+                      setSupplier2(v);
+                    }}
+                    datalistId="fornecedores-list"
+                  />
+                )}
+                {supplierCount >= 3 && (
+                  <Field
+                    label="Fornecedor 3"
+                    value={supplier3}
+                    placeholder="Digite ou selecione"
+                    onChange={(v) => {
+                      markDirty();
+                      setSupplier3(v);
+                    }}
+                    datalistId="fornecedores-list"
+                  />
+                )}
+              </div>
+            </div>
+          )}
+
+          <div style={{ marginTop: 12 }}>
             <div className="section-subtitle" style={{ marginBottom: 6 }}>
               Observações
             </div>
@@ -596,9 +736,10 @@ export default function OcPage() {
                 borderRadius: 12,
                 border: "1px solid #e5e7eb",
                 background: "#f9fafb",
-                padding: "10px 12px",
-                fontSize: "0.85rem",
-                minHeight: 80,
+                padding: "12px 12px",
+                fontSize: "0.92rem",
+                lineHeight: 1.3,
+                minHeight: 88,
               }}
               placeholder="Informações adicionais..."
               value={observacoes}
@@ -612,7 +753,7 @@ export default function OcPage() {
 
         {/* Itens */}
         <section className="section-card">
-          <div className="section-header" style={{ marginBottom: 10 }}>
+          <div className="section-header" style={{ marginBottom: 12 }}>
             <div className="section-title">Itens da ordem</div>
           </div>
 
@@ -621,75 +762,87 @@ export default function OcPage() {
             onClick={addItem}
             style={{
               width: "100%",
-              borderRadius: 12,
-              border: "1px dashed #d1fae5",
+              borderRadius: 14,
+              border: "1px dashed #bbf7d0",
               background: "#f0fdf4",
-              padding: "10px 12px",
-              fontSize: "0.85rem",
-              fontWeight: 600,
+              padding: "12px 12px",
+              fontSize: "0.92rem",
+              fontWeight: 700,
               color: "#047857",
               cursor: "pointer",
+              lineHeight: 1.2,
             }}
           >
             + Adicionar item
           </button>
 
           {items.length === 0 ? (
-            <div style={{ marginTop: 10, color: "#9ca3af", fontSize: "0.85rem" }}>
+            <div style={{ marginTop: 12, color: "#9ca3af", fontSize: "0.9rem" }}>
               Nenhum item adicionado ainda.
             </div>
           ) : (
-            <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 12 }}>
               {items.map((it) => (
                 <div
                   key={it.id}
                   style={{
                     border: "1px solid #e5e7eb",
-                    borderRadius: 14,
+                    borderRadius: 16,
                     background: "#ffffff",
-                    padding: 12,
+                    padding: 14,
+                    boxShadow: "0 8px 24px rgba(15, 23, 42, 0.04)",
                   }}
                 >
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 10 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "140px 1fr", gap: 12 }}>
                     <Field
                       label="Quantidade"
                       value={it.quantity}
                       placeholder="Ex: 2"
                       inputMode="numeric"
                       onChange={(v) => updateItem(it.id, "quantity", maskInteger(v))}
-                      small
+                      compact
                     />
                     <Field
                       label="Descrição"
                       value={it.description}
                       placeholder="Ex: mangueira hidráulica"
                       onChange={(v) => updateItem(it.id, "description", v)}
-                      small
+                      compact
                     />
                   </div>
 
-                  <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginTop: 10 }}>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 140px",
+                      gap: 12,
+                      alignItems: "end",
+                      marginTop: 12,
+                    }}
+                  >
                     <Field
                       label="Valor (opcional)"
                       value={it.value}
                       placeholder="Ex: 250,00"
                       inputMode="numeric"
                       onChange={(v) => updateItem(it.id, "value", maskBRLMoney(v))}
-                      small
+                      compact
                       leftHint="R$"
                     />
+
                     <button
                       type="button"
                       onClick={() => removeItem(it.id)}
                       style={{
-                        height: 38,
-                        borderRadius: 999,
+                        height: 44,
+                        borderRadius: 14,
                         border: "1px solid #e5e7eb",
                         background: "#fff",
                         padding: "0 14px",
                         cursor: "pointer",
                         color: "#6b7280",
-                        fontWeight: 600,
+                        fontWeight: 700,
+                        fontSize: "0.92rem",
                       }}
                     >
                       Remover
@@ -716,12 +869,13 @@ export default function OcPage() {
             <div
               style={{
                 marginTop: 10,
-                borderRadius: 14,
+                borderRadius: 16,
                 border: "1px solid #d1fae5",
                 background: "#ecfdf5",
-                padding: 12,
+                padding: 14,
                 whiteSpace: "pre-wrap",
-                fontSize: "0.9rem",
+                fontSize: "0.95rem",
+                lineHeight: 1.35,
                 color: "#065f46",
               }}
             >
@@ -730,7 +884,7 @@ export default function OcPage() {
           )}
         </section>
 
-        {/* Ações — copiar/whats só depois de salvar */}
+        {/* Ações */}
         <section className="section-card">
           <button
             type="button"
@@ -741,8 +895,8 @@ export default function OcPage() {
               borderRadius: 999,
               border: "none",
               padding: "12px 14px",
-              fontSize: "0.95rem",
-              fontWeight: 700,
+              fontSize: "0.98rem",
+              fontWeight: 800,
               cursor: "pointer",
               background: "#16a34a",
               color: "#fff",
@@ -753,7 +907,7 @@ export default function OcPage() {
           </button>
 
           {hasSaved && (
-            <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+            <div style={{ display: "grid", gap: 10, marginTop: 12 }}>
               <button
                 type="button"
                 onClick={handleCopy}
@@ -762,8 +916,8 @@ export default function OcPage() {
                   borderRadius: 999,
                   border: "1px solid #e5e7eb",
                   padding: "12px 14px",
-                  fontSize: "0.95rem",
-                  fontWeight: 700,
+                  fontSize: "0.98rem",
+                  fontWeight: 800,
                   cursor: "pointer",
                   background: "#fff",
                   color: "#111827",
@@ -780,8 +934,8 @@ export default function OcPage() {
                   borderRadius: 999,
                   border: "none",
                   padding: "12px 14px",
-                  fontSize: "0.95rem",
-                  fontWeight: 700,
+                  fontSize: "0.98rem",
+                  fontWeight: 800,
                   cursor: "pointer",
                   background: "#25d366",
                   color: "#fff",
@@ -793,10 +947,10 @@ export default function OcPage() {
           )}
 
           {feedback && (
-            <div style={{ marginTop: 10, color: "#047857", fontWeight: 600 }}>{feedback}</div>
+            <div style={{ marginTop: 10, color: "#047857", fontWeight: 700 }}>{feedback}</div>
           )}
           {error && (
-            <div style={{ marginTop: 10, color: "#b91c1c", fontWeight: 600 }}>{error}</div>
+            <div style={{ marginTop: 10, color: "#b91c1c", fontWeight: 700 }}>{error}</div>
           )}
         </section>
 
@@ -821,6 +975,11 @@ export default function OcPage() {
             <option key={opt} value={opt} />
           ))}
         </datalist>
+        <datalist id="fornecedores-list">
+          {FORNECEDORES_SUGESTOES.map((opt) => (
+            <option key={opt} value={opt} />
+          ))}
+        </datalist>
       </div>
     </main>
   );
@@ -833,10 +992,10 @@ function Field({
   onChange,
   datalistId,
   readOnly,
-  small,
   inputMode,
   leftHint,
   rightHint,
+  compact,
 }: {
   label: string;
   placeholder?: string;
@@ -844,14 +1003,21 @@ function Field({
   onChange?: (v: string) => void;
   datalistId?: string;
   readOnly?: boolean;
-  small?: boolean;
   inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
   leftHint?: string;
   rightHint?: string;
+  compact?: boolean;
 }) {
   return (
-    <div style={{ width: "100%", marginTop: small ? 0 : 10 }}>
-      <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>
+    <div style={{ width: "100%", marginTop: compact ? 0 : 12 }}>
+      <div
+        style={{
+          fontSize: compact ? "0.78rem" : "0.8rem",
+          fontWeight: 650,
+          color: "#374151",
+          marginBottom: 6,
+        }}
+      >
         {label}
       </div>
 
@@ -864,8 +1030,8 @@ function Field({
               top: "50%",
               transform: "translateY(-50%)",
               color: "#9ca3af",
-              fontWeight: 700,
-              fontSize: "0.85rem",
+              fontWeight: 800,
+              fontSize: "0.9rem",
               pointerEvents: "none",
             }}
           >
@@ -881,8 +1047,8 @@ function Field({
               top: "50%",
               transform: "translateY(-50%)",
               color: "#9ca3af",
-              fontWeight: 700,
-              fontSize: "0.85rem",
+              fontWeight: 800,
+              fontSize: "0.9rem",
               pointerEvents: "none",
             }}
           >
@@ -899,13 +1065,15 @@ function Field({
           onChange={(e) => onChange?.(e.target.value)}
           style={{
             width: "100%",
-            borderRadius: 12,
+            borderRadius: 14,
             border: "1px solid #e5e7eb",
             background: readOnly ? "#f3f4f6" : "#f9fafb",
-            padding: small ? "8px 10px" : "10px 12px",
-            paddingLeft: leftHint ? 34 : undefined,
-            paddingRight: rightHint ? 34 : undefined,
-            fontSize: "0.9rem",
+            padding: compact ? "10px 12px" : "12px 12px",
+            paddingLeft: leftHint ? 40 : undefined,
+            paddingRight: rightHint ? 40 : undefined,
+            fontSize: "0.95rem",
+            lineHeight: 1.2,
+            outline: "none",
           }}
         />
       </div>
