@@ -1,7 +1,7 @@
 // FILE: app/oc/page.tsx
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type OrderType =
@@ -82,16 +82,58 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
   },
 };
 
-/** sugestões para autocomplete – depois você troca pelos reais */
-const EQUIPAMENTOS_SUGESTOES = ["UA-01", "UA-02", "UA-03", "RC-05", "TP-04", "PC-07"];
-const OBRAS_SUGESTOES = ["Usina", "Patrolamento", "Tapa-buraco", "Serviço interno", "Obra externa"];
-const LOCAIS_SUGESTOES = ["Usina", "Oficina", "Almoxarifado", "Hidrovolt", "Posto conveniado"];
-const OPERADORES_SUGESTOES = ["Marco Túlio", "João", "Carlos", "Rafael", "Bruno"];
+/** rótulo que vai para a coluna tipo_registro da orders_2025_raw */
+const ORDER_TYPE_DB_LABEL: Record<OrderType, string> = {
+  MANUTENCAO: "PEDIDO_COMPRA_MANUTENCAO",
+  COMPRA: "PEDIDO_COMPRA",
+  ABASTECIMENTO: "OC",
+  SERVICOS: "OC",
+  PECAS: "OC",
+  OUTRO: "OC",
+};
+
+/** sugestões base – depois você troca pelos reais se quiser */
+const EQUIPAMENTOS_SUGESTOES_BASE = [
+  "UA-01",
+  "UA-02",
+  "UA-03",
+  "RC05",
+  "TP03",
+  "PC07",
+  "CG02",
+];
+
+const OBRAS_SUGESTOES = [
+  "Usina",
+  "Patrolamento",
+  "Tapa-buraco",
+  "Serviço interno",
+  "Obra externa",
+];
+
+const LOCAIS_SUGESTOES = [
+  "Usina",
+  "Oficina",
+  "Almoxarifado",
+  "Hidrovolt",
+  "Posto conveniado",
+];
+
+const OPERADORES_SUGESTOES = [
+  "Marco Túlio",
+  "João",
+  "Carlos",
+  "Rafael",
+  "Bruno",
+];
 
 export default function OcPage() {
   // padrão: MANUTENÇÃO
   const [orderType, setOrderType] = useState<OrderType>("MANUTENCAO");
 
+  // dados principais
+  const [orderId, setOrderId] = useState<number | null>(null);
+  const [numeroOc, setNumeroOc] = useState("");
   const [equipamento, setEquipamento] = useState("");
   const [obra, setObra] = useState("");
   const [operador, setOperador] = useState("");
@@ -100,14 +142,80 @@ export default function OcPage() {
   const [observacoes, setObservacoes] = useState("");
 
   const [items, setItems] = useState<OrderItem[]>([]);
+
+  // estados auxiliares
   const [saving, setSaving] = useState(false);
+  const [hasSaved, setHasSaved] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(true);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const [equipOptionsFromDb, setEquipOptionsFromDb] = useState<string[]>([]);
+
   const config = ORDER_TYPE_CONFIG[orderType];
 
+  function markDirty() {
+    setHasSaved(false);
+    setFeedback(null);
+  }
+
+  /** carrega todos os códigos de equipamento existentes na tabela */
+  useEffect(() => {
+    async function loadEquipamentos() {
+      const { data, error } = await supabase
+        .from("orders_2025_raw")
+        .select("codigo_equipamento");
+
+      if (!error && data) {
+        const set = new Set<string>();
+        data.forEach((row: any) => {
+          if (row.codigo_equipamento) {
+            set.add(String(row.codigo_equipamento));
+          }
+        });
+        setEquipOptionsFromDb(Array.from(set));
+      }
+    }
+    loadEquipamentos();
+  }, []);
+
+  /** sugere o próximo número de OC com base no último registro */
+  useEffect(() => {
+    async function loadNextOc() {
+      const { data, error } = await supabase
+        .from("orders_2025_raw")
+        .select("numero_oc")
+        .not("numero_oc", "is", null)
+        .order("id", { ascending: false })
+        .limit(1);
+
+      if (!error && data && data.length > 0) {
+        const last = data[0].numero_oc as string;
+        if (!last) return;
+        const match = last.match(/(\d+)/);
+        if (match) {
+          const prefix = last.replace(match[1], "");
+          const nextNum = String(parseInt(match[1], 10) + 1);
+          setNumeroOc(prefix + nextNum);
+        } else {
+          setNumeroOc(last);
+        }
+      }
+    }
+    loadNextOc();
+  }, []);
+
+  /** lista final de opções de equipamento (base + BD) */
+  const allEquipOptions = useMemo(() => {
+    const combined = [...EQUIPAMENTOS_SUGESTOES_BASE];
+    equipOptionsFromDb.forEach((code) => {
+      if (!combined.includes(code)) combined.push(code);
+    });
+    return combined.sort((a, b) => a.localeCompare(b));
+  }, [equipOptionsFromDb]);
+
   function addItem() {
+    markDirty();
     setItems((prev) => [
       ...prev,
       {
@@ -120,6 +228,7 @@ export default function OcPage() {
   }
 
   function updateItem(id: string, field: keyof OrderItem, value: string) {
+    markDirty();
     setItems((prev) =>
       prev.map((item) =>
         item.id === id ? { ...item, [field]: value } : item
@@ -128,13 +237,15 @@ export default function OcPage() {
   }
 
   function removeItem(id: string) {
+    markDirty();
     setItems((prev) => prev.filter((item) => item.id !== id));
   }
 
-  /** preview da mensagem pro WhatsApp */
+  /** mensagem para WhatsApp com layout mais organizado */
   const previewText = useMemo(() => {
     const lines: string[] = [];
 
+    // título principal
     if (orderType === "COMPRA") {
       lines.push("*PEDIDO DE COMPRA*");
     } else if (orderType === "ABASTECIMENTO") {
@@ -149,36 +260,55 @@ export default function OcPage() {
       lines.push(`*PEDIDO – ${ORDER_TYPE_LABELS[orderType]}*`);
     }
 
-    lines.push("");
+    if (numeroOc) {
+      lines.push(`*OC:* ${numeroOc}`);
+    }
+    if (orderId != null) {
+      lines.push(`*ID:* ${orderId}`);
+    }
 
-    if (obra) lines.push(`*Obra:* ${obra}`);
+    lines.push("────────────────────");
+
+    if (config.showObra && obra) lines.push(`*Obra:* ${obra}`);
     if (config.showEquipamento && equipamento)
-      lines.push(`*Código:* ${equipamento}`);
+      lines.push(`*Equipamento:* ${equipamento}`);
     if (config.showOperador && operador) lines.push(`*Operador:* ${operador}`);
     if (config.showHorimetro && horimetro)
       lines.push(`*Horímetro:* ${horimetro}`);
     if (config.showLocalEntrega && localEntrega)
       lines.push(`*Local de entrega:* ${localEntrega}`);
 
+    if (
+      (config.showObra && obra) ||
+      (config.showEquipamento && equipamento) ||
+      (config.showOperador && operador) ||
+      (config.showHorimetro && horimetro) ||
+      (config.showLocalEntrega && localEntrega)
+    ) {
+      lines.push("────────────────────");
+    }
+
     if (items.length > 0) {
-      lines.push("");
-      lines.push("*A autorizar:*");
+      lines.push("*Itens:*");
       lines.push("");
       items.forEach((item) => {
         const valorParte = item.value ? ` – R$ ${item.value}` : "";
         const qtdParte = item.quantity ? `${item.quantity} ` : "";
-        lines.push(`${qtdParte}${item.description}${valorParte}`);
+        lines.push(`• ${qtdParte}${item.description}${valorParte}`);
       });
     }
 
     if (observacoes) {
       lines.push("");
+      lines.push("────────────────────");
       lines.push(`*Obs:* ${observacoes}`);
     }
 
     return lines.join("\n");
   }, [
     orderType,
+    numeroOc,
+    orderId,
     obra,
     equipamento,
     operador,
@@ -187,6 +317,7 @@ export default function OcPage() {
     items,
     observacoes,
     config.showEquipamento,
+    config.showObra,
     config.showHorimetro,
     config.showLocalEntrega,
     config.showOperador,
@@ -198,29 +329,45 @@ export default function OcPage() {
     setSaving(true);
 
     try {
-      const total = items.reduce((sum, item) => {
-        const v = parseFloat(item.value.replace(".", "").replace(",", "."));
-        if (!isNaN(v)) return sum + v;
-        return sum;
-      }, 0);
+      const now = new Date();
+      const dateStr = now.toLocaleDateString("pt-BR"); // dd/mm/aaaa
+      const timeStr = now
+        .toLocaleTimeString("pt-BR", {
+          hour12: false,
+        })
+        .split(" ")[0]; // hh:mm:ss
+      const mesAno = `${now.getFullYear()}-${String(
+        now.getMonth() + 1
+      ).padStart(2, "0")}`;
+
+      const tipoRegistro = ORDER_TYPE_DB_LABEL[orderType];
+
+      // material/quantidade_texto principais = primeiro item
+      const firstItem = items[0];
+
+      const payload = {
+        date: dateStr,
+        time: timeStr,
+        mes_ano: mesAno,
+        tipo_registro: tipoRegistro,
+        numero_oc: numeroOc || null,
+        codigo_equipamento: config.showEquipamento ? equipamento || null : null,
+        obra: config.showObra ? obra || null : null,
+        solicitante: null,
+        operador: config.showOperador ? operador || null : null,
+        horimetro: config.showHorimetro ? horimetro || null : null,
+        material: firstItem?.description || null,
+        quantidade_texto: firstItem?.quantity || null,
+        local_entrega: config.showLocalEntrega ? localEntrega || null : null,
+        placa: null,
+        valor_menor: null,
+        moeda: null,
+        texto_original: previewText || null,
+      };
 
       const { data, error: insertError } = await supabase
-        .from("orders")
-        .insert([
-          {
-            tipo: orderType,
-            equipamento: config.showEquipamento ? equipamento || null : null,
-            obra: config.showObra ? obra || null : null,
-            operador: config.showOperador ? operador || null : null,
-            horimetro: config.showHorimetro ? horimetro || null : null,
-            local_entrega: config.showLocalEntrega
-              ? localEntrega || null
-              : null,
-            observacoes: observacoes || null,
-            valor_total: total || null,
-            texto_whatsapp: previewText || null,
-          },
-        ])
+        .from("orders_2025_raw")
+        .insert([payload])
         .select()
         .single();
 
@@ -228,16 +375,27 @@ export default function OcPage() {
         throw new Error(insertError.message);
       }
 
-      if (data && items.length > 0) {
-        const itemsPayload = items.map((item) => ({
-          ordem_id: data.id,
-          descricao: item.description,
-          quantidade_texto: item.quantity || null,
-          valor_texto: item.value || null,
-        }));
+      const newId = data.id as number;
+      setOrderId(newId);
+
+      // grava itens detalhados
+      if (items.length > 0) {
+        const itemsPayload = items.map((item) => {
+          const qtdNumStr = item.quantity.replace(".", "").replace(",", ".");
+          const qtdNum = parseFloat(qtdNumStr);
+          return {
+            ordem_id: newId,
+            data: dateStr,
+            hora: timeStr,
+            numero_oc: numeroOc || null,
+            descricao: item.description,
+            quantidade_texto: item.quantity || null,
+            quantidade_num: isNaN(qtdNum) ? null : qtdNum,
+          };
+        });
 
         const { error: itemsError } = await supabase
-          .from("order_items")
+          .from("orders_2025_items")
           .insert(itemsPayload);
 
         if (itemsError) {
@@ -245,8 +403,10 @@ export default function OcPage() {
         }
       }
 
+      setHasSaved(true);
       setFeedback("Ordem salva com sucesso.");
     } catch (e: any) {
+      console.error(e);
       setError(e?.message || "Erro ao salvar a ordem.");
     } finally {
       setSaving(false);
@@ -254,7 +414,7 @@ export default function OcPage() {
   }
 
   async function handleCopy() {
-    if (!previewText) return;
+    if (!previewText || !hasSaved) return;
     try {
       await navigator.clipboard.writeText(previewText);
       setFeedback("Mensagem copiada para a área de transferência.");
@@ -264,7 +424,7 @@ export default function OcPage() {
   }
 
   function handleWhatsapp() {
-    if (!previewText) return;
+    if (!previewText || !hasSaved) return;
     const url = `https://wa.me/?text=${encodeURIComponent(previewText)}`;
     window.open(url, "_blank");
   }
@@ -272,26 +432,55 @@ export default function OcPage() {
   return (
     <main className="page-root">
       <div className="page-container" style={{ maxWidth: 520 }}>
-        {/* Título simples, seguindo a cara do dash */}
-        <div className="section-card" style={{ paddingBottom: 14 }}>
-          <h1
+        {/* Cabeçalho + logo central usando o mesmo "card" do dashboard */}
+        <div className="section-card" style={{ paddingBottom: 16 }}>
+          <div
             style={{
-              margin: 0,
-              fontSize: "1.1rem",
-              fontWeight: 600,
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 6,
             }}
           >
-            Registrar Ordem de Compra
-          </h1>
-          <p
-            style={{
-              margin: "4px 0 0 0",
-              fontSize: "0.8rem",
-              color: "#9ca3af",
-            }}
-          >
-            Criar OC rápida e padrão para WhatsApp
-          </p>
+            <div
+              style={{
+                width: 52,
+                height: 52,
+                borderRadius: 18,
+                background: "#ffffff",
+                border: "1px solid #e5e7eb",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontWeight: 700,
+                fontSize: "1rem",
+                color: "#ff4b2b",
+                boxShadow: "0 8px 20px rgba(15,23,42,0.08)",
+              }}
+            >
+              GP
+            </div>
+            <div style={{ textAlign: "center" }}>
+              <h1
+                style={{
+                  margin: 0,
+                  fontSize: "1.1rem",
+                  fontWeight: 600,
+                }}
+              >
+                Registrar Ordem de Compra
+              </h1>
+              <p
+                style={{
+                  margin: "4px 0 0 0",
+                  fontSize: "0.8rem",
+                  color: "#9ca3af",
+                }}
+              >
+                Criar OC rápida e padrão para WhatsApp
+              </p>
+            </div>
+          </div>
         </div>
 
         {/* Tipo de pedido */}
@@ -320,24 +509,27 @@ export default function OcPage() {
             ).map((type) => {
               const selected = orderType === type;
 
-              const icon =
+              const iconChar =
                 type === "COMPRA"
-                  ? "🛒"
+                  ? "⬢"
                   : type === "ABASTECIMENTO"
-                  ? "⛽"
+                  ? "⬡"
                   : type === "MANUTENCAO"
-                  ? "🛠️"
+                  ? "⬟"
                   : type === "SERVICOS"
-                  ? "📋"
+                  ? "⬠"
                   : type === "PECAS"
-                  ? "🧩"
-                  : "➕";
+                  ? "◆"
+                  : "＋";
 
               return (
                 <button
                   key={type}
                   type="button"
-                  onClick={() => setOrderType(type)}
+                  onClick={() => {
+                    markDirty();
+                    setOrderType(type);
+                  }}
                   style={{
                     borderRadius: 14,
                     border: "1px solid #e5e7eb",
@@ -356,7 +548,14 @@ export default function OcPage() {
                     borderColor: selected ? "#10b981" : "#e5e7eb",
                   }}
                 >
-                  <span style={{ fontSize: "1rem" }}>{icon}</span>
+                  <span
+                    style={{
+                      fontSize: "1rem",
+                      color: "#6b7280",
+                    }}
+                  >
+                    {iconChar}
+                  </span>
                   <span>{ORDER_TYPE_LABELS[type]}</span>
                 </button>
               );
@@ -373,12 +572,44 @@ export default function OcPage() {
           </div>
 
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {/* ID e OC */}
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+              }}
+            >
+              <div style={{ flex: 1 }}>
+                <Field
+                  label="ID"
+                  placeholder="-"
+                  value={orderId != null ? String(orderId) : ""}
+                  onChange={() => {}}
+                  readOnly
+                />
+              </div>
+              <div style={{ flex: 1 }}>
+                <Field
+                  label="OC"
+                  placeholder="OC2025..."
+                  value={numeroOc}
+                  onChange={(v) => {
+                    markDirty();
+                    setNumeroOc(v);
+                  }}
+                />
+              </div>
+            </div>
+
             {config.showEquipamento && (
               <Field
                 label="Equipamento"
                 placeholder="Digite ou selecione o equipamento"
                 value={equipamento}
-                onChange={setEquipamento}
+                onChange={(v) => {
+                  markDirty();
+                  setEquipamento(v);
+                }}
                 datalistId="equipamentos-list"
               />
             )}
@@ -388,7 +619,10 @@ export default function OcPage() {
                 label="Obra"
                 placeholder="Nome da obra"
                 value={obra}
-                onChange={setObra}
+                onChange={(v) => {
+                  markDirty();
+                  setObra(v);
+                }}
                 datalistId="obras-list"
               />
             )}
@@ -398,7 +632,10 @@ export default function OcPage() {
                 label="Operador"
                 placeholder="Nome do operador"
                 value={operador}
-                onChange={setOperador}
+                onChange={(v) => {
+                  markDirty();
+                  setOperador(v);
+                }}
                 datalistId="operadores-list"
               />
             )}
@@ -408,7 +645,10 @@ export default function OcPage() {
                 label="Horímetro"
                 placeholder="Ex: 1234h"
                 value={horimetro}
-                onChange={setHorimetro}
+                onChange={(v) => {
+                  markDirty();
+                  setHorimetro(v);
+                }}
               />
             )}
 
@@ -417,7 +657,10 @@ export default function OcPage() {
                 label="Local de entrega"
                 placeholder="Endereço ou local"
                 value={localEntrega}
-                onChange={setLocalEntrega}
+                onChange={(v) => {
+                  markDirty();
+                  setLocalEntrega(v);
+                }}
                 datalistId="locais-list"
               />
             )}
@@ -446,7 +689,10 @@ export default function OcPage() {
                 }}
                 placeholder="Informações adicionais..."
                 value={observacoes}
-                onChange={(e) => setObservacoes(e.target.value)}
+                onChange={(e) => {
+                  markDirty();
+                  setObservacoes(e.target.value);
+                }}
               />
             </div>
           </div>
@@ -654,41 +900,45 @@ export default function OcPage() {
               {saving ? "Salvando..." : "Salvar"}
             </button>
 
-            <button
-              type="button"
-              onClick={handleCopy}
-              style={{
-                width: "100%",
-                borderRadius: 999,
-                border: "1px solid #d1d5db",
-                padding: "10px 14px",
-                fontSize: "0.85rem",
-                fontWeight: 600,
-                cursor: "pointer",
-                background: "#ffffff",
-                color: "#111827",
-              }}
-            >
-              Copiar mensagem
-            </button>
+            {hasSaved && (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCopy}
+                  style={{
+                    width: "100%",
+                    borderRadius: 999,
+                    border: "1px solid #d1d5db",
+                    padding: "10px 14px",
+                    fontSize: "0.85rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    background: "#ffffff",
+                    color: "#111827",
+                  }}
+                >
+                  Copiar mensagem
+                </button>
 
-            <button
-              type="button"
-              onClick={handleWhatsapp}
-              style={{
-                width: "100%",
-                borderRadius: 999,
-                border: "none",
-                padding: "10px 14px",
-                fontSize: "0.85rem",
-                fontWeight: 600,
-                cursor: "pointer",
-                background: "#25d366",
-                color: "#ffffff",
-              }}
-            >
-              Enviar no WhatsApp
-            </button>
+                <button
+                  type="button"
+                  onClick={handleWhatsapp}
+                  style={{
+                    width: "100%",
+                    borderRadius: 999,
+                    border: "none",
+                    padding: "10px 14px",
+                    fontSize: "0.85rem",
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    background: "#25d366",
+                    color: "#ffffff",
+                  }}
+                >
+                  Enviar no WhatsApp
+                </button>
+              </>
+            )}
 
             {feedback && (
               <p
@@ -717,7 +967,7 @@ export default function OcPage() {
 
         {/* datalists para autocomplete */}
         <datalist id="equipamentos-list">
-          {EQUIPAMENTOS_SUGESTOES.map((opt) => (
+          {allEquipOptions.map((opt) => (
             <option key={opt} value={opt} />
           ))}
         </datalist>
@@ -741,18 +991,18 @@ export default function OcPage() {
   );
 }
 
-/** componentes auxiliares */
+/** estilos auxiliares / componentes simples */
 
-const itemInputStyle: React.CSSProperties = {
+const itemInputStyle = {
   width: "100%",
   borderRadius: 8,
   border: "1px solid #e5e7eb",
   background: "#ffffff",
   padding: "6px 8px",
   fontSize: "0.75rem",
-};
+} as const;
 
-function ItemLabel({ children }: { children: React.ReactNode }) {
+function ItemLabel(props: { children: any }) {
   return (
     <div
       style={{
@@ -762,7 +1012,7 @@ function ItemLabel({ children }: { children: React.ReactNode }) {
         marginBottom: 2,
       }}
     >
-      {children}
+      {props.children}
     </div>
   );
 }
@@ -773,6 +1023,7 @@ type FieldProps = {
   value: string;
   onChange: (value: string) => void;
   datalistId?: string;
+  readOnly?: boolean;
 };
 
 function Field({
@@ -781,6 +1032,7 @@ function Field({
   value,
   onChange,
   datalistId,
+  readOnly,
 }: FieldProps) {
   return (
     <div>
@@ -799,14 +1051,17 @@ function Field({
           width: "100%",
           borderRadius: 12,
           border: "1px solid #e5e7eb",
-          background: "#f9fafb",
+          background: readOnly ? "#f3f4f6" : "#f9fafb",
           padding: "8px 10px",
           fontSize: "0.8rem",
         }}
         placeholder={placeholder}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          if (!readOnly) onChange(e.target.value);
+        }}
         list={datalistId}
+        readOnly={readOnly}
       />
     </div>
   );
