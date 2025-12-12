@@ -28,7 +28,7 @@ const ORDER_TYPE_LABELS: Record<OrderType, string> = {
   OUTRO: "Outro",
 };
 
-/** Configura quais campos aparecem por tipo (padrão MANUTENÇÃO) */
+/** quais campos aparecem por tipo – padrão MANUTENÇÃO */
 type OrderTypeConfig = {
   showEquipamento: boolean;
   showObra: boolean;
@@ -82,7 +82,7 @@ const ORDER_TYPE_CONFIG: Record<OrderType, OrderTypeConfig> = {
   },
 };
 
-/** Sugestões de autocomplete – depois você troca pelos seus dados reais */
+/** sugestões para autocomplete – depois você troca pelos reais */
 const EQUIPAMENTOS_SUGESTOES = ["UA-01", "UA-02", "UA-03", "RC-05", "TP-04", "PC-07"];
 const OBRAS_SUGESTOES = ["Usina", "Patrolamento", "Tapa-buraco", "Serviço interno", "Obra externa"];
 const LOCAIS_SUGESTOES = ["Usina", "Oficina", "Almoxarifado", "Hidrovolt", "Posto conveniado"];
@@ -121,7 +121,9 @@ export default function OcPage() {
 
   function updateItem(id: string, field: keyof OrderItem, value: string) {
     setItems((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, [field]: value } : item))
+      prev.map((item) =>
+        item.id === id ? { ...item, [field]: value } : item
+      )
     );
   }
 
@@ -129,7 +131,7 @@ export default function OcPage() {
     setItems((prev) => prev.filter((item) => item.id !== id));
   }
 
-  /** Geração da mensagem padrão WhatsApp */
+  /** preview da mensagem pro WhatsApp */
   const previewText = useMemo(() => {
     const lines: string[] = [];
 
@@ -147,13 +149,15 @@ export default function OcPage() {
       lines.push(`*PEDIDO – ${ORDER_TYPE_LABELS[orderType]}*`);
     }
 
-    lines.push(""); // linha em branco
+    lines.push("");
 
     if (obra) lines.push(`*Obra:* ${obra}`);
-    if (equipamento && config.showEquipamento) lines.push(`*Código:* ${equipamento}`);
-    if (operador && config.showOperador) lines.push(`*Operador:* ${operador}`);
-    if (horimetro && config.showHorimetro) lines.push(`*Horímetro:* ${horimetro}`);
-    if (localEntrega && config.showLocalEntrega)
+    if (config.showEquipamento && equipamento)
+      lines.push(`*Código:* ${equipamento}`);
+    if (config.showOperador && operador) lines.push(`*Operador:* ${operador}`);
+    if (config.showHorimetro && horimetro)
+      lines.push(`*Horímetro:* ${horimetro}`);
+    if (config.showLocalEntrega && localEntrega)
       lines.push(`*Local de entrega:* ${localEntrega}`);
 
     if (items.length > 0) {
@@ -175,10 +179,6 @@ export default function OcPage() {
     return lines.join("\n");
   }, [
     orderType,
-    config.showEquipamento,
-    config.showHorimetro,
-    config.showLocalEntrega,
-    config.showOperador,
     obra,
     equipamento,
     operador,
@@ -186,6 +186,10 @@ export default function OcPage() {
     localEntrega,
     items,
     observacoes,
+    config.showEquipamento,
+    config.showHorimetro,
+    config.showLocalEntrega,
+    config.showOperador,
   ]);
 
   async function handleSave() {
@@ -209,7 +213,9 @@ export default function OcPage() {
             obra: config.showObra ? obra || null : null,
             operador: config.showOperador ? operador || null : null,
             horimetro: config.showHorimetro ? horimetro || null : null,
-            local_entrega: config.showLocalEntrega ? localEntrega || null : null,
+            local_entrega: config.showLocalEntrega
+              ? localEntrega || null
+              : null,
             observacoes: observacoes || null,
             valor_total: total || null,
             texto_whatsapp: previewText || null,
@@ -219,7 +225,6 @@ export default function OcPage() {
         .single();
 
       if (insertError) {
-        console.error(insertError);
         throw new Error(insertError.message);
       }
 
@@ -242,8 +247,7 @@ export default function OcPage() {
 
       setFeedback("Ordem salva com sucesso.");
     } catch (e: any) {
-      console.error(e);
-      setError(e?.message || "Erro ao salvar a ordem. Verifique os dados.");
+      setError(e?.message || "Erro ao salvar a ordem.");
     } finally {
       setSaving(false);
     }
@@ -254,8 +258,7 @@ export default function OcPage() {
     try {
       await navigator.clipboard.writeText(previewText);
       setFeedback("Mensagem copiada para a área de transferência.");
-    } catch (e) {
-      console.error(e);
+    } catch {
       setError("Não foi possível copiar a mensagem.");
     }
   }
@@ -267,17 +270,44 @@ export default function OcPage() {
   }
 
   return (
-    <main className="oc-root">
-      <div className="oc-page">
-        <header>
-          <h1 className="oc-header-title">Registrar Ordem de Compra</h1>
-          <p className="oc-header-sub">Criar OC rápida e padrão para WhatsApp</p>
-        </header>
+    <main className="page-root">
+      <div className="page-container" style={{ maxWidth: 520 }}>
+        {/* Título simples, seguindo a cara do dash */}
+        <div className="section-card" style={{ paddingBottom: 14 }}>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "1.1rem",
+              fontWeight: 600,
+            }}
+          >
+            Registrar Ordem de Compra
+          </h1>
+          <p
+            style={{
+              margin: "4px 0 0 0",
+              fontSize: "0.8rem",
+              color: "#9ca3af",
+            }}
+          >
+            Criar OC rápida e padrão para WhatsApp
+          </p>
+        </div>
 
         {/* Tipo de pedido */}
-        <section className="oc-card">
-          <h2 className="oc-card-title">Tipo de Pedido</h2>
-          <div className="oc-type-grid">
+        <div className="section-card">
+          <div className="section-header" style={{ marginBottom: 8 }}>
+            <div className="section-title" style={{ fontSize: "0.85rem" }}>
+              Tipo de Pedido
+            </div>
+          </div>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+              gap: 8,
+            }}
+          >
             {(
               [
                 "COMPRA",
@@ -307,23 +337,42 @@ export default function OcPage() {
                 <button
                   key={type}
                   type="button"
-                  className={
-                    "oc-type-btn" + (selected ? " oc-type-btn--active" : "")
-                  }
                   onClick={() => setOrderType(type)}
+                  style={{
+                    borderRadius: 14,
+                    border: "1px solid #e5e7eb",
+                    background: "#ffffff",
+                    padding: "8px 10px",
+                    fontSize: "0.8rem",
+                    color: "#374151",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
+                    cursor: "pointer",
+                    boxShadow: selected
+                      ? "0 4px 12px rgba(16,185,129,0.3)"
+                      : "none",
+                    borderColor: selected ? "#10b981" : "#e5e7eb",
+                  }}
                 >
-                  <span className="oc-type-icon">{icon}</span>
+                  <span style={{ fontSize: "1rem" }}>{icon}</span>
                   <span>{ORDER_TYPE_LABELS[type]}</span>
                 </button>
               );
             })}
           </div>
-        </section>
+        </div>
 
         {/* Dados essenciais */}
-        <section className="oc-card">
-          <h2 className="oc-card-title">Dados Essenciais</h2>
-          <div className="oc-fields">
+        <div className="section-card">
+          <div className="section-header" style={{ marginBottom: 8 }}>
+            <div className="section-title" style={{ fontSize: "0.85rem" }}>
+              Dados Essenciais
+            </div>
+          </div>
+
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {config.showEquipamento && (
               <Field
                 label="Equipamento"
@@ -331,7 +380,6 @@ export default function OcPage() {
                 value={equipamento}
                 onChange={setEquipamento}
                 datalistId="equipamentos-list"
-                suggestions={EQUIPAMENTOS_SUGESTOES}
               />
             )}
 
@@ -342,7 +390,6 @@ export default function OcPage() {
                 value={obra}
                 onChange={setObra}
                 datalistId="obras-list"
-                suggestions={OBRAS_SUGESTOES}
               />
             )}
 
@@ -353,7 +400,6 @@ export default function OcPage() {
                 value={operador}
                 onChange={setOperador}
                 datalistId="operadores-list"
-                suggestions={OPERADORES_SUGESTOES}
               />
             )}
 
@@ -373,44 +419,110 @@ export default function OcPage() {
                 value={localEntrega}
                 onChange={setLocalEntrega}
                 datalistId="locais-list"
-                suggestions={LOCAIS_SUGESTOES}
               />
             )}
 
             <div>
-              <label className="oc-field-label">Observações</label>
+              <div
+                style={{
+                  fontSize: "0.75rem",
+                  fontWeight: 500,
+                  color: "#374151",
+                  marginBottom: 2,
+                }}
+              >
+                Observações
+              </div>
               <textarea
-                className="oc-textarea"
+                style={{
+                  width: "100%",
+                  borderRadius: 12,
+                  border: "1px solid #e5e7eb",
+                  background: "#f9fafb",
+                  padding: "8px 10px",
+                  fontSize: "0.8rem",
+                  resize: "vertical",
+                  minHeight: 70,
+                }}
                 placeholder="Informações adicionais..."
                 value={observacoes}
                 onChange={(e) => setObservacoes(e.target.value)}
               />
             </div>
           </div>
-        </section>
+        </div>
 
-        {/* Itens da ordem */}
-        <section className="oc-card">
-          <h2 className="oc-card-title">Itens da ordem</h2>
+        {/* Itens */}
+        <div className="section-card">
+          <div className="section-header" style={{ marginBottom: 8 }}>
+            <div className="section-title" style={{ fontSize: "0.85rem" }}>
+              Itens da ordem
+            </div>
+          </div>
 
-          <button type="button" className="oc-add-item" onClick={addItem}>
+          <button
+            type="button"
+            onClick={addItem}
+            style={{
+              width: "100%",
+              borderRadius: 12,
+              border: "1px dashed #d1fae5",
+              background: "#f0fdf4",
+              padding: "8px 10px",
+              fontSize: "0.8rem",
+              fontWeight: 500,
+              color: "#047857",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              cursor: "pointer",
+            }}
+          >
             <span>＋</span>
             <span>Adicionar item</span>
           </button>
 
           {items.length === 0 && (
-            <p className="oc-items-empty">Nenhum item adicionado ainda.</p>
+            <p
+              style={{
+                marginTop: 6,
+                fontSize: "0.75rem",
+                color: "#9ca3af",
+              }}
+            >
+              Nenhum item adicionado ainda.
+            </p>
           )}
 
           {items.length > 0 && (
-            <div className="oc-item-list">
+            <div
+              style={{
+                marginTop: 10,
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
               {items.map((item) => (
-                <div key={item.id} className="oc-item-block">
-                  <div className="oc-item-row">
-                    <div>
-                      <div className="oc-item-label">Quantidade</div>
+                <div
+                  key={item.id}
+                  style={{
+                    borderRadius: 12,
+                    border: "1px solid #e5e7eb",
+                    background: "#f9fafb",
+                    padding: "8px 10px",
+                    fontSize: "0.78rem",
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <div style={{ flex: 1 }}>
+                      <ItemLabel>Quantidade</ItemLabel>
                       <input
-                        className="oc-item-input"
+                        style={itemInputStyle}
                         placeholder="Ex: 2"
                         value={item.quantity}
                         onChange={(e) =>
@@ -418,10 +530,10 @@ export default function OcPage() {
                         }
                       />
                     </div>
-                    <div>
-                      <div className="oc-item-label">Descrição</div>
+                    <div style={{ flex: 2 }}>
+                      <ItemLabel>Descrição</ItemLabel>
                       <input
-                        className="oc-item-input"
+                        style={itemInputStyle}
                         placeholder="Ex: mangueira hidráulica"
                         value={item.description}
                         onChange={(e) =>
@@ -431,11 +543,17 @@ export default function OcPage() {
                     </div>
                   </div>
 
-                  <div className="oc-item-row" style={{ alignItems: "flex-end" }}>
-                    <div>
-                      <div className="oc-item-label">Valor (opcional)</div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      alignItems: "flex-end",
+                    }}
+                  >
+                    <div style={{ flex: 1 }}>
+                      <ItemLabel>Valor (opcional)</ItemLabel>
                       <input
-                        className="oc-item-input"
+                        style={itemInputStyle}
                         placeholder="Ex: 250,00"
                         value={item.value}
                         onChange={(e) =>
@@ -445,8 +563,16 @@ export default function OcPage() {
                     </div>
                     <button
                       type="button"
-                      className="oc-item-remove"
                       onClick={() => removeItem(item.id)}
+                      style={{
+                        borderRadius: 999,
+                        border: "1px solid #e5e7eb",
+                        background: "#ffffff",
+                        padding: "4px 10px",
+                        fontSize: "0.7rem",
+                        color: "#6b7280",
+                        cursor: "pointer",
+                      }}
                     >
                       Remover
                     </button>
@@ -455,57 +581,139 @@ export default function OcPage() {
               ))}
             </div>
           )}
-        </section>
+        </div>
 
-        {/* Preview WhatsApp */}
-        <section className="oc-card">
+        {/* Preview */}
+        <div className="section-card">
           <div
-            className="oc-preview-header"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              fontSize: "0.8rem",
+              fontWeight: 500,
+              cursor: "pointer",
+            }}
             onClick={() => setPreviewOpen((v) => !v)}
           >
             <span>Prévia da mensagem (WhatsApp)</span>
-            <span className="oc-preview-toggle">
+            <span
+              style={{
+                fontSize: "0.7rem",
+                color: "#6b7280",
+              }}
+            >
               {previewOpen ? "Recolher ▲" : "Mostrar ▼"}
             </span>
           </div>
 
           {previewOpen && (
-            <div className="oc-preview-box">
+            <div
+              style={{
+                marginTop: 8,
+                borderRadius: 12,
+                border: "1px solid #bbf7d0",
+                background: "#ecfdf5",
+                padding: "10px 12px",
+                fontSize: "0.78rem",
+                color: "#065f46",
+                whiteSpace: "pre-wrap",
+              }}
+            >
               {previewText || "Preencha os campos para gerar a mensagem."}
             </div>
           )}
-        </section>
+        </div>
 
         {/* Ações */}
-        <section className="oc-actions">
-          <button
-            type="button"
-            className="oc-btn oc-btn-primary"
-            onClick={handleSave}
-            disabled={saving}
+        <div className="section-card">
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+            }}
           >
-            {saving ? "Salvando..." : "Salvar"}
-          </button>
+            <button
+              type="button"
+              onClick={handleSave}
+              disabled={saving}
+              style={{
+                width: "100%",
+                borderRadius: 999,
+                border: "none",
+                padding: "10px 14px",
+                fontSize: "0.85rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: "#16a34a",
+                color: "#ffffff",
+                opacity: saving ? 0.7 : 1,
+              }}
+            >
+              {saving ? "Salvando..." : "Salvar"}
+            </button>
 
-          <button
-            type="button"
-            className="oc-btn oc-btn-outline"
-            onClick={handleCopy}
-          >
-            Copiar mensagem
-          </button>
+            <button
+              type="button"
+              onClick={handleCopy}
+              style={{
+                width: "100%",
+                borderRadius: 999,
+                border: "1px solid #d1d5db",
+                padding: "10px 14px",
+                fontSize: "0.85rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: "#ffffff",
+                color: "#111827",
+              }}
+            >
+              Copiar mensagem
+            </button>
 
-          <button
-            type="button"
-            className="oc-btn oc-btn-whatsapp"
-            onClick={handleWhatsapp}
-          >
-            Enviar no WhatsApp
-          </button>
+            <button
+              type="button"
+              onClick={handleWhatsapp}
+              style={{
+                width: "100%",
+                borderRadius: 999,
+                border: "none",
+                padding: "10px 14px",
+                fontSize: "0.85rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                background: "#25d366",
+                color: "#ffffff",
+              }}
+            >
+              Enviar no WhatsApp
+            </button>
 
-          {feedback && <p className="oc-feedback">{feedback}</p>}
-          {error && <p className="oc-error">{error}</p>}
-        </section>
+            {feedback && (
+              <p
+                style={{
+                  margin: "4px 0 0 0",
+                  fontSize: "0.75rem",
+                  color: "#047857",
+                }}
+              >
+                {feedback}
+              </p>
+            )}
+            {error && (
+              <p
+                style={{
+                  margin: "4px 0 0 0",
+                  fontSize: "0.75rem",
+                  color: "#b91c1c",
+                }}
+              >
+                {error}
+              </p>
+            )}
+          </div>
+        </div>
 
         {/* datalists para autocomplete */}
         <datalist id="equipamentos-list">
@@ -533,13 +741,38 @@ export default function OcPage() {
   );
 }
 
+/** componentes auxiliares */
+
+const itemInputStyle: React.CSSProperties = {
+  width: "100%",
+  borderRadius: 8,
+  border: "1px solid #e5e7eb",
+  background: "#ffffff",
+  padding: "6px 8px",
+  fontSize: "0.75rem",
+};
+
+function ItemLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div
+      style={{
+        fontSize: "0.7rem",
+        fontWeight: 500,
+        color: "#4b5563",
+        marginBottom: 2,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 type FieldProps = {
   label: string;
   placeholder?: string;
   value: string;
   onChange: (value: string) => void;
   datalistId?: string;
-  suggestions?: string[];
 };
 
 function Field({
@@ -551,9 +784,25 @@ function Field({
 }: FieldProps) {
   return (
     <div>
-      <label className="oc-field-label">{label}</label>
+      <div
+        style={{
+          fontSize: "0.75rem",
+          fontWeight: 500,
+          color: "#374151",
+          marginBottom: 2,
+        }}
+      >
+        {label}
+      </div>
       <input
-        className="oc-input"
+        style={{
+          width: "100%",
+          borderRadius: 12,
+          border: "1px solid #e5e7eb",
+          background: "#f9fafb",
+          padding: "8px 10px",
+          fontSize: "0.8rem",
+        }}
         placeholder={placeholder}
         value={value}
         onChange={(e) => onChange(e.target.value)}
