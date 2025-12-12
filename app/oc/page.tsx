@@ -14,9 +14,9 @@ type OrderType =
 
 type OrderItem = {
   id: string;
-  quantity: string;
+  quantity: string; // máscara: inteiro
   description: string;
-  value: string;
+  value: string; // máscara: moeda BR (1.234,56)
 };
 
 const ORDER_TYPE_LABELS: Record<OrderType, string> = {
@@ -91,12 +91,48 @@ const ORDER_TYPE_DB_LABEL: Record<OrderType, string> = {
   OUTRO: "OC",
 };
 
+// Sugestões rápidas
 const OBRAS_SUGESTOES = ["Usina", "Patrolamento", "Tapa-buraco", "Serviço interno"];
 const LOCAIS_SUGESTOES = ["Usina", "Oficina", "Almoxarifado", "Hidrovolt"];
 const OPERADORES_SUGESTOES = ["Marco Túlio", "João", "Carlos", "Rafael", "Bruno"];
 
+// ====== MÁSCARAS ======
+function maskInteger(raw: string) {
+  const digits = raw.replace(/\D/g, "");
+  // evita começar com muitos zeros
+  return digits.replace(/^0+(?=\d)/, "");
+}
+
+function maskDecimal2(raw: string) {
+  // permite só dígitos e vírgula; 1 vírgula; 2 decimais
+  let v = raw.replace(/[^\d,]/g, "");
+  const parts = v.split(",");
+  const intPart = (parts[0] || "").replace(/^0+(?=\d)/, "");
+  const decPart = (parts[1] || "").slice(0, 2);
+  if (parts.length > 1) return `${intPart || "0"},${decPart}`;
+  return intPart;
+}
+
+function maskBRLMoney(raw: string) {
+  // Digita “solto” e vira moeda: 1.234,56
+  const digits = raw.replace(/\D/g, "");
+  if (!digits) return "";
+  const asNumber = Number(digits) / 100;
+  return asNumber.toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+function parseBRNumber(text: string) {
+  // "1.234,56" -> 1234.56
+  const cleaned = text.replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(cleaned);
+  return Number.isFinite(n) ? n : null;
+}
+
 function Icon({ name }: { name: OrderType }) {
-  // Material Icons (Google) em SVG — cinza, sóbrio, alinhado
+  // SVGs sóbrios (cinza), alinhados, acima do texto
   const common = {
     width: 20,
     height: 20,
@@ -169,7 +205,7 @@ export default function OcPage() {
   const [equipamento, setEquipamento] = useState("");
   const [obra, setObra] = useState("");
   const [operador, setOperador] = useState("");
-  const [horimetro, setHorimetro] = useState("");
+  const [horimetro, setHorimetro] = useState(""); // máscara decimal2
   const [localEntrega, setLocalEntrega] = useState("");
   const [observacoes, setObservacoes] = useState("");
 
@@ -190,7 +226,7 @@ export default function OcPage() {
     setFeedback(null);
   }
 
-  // TODOS equipamentos
+  // TODOS equipamentos (lendo do histórico)
   useEffect(() => {
     async function loadEquipamentos() {
       const { data, error } = await supabase
@@ -273,7 +309,7 @@ export default function OcPage() {
     if (config.showObra) lines.push(`• *Obra:* ${obra || "-"}`);
     if (config.showEquipamento) lines.push(`• *Equipamento:* ${equipamento || "-"}`);
     if (config.showOperador) lines.push(`• *Operador:* ${operador || "-"}`);
-    if (config.showHorimetro) lines.push(`• *Horímetro:* ${horimetro || "-"}`);
+    if (config.showHorimetro) lines.push(`• *Horímetro:* ${horimetro ? `${horimetro}h` : "-"}`);
     if (config.showLocalEntrega) lines.push(`• *Entrega:* ${localEntrega || "-"}`);
 
     lines.push("");
@@ -306,11 +342,7 @@ export default function OcPage() {
     localEntrega,
     items,
     observacoes,
-    config.showEquipamento,
-    config.showObra,
-    config.showHorimetro,
-    config.showLocalEntrega,
-    config.showOperador,
+    config,
   ]);
 
   async function handleSave() {
@@ -336,7 +368,7 @@ export default function OcPage() {
         obra: config.showObra ? obra || null : null,
         solicitante: null,
         operador: config.showOperador ? operador || null : null,
-        horimetro: config.showHorimetro ? horimetro || null : null,
+        horimetro: config.showHorimetro ? (horimetro ? `${horimetro}h` : null) : null,
         material: firstItem?.description || null,
         quantidade_texto: firstItem?.quantity || null,
         local_entrega: config.showLocalEntrega ? localEntrega || null : null,
@@ -359,7 +391,7 @@ export default function OcPage() {
 
       if (items.length > 0) {
         const itemsPayload = items.map((item) => {
-          const qtdNum = parseFloat(item.quantity.replace(".", "").replace(",", "."));
+          const qtdNum = item.quantity ? parseFloat(item.quantity) : NaN;
           return {
             ordem_id: newId,
             data: dateStr,
@@ -367,7 +399,7 @@ export default function OcPage() {
             numero_oc: numeroOc || null,
             descricao: item.description,
             quantidade_texto: item.quantity || null,
-            quantidade_num: isNaN(qtdNum) ? null : qtdNum,
+            quantidade_num: Number.isFinite(qtdNum) ? qtdNum : null,
           };
         });
 
@@ -401,21 +433,28 @@ export default function OcPage() {
   return (
     <main className="page-root">
       <div className="page-container" style={{ maxWidth: 520 }}>
-        {/* HEADER IGUAL “CARA” DO DASH (logo real, sem bolinha GP) */}
-        <header className="page-header">
-          <div className="brand">
-            <img className="brand-logo" src="/gpasfalto-logo.png" alt="GP Asfalto" />
-            <div>
-              <div className="brand-text-main">Registrar OC</div>
-              <div className="brand-text-sub">Criar OC rápida e padrão para WhatsApp</div>
-            </div>
+        {/* HEADER: logo centralizada igual no dashboard */}
+        <header style={{ textAlign: "center", padding: "8px 0 2px" }}>
+          <img
+            src="/gpasfalto-logo.png"
+            alt="GP Asfalto"
+            style={{
+              height: 34,
+              width: "auto",
+              display: "block",
+              margin: "0 auto 6px",
+              opacity: 0.95,
+            }}
+          />
+          <div style={{ fontSize: "1.6rem", fontWeight: 600, letterSpacing: "-0.02em" }}>
+            Registrar OC
           </div>
-          <div className="header-right">
-            <span className="header-pill">OC</span>
+          <div style={{ fontSize: "0.85rem", color: "var(--gp-muted-soft)", marginTop: 2 }}>
+            Criar OC rápida e padrão para WhatsApp
           </div>
         </header>
 
-        {/* Tipo de pedido (ícone acima, cinza, alinhado) */}
+        {/* Tipo de pedido */}
         <section className="section-card">
           <div className="section-header" style={{ marginBottom: 10 }}>
             <div className="section-title">Tipo de Pedido</div>
@@ -524,11 +563,13 @@ export default function OcPage() {
             <Field
               label="Horímetro"
               value={horimetro}
-              placeholder="Ex: 1234h"
+              placeholder="Ex: 1234,50"
+              inputMode="decimal"
               onChange={(v) => {
                 markDirty();
-                setHorimetro(v);
+                setHorimetro(maskDecimal2(v));
               }}
+              rightHint="h"
             />
           )}
 
@@ -614,7 +655,8 @@ export default function OcPage() {
                       label="Quantidade"
                       value={it.quantity}
                       placeholder="Ex: 2"
-                      onChange={(v) => updateItem(it.id, "quantity", v)}
+                      inputMode="numeric"
+                      onChange={(v) => updateItem(it.id, "quantity", maskInteger(v))}
                       small
                     />
                     <Field
@@ -631,8 +673,10 @@ export default function OcPage() {
                       label="Valor (opcional)"
                       value={it.value}
                       placeholder="Ex: 250,00"
-                      onChange={(v) => updateItem(it.id, "value", v)}
+                      inputMode="numeric"
+                      onChange={(v) => updateItem(it.id, "value", maskBRLMoney(v))}
                       small
+                      leftHint="R$"
                     />
                     <button
                       type="button"
@@ -790,6 +834,9 @@ function Field({
   datalistId,
   readOnly,
   small,
+  inputMode,
+  leftHint,
+  rightHint,
 }: {
   label: string;
   placeholder?: string;
@@ -798,27 +845,70 @@ function Field({
   datalistId?: string;
   readOnly?: boolean;
   small?: boolean;
+  inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
+  leftHint?: string;
+  rightHint?: string;
 }) {
   return (
     <div style={{ width: "100%", marginTop: small ? 0 : 10 }}>
       <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "#374151", marginBottom: 4 }}>
         {label}
       </div>
-      <input
-        value={value}
-        readOnly={readOnly}
-        list={datalistId}
-        placeholder={placeholder}
-        onChange={(e) => onChange?.(e.target.value)}
-        style={{
-          width: "100%",
-          borderRadius: 12,
-          border: "1px solid #e5e7eb",
-          background: readOnly ? "#f3f4f6" : "#f9fafb",
-          padding: small ? "8px 10px" : "10px 12px",
-          fontSize: "0.9rem",
-        }}
-      />
+
+      <div style={{ position: "relative" }}>
+        {leftHint && (
+          <div
+            style={{
+              position: "absolute",
+              left: 12,
+              top: "50%",
+              transform: "translateY(-50%)",
+              color: "#9ca3af",
+              fontWeight: 700,
+              fontSize: "0.85rem",
+              pointerEvents: "none",
+            }}
+          >
+            {leftHint}
+          </div>
+        )}
+
+        {rightHint && (
+          <div
+            style={{
+              position: "absolute",
+              right: 12,
+              top: "50%",
+              transform: "translateY(-50%)",
+              color: "#9ca3af",
+              fontWeight: 700,
+              fontSize: "0.85rem",
+              pointerEvents: "none",
+            }}
+          >
+            {rightHint}
+          </div>
+        )}
+
+        <input
+          value={value}
+          readOnly={readOnly}
+          list={datalistId}
+          placeholder={placeholder}
+          inputMode={inputMode}
+          onChange={(e) => onChange?.(e.target.value)}
+          style={{
+            width: "100%",
+            borderRadius: 12,
+            border: "1px solid #e5e7eb",
+            background: readOnly ? "#f3f4f6" : "#f9fafb",
+            padding: small ? "8px 10px" : "10px 12px",
+            paddingLeft: leftHint ? 34 : undefined,
+            paddingRight: rightHint ? 34 : undefined,
+            fontSize: "0.9rem",
+          }}
+        />
+      </div>
     </div>
   );
 }
