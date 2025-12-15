@@ -82,9 +82,7 @@ async function getAccessToken() {
   });
 
   const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(`Token error: ${resp.status} ${JSON.stringify(data)}`);
-  }
+  if (!resp.ok) throw new Error(`Token error: ${resp.status} ${JSON.stringify(data)}`);
 
   const accessToken = data.access_token as string;
   const expiresIn = (data.expires_in as number) || 3600;
@@ -104,10 +102,8 @@ function normalizeText(t: string) {
 function extractCandidates(text: string) {
   const t = text.toUpperCase();
 
-  // números com , ou .
   const nums = Array.from(t.matchAll(/\d+(?:[.,]\d+)?/g)).map((m) => m[0]);
 
-  // possíveis códigos tipo CB-08, CB08, RC-05, EH-02 etc
   const eq = Array.from(t.matchAll(/\b[A-Z]{1,3}\s?-?\s?\d{2}\b/g)).map((m) =>
     m[0].replace(/\s+/g, "").replace("-", "")
   );
@@ -116,7 +112,6 @@ function extractCandidates(text: string) {
 }
 
 function toNumberSmart(s: string) {
-  // tenta pt-BR (vírgula) e também ponto
   const a = s.replace(/\./g, "").replace(",", ".");
   const n = Number(a);
   if (Number.isFinite(n)) return n;
@@ -128,13 +123,39 @@ function toNumberSmart(s: string) {
   return null;
 }
 
+function formatInputNoGroup(n: number, decimals: number) {
+  // sem separador de milhar, com vírgula decimal (pra preencher input)
+  const fixed = n.toFixed(decimals); // "11145.2"
+  return fixed.replace(".", ","); // "11145,2"
+}
+
+function adjustKindDecimal(kind: Kind, n: number) {
+  // HORÍMETRO: normalmente 0,1 (uma casa). Quando OCR “junta”, vira inteiro grande (ex 111452).
+  if (kind === "horimetro") {
+    if (Number.isInteger(n) && n >= 100000 && n <= 2000000) {
+      return n / 10;
+    }
+    return n;
+  }
+
+  // ABASTECIMENTO (litros): normalmente 0,1. Se veio 1231, provavelmente é 123,1.
+  if (kind === "abastecimento") {
+    if (Number.isInteger(n) && n >= 1000 && n <= 200000) {
+      return n / 10;
+    }
+    return n;
+  }
+
+  return n;
+}
+
 function pickBest(kind: Kind, rawText: string) {
   const text = normalizeText(rawText);
   const { nums, eq } = extractCandidates(text);
 
   if (kind === "equipamento") {
     const best = eq[0] || null;
-    return { best, candidates: eq.slice(0, 10), raw: text };
+    return { best, best_input: best, candidates: eq.slice(0, 10), candidates_input: eq.slice(0, 10), raw: text };
   }
 
   const values = nums
@@ -142,38 +163,48 @@ function pickBest(kind: Kind, rawText: string) {
     .filter((x) => x.n !== null) as Array<{ s: string; n: number }>;
 
   if (kind === "odometro") {
-    // normalmente inteiro “grande”
     const filtered = values
       .filter((v) => Number.isInteger(v.n) && v.n >= 1000 && v.n <= 50_000_000)
       .sort((a, b) => b.n - a.n);
 
+    const best = filtered[0]?.n ?? null;
     return {
-      best: filtered[0]?.n ?? null,
+      best,
+      best_input: best !== null ? String(best) : null,
       candidates: filtered.slice(0, 10).map((x) => x.n),
+      candidates_input: filtered.slice(0, 10).map((x) => String(x.n)),
       raw: text,
     };
   }
 
   if (kind === "horimetro") {
     const filtered = values
-      .filter((v) => v.n >= 0 && v.n <= 200_000)
+      .map((v) => ({ ...v, n: adjustKindDecimal(kind, v.n) }))
+      .filter((v) => v.n >= 0 && v.n <= 2_000_000)
       .sort((a, b) => b.n - a.n);
 
+    const best = filtered[0]?.n ?? null;
     return {
-      best: filtered[0]?.n ?? null,
+      best,
+      best_input: best !== null ? formatInputNoGroup(best, 1) : null,
       candidates: filtered.slice(0, 10).map((x) => x.n),
+      candidates_input: filtered.slice(0, 10).map((x) => formatInputNoGroup(x.n, 1)),
       raw: text,
     };
   }
 
-  // abastecimento (litros): costuma ter 1 casa decimal e ser menor
+  // abastecimento
   const filtered = values
+    .map((v) => ({ ...v, n: adjustKindDecimal(kind, v.n) }))
     .filter((v) => v.n > 0 && v.n <= 2000)
     .sort((a, b) => b.n - a.n);
 
+  const best = filtered[0]?.n ?? null;
   return {
-    best: filtered[0]?.n ?? null,
+    best,
+    best_input: best !== null ? formatInputNoGroup(best, 1) : null,
     candidates: filtered.slice(0, 10).map((x) => x.n),
+    candidates_input: filtered.slice(0, 10).map((x) => formatInputNoGroup(x.n, 1)),
     raw: text,
   };
 }
@@ -200,9 +231,7 @@ async function runVisionOCR(imageUrl: string) {
   });
 
   const data = await resp.json();
-  if (!resp.ok) {
-    throw new Error(`Vision error: ${resp.status} ${JSON.stringify(data)}`);
-  }
+  if (!resp.ok) throw new Error(`Vision error: ${resp.status} ${JSON.stringify(data)}`);
 
   const r0 = data?.responses?.[0];
   const text =
@@ -222,10 +251,7 @@ function validateUrl(u: string) {
 
 export async function POST(req: Request) {
   try {
-    const { kind, imageUrl } = (await req.json()) as {
-      kind: Kind;
-      imageUrl: string;
-    };
+    const { kind, imageUrl } = (await req.json()) as { kind: Kind; imageUrl: string };
 
     if (!kind) return json(400, { ok: false, error: "missing kind" });
 
@@ -241,7 +267,6 @@ export async function POST(req: Request) {
   }
 }
 
-// GET opcional pra teste rápido no browser
 export async function GET(req: Request) {
   try {
     const u = new URL(req.url);
