@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 
 type Kind = "horimetro" | "odometro" | "abastecimento" | "equipamento";
 
@@ -22,7 +22,13 @@ export default function OcrHint(props: {
   autoApplyIfEmpty?: boolean;
   onApply?: (v: string) => void;
 }) {
-  const { kind, imageUrl, currentValue = "", autoApplyIfEmpty = false, onApply } = props;
+  const {
+    kind,
+    imageUrl,
+    currentValue = "",
+    autoApplyIfEmpty = false,
+    onApply,
+  } = props;
 
   const [loading, setLoading] = useState(false);
   const [best, setBest] = useState<string | null>(null);
@@ -42,7 +48,7 @@ export default function OcrHint(props: {
 
     if (!url || url.length < 10) return;
 
-    // evita reprocessar a mesma URL toda hora
+    // evita reprocessar a mesma URL
     if (lastUrlRef.current === url) return;
     lastUrlRef.current = url;
 
@@ -51,12 +57,15 @@ export default function OcrHint(props: {
     async function run() {
       try {
         setLoading(true);
+
         const res = await fetch(
-          `/api/vision/ocr?kind=${encodeURIComponent(kind)}&url=${encodeURIComponent(url)}`,
+          `/api/vision/ocr?kind=${encodeURIComponent(
+            kind
+          )}&url=${encodeURIComponent(url)}`,
           { signal: ctrl.signal, cache: "no-store" }
         );
-        const data = (await res.json()) as OcrResp;
 
+        const data = (await res.json()) as OcrResp;
         if (!alive) return;
 
         if (!res.ok || !data?.ok) {
@@ -68,7 +77,7 @@ export default function OcrHint(props: {
         setBest(bi || null);
         setRaw(data.raw || null);
 
-        // auto-preencher (somente se vazio e só 1x por URL)
+        // auto-preencher 1x por URL (somente se vazio)
         if (autoApplyIfEmpty && onApply && !currentValue.trim() && bi) {
           if (appliedUrlRef.current !== url) {
             appliedUrlRef.current = url;
@@ -84,8 +93,7 @@ export default function OcrHint(props: {
       }
     }
 
-    // debounce leve (evita martelar quando a URL muda rápido)
-    const t = setTimeout(run, 350);
+    const t = setTimeout(run, 250);
 
     return () => {
       alive = false;
@@ -96,45 +104,64 @@ export default function OcrHint(props: {
 
   if (!imageUrl) return null;
 
+  const row: CSSProperties = {
+    marginTop: 8,
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    fontSize: 12,
+    color: "var(--gp-muted-soft)",
+  };
+
+  const btn: CSSProperties = {
+    marginLeft: "auto",
+    padding: "6px 10px",
+    borderRadius: 999,
+    border: "1px solid #e5e7eb",
+    background: "#ffffff",
+    color: "var(--gp-text)",
+    fontWeight: 800,
+    cursor: "pointer",
+    fontSize: 12,
+  };
+
+  const detailsBox: CSSProperties = {
+    marginTop: 8,
+    fontSize: 12,
+    color: "var(--gp-muted-soft)",
+  };
+
+  const preBox: CSSProperties = {
+    marginTop: 8,
+    whiteSpace: "pre-wrap",
+    borderRadius: 12,
+    border: "1px solid #e5e7eb",
+    background: "#f9fafb",
+    padding: 10,
+    color: "var(--gp-text)",
+  };
+
+  if (loading) return <div style={row}>Lendo foto…</div>;
+  if (err) return <div style={{ ...row, color: "#b91c1c" }}>OCR: {err}</div>;
+  if (!best) return null;
+
   return (
-    <div className="mt-2 flex flex-col gap-1">
-      {loading && (
-        <div className="text-xs text-slate-500 flex items-center gap-2">
-          <span className="inline-block h-3 w-3 animate-spin rounded-full border border-slate-300 border-t-slate-600" />
-          Lendo foto…
-        </div>
-      )}
+    <div>
+      <div style={row}>
+        Sugestão da foto: <b style={{ color: "var(--gp-text)" }}>{best}</b>
+        {onApply ? (
+          <button type="button" style={btn} onClick={() => onApply(best)}>
+            Aplicar
+          </button>
+        ) : null}
+      </div>
 
-      {!loading && err && (
-        <div className="text-xs text-red-600">OCR: {err}</div>
-      )}
-
-      {!loading && !err && best && (
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-slate-600">
-            Sugestão da foto: <b className="text-slate-900">{best}</b>
-          </span>
-
-          {onApply && (
-            <button
-              type="button"
-              onClick={() => onApply(best)}
-              className="ml-auto rounded-md border border-slate-200 bg-white px-2 py-1 text-slate-700 hover:bg-slate-50"
-            >
-              Aplicar
-            </button>
-          )}
-        </div>
-      )}
-
-      {!loading && !err && raw && (
-        <details className="text-xs text-slate-400">
-          <summary className="cursor-pointer select-none">Ver texto lido</summary>
-          <div className="mt-1 whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-2 text-slate-600">
-            {raw}
-          </div>
+      {raw ? (
+        <details style={detailsBox}>
+          <summary style={{ cursor: "pointer" }}>Ver texto lido</summary>
+          <div style={preBox}>{raw}</div>
         </details>
-      )}
+      ) : null}
     </div>
   );
 }
