@@ -1,8 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import OcrHint from "@/components/OcrHint";
 
 type EquipOption = { value: string };
 
@@ -70,6 +77,38 @@ async function uploadToDieselBucket(file: File, path: string) {
   });
   if (error) throw error;
   return path;
+}
+
+async function uploadTempToDieselBucket(file: File, path: string) {
+  const { error } = await supabase.storage.from("diesel").upload(path, file, {
+    cacheControl: "60",
+    upsert: true, // temp pode sobrescrever
+    contentType: file.type || "image/jpeg",
+  });
+  if (error) throw error;
+  return path;
+}
+
+function extFromFile(file: File) {
+  const t = (file.type || "").toLowerCase();
+  if (t.includes("png")) return "png";
+  if (t.includes("webp")) return "webp";
+  return "jpg";
+}
+
+async function tempSignedUrl(sessionId: string, name: string, file: File) {
+  const ext = extFromFile(file);
+  const path = `tmp/ocr/${sessionId}/${name}.${ext}`;
+
+  await uploadTempToDieselBucket(file, path);
+
+  const { data, error } = await supabase.storage
+    .from("diesel")
+    .createSignedUrl(path, 60 * 10); // 10 min
+
+  if (error) throw error;
+  if (!data?.signedUrl) throw new Error("Falha ao gerar signedUrl do OCR");
+  return data.signedUrl;
 }
 
 async function buildComprovantePNG(args: {
@@ -163,9 +202,7 @@ async function buildComprovantePNG(args: {
         return;
       }
     }
-    ctx.font = `${weight} ${
-      fontSizes[fontSizes.length - 1]
-    }px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial`;
+    ctx.font = `${weight} ${fontSizes[fontSizes.length - 1]}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial`;
     ctx.fillText(text, x, y);
   }
 
@@ -182,7 +219,7 @@ async function buildComprovantePNG(args: {
   const mainH = H - pad * 2;
   drawCard(mainX, mainY, mainW, mainH);
 
-  // Header (melhor espaçamento)
+  // Header
   const leftX = mainX + 36;
 
   const titleY = mainY + 78;
@@ -317,7 +354,7 @@ async function buildComprovantePNG(args: {
     ctx.drawImage(img, dx, dy, dw, dh);
   }
 
-  // Rodapé com data/hora
+  // Rodapé
   const footerY = mainY + mainH - 26;
 
   ctx.fillStyle = "#94a3b8";
@@ -345,6 +382,7 @@ async function buildComprovantePNG(args: {
 export default function DieselNovoPage() {
   const router = useRouter();
   const today = useMemo(() => new Date(), []);
+  const ocrSessionId = useMemo(() => crypto.randomUUID(), []);
 
   const [solicitante, setSolicitante] = useState("");
   const [equipamento, setEquipamento] = useState("");
@@ -359,7 +397,12 @@ export default function DieselNovoPage() {
   const [fotoEquip, setFotoEquip] = useState<File | null>(null);
   const [fotoHor, setFotoHor] = useState<File | null>(null);
   const [fotoOdo, setFotoOdo] = useState<File | null>(null);
-  const [fotoAbast, setFotoAbast] = useState<File | null>(null); // obrigatório
+  const [fotoAbast, setFotoAbast] = useState<File | null>(null);
+
+  // signed urls temporárias para OCR
+  const [ocrHorUrl, setOcrHorUrl] = useState<string | null>(null);
+  const [ocrOdoUrl, setOcrOdoUrl] = useState<string | null>(null);
+  const [ocrLitrosUrl, setOcrLitrosUrl] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -384,8 +427,66 @@ export default function DieselNovoPage() {
     })();
   }, []);
 
+  // ===== OCR: gera signedUrl temp ao anexar fotos =====
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!fotoHor) {
+        setOcrHorUrl(null);
+        return;
+      }
+      try {
+        const url = await tempSignedUrl(ocrSessionId, "horimetro", fotoHor);
+        if (alive) setOcrHorUrl(url);
+      } catch {
+        if (alive) setOcrHorUrl(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [fotoHor, ocrSessionId]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!fotoOdo) {
+        setOcrOdoUrl(null);
+        return;
+      }
+      try {
+        const url = await tempSignedUrl(ocrSessionId, "odometro", fotoOdo);
+        if (alive) setOcrOdoUrl(url);
+      } catch {
+        if (alive) setOcrOdoUrl(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [fotoOdo, ocrSessionId]);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (!fotoAbast) {
+        setOcrLitrosUrl(null);
+        return;
+      }
+      try {
+        const url = await tempSignedUrl(ocrSessionId, "abastecimento", fotoAbast);
+        if (alive) setOcrLitrosUrl(url);
+      } catch {
+        if (alive) setOcrLitrosUrl(null);
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [fotoAbast, ocrSessionId]);
+
   const styles = useMemo(() => {
-    const input: React.CSSProperties = {
+    const input: CSSProperties = {
       width: "100%",
       padding: "10px 12px",
       borderRadius: 14,
@@ -396,7 +497,7 @@ export default function DieselNovoPage() {
       fontSize: 14,
     };
 
-    const label: React.CSSProperties = {
+    const label: CSSProperties = {
       fontSize: 12,
       fontWeight: 600,
       color: "var(--gp-muted)",
@@ -406,41 +507,41 @@ export default function DieselNovoPage() {
       textTransform: "uppercase",
     };
 
-    const hint: React.CSSProperties = {
+    const hint: CSSProperties = {
       fontSize: 12,
       color: "var(--gp-muted-soft)",
       marginTop: 6,
     };
 
-    const btnPrimary: React.CSSProperties = {
+    const btnPrimary: CSSProperties = {
       padding: "10px 14px",
       borderRadius: 14,
       border: "1px solid #111827",
       background: "#111827",
       color: "#fff",
-      fontWeight: 700,
+      fontWeight: 800,
       fontSize: 14,
       cursor: "pointer",
     };
 
-    const btnSecondary: React.CSSProperties = {
+    const btnSecondary: CSSProperties = {
       padding: "10px 14px",
       borderRadius: 14,
       border: "1px solid #e5e7eb",
       background: "#fff",
       color: "var(--gp-text)",
-      fontWeight: 700,
+      fontWeight: 800,
       fontSize: 14,
       cursor: "pointer",
     };
 
-    const btnAccent: React.CSSProperties = {
+    const btnAccent: CSSProperties = {
       padding: "10px 14px",
       borderRadius: 14,
       border: "1px solid var(--gp-accent)",
       background: "var(--gp-accent)",
       color: "#fff",
-      fontWeight: 800,
+      fontWeight: 900,
       fontSize: 14,
       cursor: "pointer",
     };
@@ -484,7 +585,9 @@ export default function DieselNovoPage() {
 
     const litrosN = parseDecimalBR(litros);
     const horN = parseDecimalBR(horimetro);
-    const odoN = odometro.trim() ? Number.parseInt(onlyDigits(odometro), 10) : null;
+    const odoN = odometro.trim()
+      ? Number.parseInt(onlyDigits(odometro), 10)
+      : null;
 
     if (!solicit) return setError("Informe o solicitante.");
     if (!equip) return setError("Selecione/Informe o equipamento.");
@@ -660,29 +763,35 @@ export default function DieselNovoPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        {/* ✅ LOGO CENTRAL COMO NO DASHBOARD */}
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src="/gpasfalto-logo.png"
-            alt="GP Asfalto"
-            style={{
-              height: 58,
-              width: "auto",
-              objectFit: "contain",
-              display: "block",
-              marginTop: 8,
-            }}
-          />
-          <div style={{ textAlign: "center" }}>
-            <div style={{ fontSize: 22, fontWeight: 800, letterSpacing: "-0.02em" }}>
-              Abastecimento • Diesel
-            </div>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)", marginTop: 2 }}>
-              Lançamento operacional • Fotos + comprovante
+        {/* HEADER PADRONIZADO (mesmas classes do dashboard) */}
+        <header
+          className="page-header"
+          style={{ flexDirection: "column", alignItems: "center", gap: "8px" }}
+        >
+          <div
+            className="brand"
+            style={{ flexDirection: "column", alignItems: "center", gap: "8px" }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/gpasfalto-logo.png"
+              alt="GP Asfalto"
+              style={{
+                width: 120,
+                height: 120,
+                objectFit: "contain",
+                border: "none",
+                background: "transparent",
+              }}
+            />
+            <div style={{ textAlign: "center" }}>
+              <div className="brand-text-main">Abastecimento • Diesel</div>
+              <div className="brand-text-sub">
+                Lançamento operacional • Fotos + comprovante
+              </div>
             </div>
           </div>
-        </div>
+        </header>
 
         <div className="section-card">
           <div className="section-header">
@@ -696,6 +805,7 @@ export default function DieselNovoPage() {
 
           {error ? (
             <div
+              className="state-card"
               style={{
                 borderRadius: 14,
                 padding: "10px 12px",
@@ -752,6 +862,13 @@ export default function DieselNovoPage() {
                 placeholder="Ex.: 11145,2"
                 inputMode="decimal"
               />
+              <OcrHint
+                kind="horimetro"
+                imageUrl={ocrHorUrl}
+                currentValue={horimetro}
+                autoApplyIfEmpty={true}
+                onApply={(v) => setHorimetro(normalizeDecimalBRInput(v))}
+              />
             </div>
 
             <div style={{ gridColumn: "span 4" }}>
@@ -762,6 +879,13 @@ export default function DieselNovoPage() {
                 onChange={(e) => setOdometro(onlyDigits(e.target.value))}
                 placeholder="Ex.: 156872"
                 inputMode="numeric"
+              />
+              <OcrHint
+                kind="odometro"
+                imageUrl={ocrOdoUrl}
+                currentValue={odometro}
+                autoApplyIfEmpty={true}
+                onApply={(v) => setOdometro(onlyDigits(v))}
               />
             </div>
 
@@ -774,11 +898,23 @@ export default function DieselNovoPage() {
                 placeholder="Ex.: 123,1"
                 inputMode="decimal"
               />
+              <OcrHint
+                kind="abastecimento"
+                imageUrl={ocrLitrosUrl}
+                currentValue={litros}
+                autoApplyIfEmpty={true}
+                onApply={(v) => setLitros(normalizeDecimalBRInput(v))}
+              />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Observação</label>
-              <input style={styles.input} value={obs} onChange={(e) => setObs(e.target.value)} placeholder="Opcional" />
+              <input
+                style={styles.input}
+                value={obs}
+                onChange={(e) => setObs(e.target.value)}
+                placeholder="Opcional"
+              />
             </div>
           </div>
 
@@ -920,7 +1056,7 @@ function FileField({
             borderRadius: 14,
             background: "#f9fafb",
             border: "1px solid #e5e7eb",
-            fontWeight: 700,
+            fontWeight: 800,
             cursor: "pointer",
             color: "var(--gp-text)",
             fontSize: 14,
@@ -945,7 +1081,7 @@ function FileField({
               borderRadius: 14,
               background: "#fff",
               border: "1px solid #e5e7eb",
-              fontWeight: 700,
+              fontWeight: 800,
               cursor: "pointer",
               color: "var(--gp-muted)",
               fontSize: 14,
@@ -983,7 +1119,7 @@ function FileField({
             textAlign: "center",
             color: "var(--gp-muted-soft)",
             fontSize: 14,
-            fontWeight: 600,
+            fontWeight: 700,
           }}
         >
           Sem foto
