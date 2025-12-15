@@ -1,238 +1,359 @@
-import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
+import { NextResponse } from "next/server";
+import { ImageAnnotatorClient } from "@google-cloud/vision";
+import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
-export const maxDuration = 30;
 
 function jsonError(message: string, status = 400, extra?: any) {
-  return NextResponse.json({ ok: false, error: message, ...extra }, { status });
+  return NextResponse.json({ ok: false, error: message, ...(extra || {}) }, { status });
 }
 
-function base64url(input: Buffer | string) {
-  const b = Buffer.isBuffer(input) ? input : Buffer.from(input);
-  return b
-    .toString("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-}
+let _visionClient: ImageAnnotatorClient | null = null;
 
-function getServiceAccountFromEnv(): any {
-  const b64 = process.env.GCP_KEY_BASE64;
-  if (!b64) throw new Error("Env GCP_KEY_BASE64 não configurada.");
-  const json = Buffer.from(b64, "base64").toString("utf8");
-  return JSON.parse(json);
-}
+function getVisionClient() {
+  if (_visionClient) return _visionClient;
 
-let tokenCache: { token: string; exp: number } | null = null;
+  // ✅ aceita os 2 nomes (o seu está como GCP_SA_KEY_BASE64)
+  const b64 =
+    process.env.GCP_SA_KEY_BASE64 ||
+    process.env.GCP_KEY_BASE64 ||
+    "";
 
-async function getAccessToken(scopes: string[]) {
-  const now = Math.floor(Date.now() / 1000);
-
-  if (tokenCache && tokenCache.exp > now + 60) {
-    return tokenCache.token;
+  if (!b64) {
+    throw new Error("Env GCP_SA_KEY_BASE64 (ou GCP_KEY_BASE64) não configurada.");
   }
 
-  const sa = getServiceAccountFromEnv();
+  let creds: any;
+  try {
+    const json = Buffer.from(b64, "base64").toString("utf8");
+    creds = JSON.parse(json);
+  } catch {
+    throw new Error("Env GCP_SA_KEY_BASE64 inválida (esperado JSON em base64).");
+  }
 
-  const header = base64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = base64url(
-    JSON.stringify({
-      iss: sa.client_email,
-      scope: scopes.join(" "),
-      aud: "https://oauth2.googleapis.com/token",
-      iat: now,
-      exp: now + 3600,
-    })
-  );
-
-  const toSign = `${header}.${payload}`;
-  const signature = crypto.createSign("RSA-SHA256").update(toSign).sign(sa.private_key);
-  const assertion = `${toSign}.${base64url(signature)}`;
-
-  const resp = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
-      assertion,
-    }).toString(),
+  _visionClient = new ImageAnnotatorClient({
+    projectId: creds.project_id,
+    credentials: {
+      client_email: creds.client_email,
+      private_key: creds.private_key,
+    },
   });
 
-  const data: any = await resp.json();
-  if (!resp.ok || !data?.access_token) {
-    throw new Error(`Falha ao obter token OAuth: ${data?.error || resp.statusText}`);
-  }
-
-  tokenCache = { token: data.access_token, exp: now + Math.min(3500, data.expires_in || 3600) };
-  return data.access_token as string;
+  return _visionClient;
 }
 
-function parsePtBrDecimal(s: string): number | null {
-  const v = (s || "").trim();
-  if (!v) return null;
-
-  // mantém dígitos + , .
-  const cleaned = v.replace(/[^\d,.-]/g, "");
-  if (!cleaned) return null;
-
-  // pt-BR: remove milhares ".", troca "," por "."
-  const normalized = cleaned.replace(/\./g, "").replace(",", ".");
-  const n = Number.parseFloat(normalized);
-  return Number.isFinite(n) ? n : null;
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
-function fmt1(n: number) {
-  // 1 casa decimal com vírgula
-  return n.toFixed(1).replace(".", ",");
+function getBoxCenterY(ann: any): number | null {
+  const vs = ann?.boundingPoly?.vertices;
+  if (!Array.isArray(vs) || vs.length === 0) return null;
+  const ys = vs.map((v: any) => (typeof v?.y === "number" ? v.y : null)).filter((y: any) => y != null);
+  if (!ys.length) return null;
+  return ys.reduce((s: number, y: number) => s + y, 0) / ys.length;
 }
 
-type Kind = "horimetro" | "abastecimento" | "odometro" | "generic";
+function computeYRange(anns: any[]) {
+  let minY = Number.POSITIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
 
-function scoreCandidate(kind: Kind, n: number, expected: number | null) {
-  let score = 0;
-
-  // tamanho (quantidade de dígitos aproximada)
-  const digits = String(Math.abs(Math.round(n * 10))).length;
-  score += Math.min(10, digits);
-
-  if (kind === "abastecimento") {
-    // litros: normalmente 10–600, mas aceita até 2000
-    if (n <= 0 || n > 2000) score -= 100;
-    if (n >= 10 && n <= 600) score += 8;
-    if (n >= 1 && n < 10) score -= 6;
+  for (const a of anns) {
+    const vs = a?.boundingPoly?.vertices;
+    if (!Array.isArray(vs)) continue;
+    for (const v of vs) {
+      if (typeof v?.y === "number") {
+        minY = Math.min(minY, v.y);
+        maxY = Math.max(maxY, v.y);
+      }
+    }
   }
 
-  if (kind === "horimetro") {
-    // horímetro: normalmente 100–60000 (aceita até 100000)
-    if (n < 0 || n > 200000) score -= 100;
-    if (n > 100000) score -= 20;
-    if (n >= 100 && n <= 60000) score += 8;
-    if (n < 50) score -= 8; // evita “100” de RPM virar 10,0 etc
-  }
-
-  // ancoragem no esperado (equipament_hours)
-  if (expected != null && Number.isFinite(expected)) {
-    const diff = Math.abs(n - expected);
-
-    // favorece bem perto
-    const bonus = Math.max(0, 16 - Math.log10(diff + 1) * 8);
-    score += bonus;
-
-    // penaliza “voltar”
-    if (n < expected - 1) score -= 10;
-  }
-
-  return score;
+  if (!Number.isFinite(minY) || !Number.isFinite(maxY) || maxY <= minY) return null;
+  return { minY, maxY };
 }
 
-function unique1Dec(list: number[]) {
-  const seen = new Set<string>();
-  const out: number[] = [];
-  for (const n of list) {
-    const key = (Math.round(n * 10) / 10).toFixed(1);
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(Math.round(n * 10) / 10);
+function normalizeCandidate(input: string): { input: string; value: number; hasDecimal: boolean } | null {
+  let s = (input || "").trim();
+  if (!s) return null;
+
+  // mantém só dígitos + separadores
+  s = s.replace(/[^\d.,]/g, "");
+  if (!/\d/.test(s)) return null;
+
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
+  const sep = Math.max(lastComma, lastDot);
+
+  let hasDecimal = false;
+  let asNumberStr = "";
+
+  if (sep !== -1) {
+    const decLen = s.length - sep - 1;
+    // decimal típico (1 ou 2 casas)
+    if (decLen >= 1 && decLen <= 2) {
+      hasDecimal = true;
+      const intPart = s.slice(0, sep).replace(/[.,]/g, "");
+      const decPart = s.slice(sep + 1).replace(/[.,]/g, "");
+      asNumberStr = `${intPart}.${decPart}`;
+      const br = `${intPart},${decPart}`;
+      const n = Number.parseFloat(asNumberStr);
+      if (!Number.isFinite(n)) return null;
+      return { input: br, value: n, hasDecimal };
+    }
+  }
+
+  // sem decimal (ou separadores ruins): trata como inteiro
+  const intPart = s.replace(/[.,]/g, "");
+  asNumberStr = intPart;
+  const n = Number.parseFloat(asNumberStr);
+  if (!Number.isFinite(n)) return null;
+
+  return { input: intPart, value: n, hasDecimal: false };
+}
+
+function extractCandidatesFromText(raw: string): string[] {
+  const out: string[] = [];
+  const re = /(\d[\d.,]{0,10})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(raw || ""))) {
+    const v = (m[1] || "").trim();
+    if (v) out.push(v);
   }
   return out;
 }
 
-function extractCandidatesFromRaw(raw: string, kind: Kind) {
-  const candidates: number[] = [];
+async function getLastHorimetroByEquip(equipamento: string): Promise<number | null> {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const key =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    "";
 
-  // 1) padrões com separador (11145,2 / 11145.2)
-  const reSep = /\d[\d.]*[.,]\d+/g;
-  const sepMatches = raw.match(reSep) || [];
-  for (const m of sepMatches) {
-    const n = parsePtBrDecimal(m);
-    if (n != null) candidates.push(n);
-  }
+  if (!url || !key) return null;
 
-  // 2) só dígitos (ex.: 1146 -> 114,6 ; 111452 -> 11145,2)
-  const reDigits = /\d{2,10}/g;
-  const digMatches = raw.match(reDigits) || [];
-  for (const d of digMatches) {
-    const i = Number.parseInt(d, 10);
-    if (Number.isFinite(i)) {
-      candidates.push(i); // inteiro puro (às vezes útil)
-      candidates.push(i / 10); // regra 1 casa decimal (o seu caso)
+  const supabase = createClient(url, key, { auth: { persistSession: false } });
+
+  // tenta os dois nomes (você mencionou "equipament_hours")
+  const tables = ["equipament_hours", "equipment_hours"];
+
+  for (const t of tables) {
+    const { data, error } = await supabase
+      .from(t)
+      .select("horimetro,ano,mes,equipamento")
+      .eq("equipamento", equipamento)
+      .order("ano", { ascending: false })
+      .order("mes", { ascending: false })
+      .limit(1);
+
+    if (!error && data && data.length) {
+      const v = Number(data[0]?.horimetro);
+      if (Number.isFinite(v)) return v;
     }
   }
 
-  // filtros suaves por kind (sem “matar” candidato cedo demais)
-  const filtered = candidates.filter((n) => Number.isFinite(n));
-
-  return unique1Dec(filtered);
+  return null;
 }
 
-export async function GET(req: NextRequest) {
+function pickBest(kind: string, items: Array<{
+  input: string;
+  value: number;
+  hasDecimal: boolean;
+  centerY: number | null;
+}>, yRange: {minY:number;maxY:number} | null, refHor: number | null) {
+  if (!items.length) return null;
+
+  // filtro “anti-escala”: se existe candidato grande, ignora pequenos (ex.: 100 do RPM x 100)
+  const hasBig = items.some((c) => c.value >= 500);
+  let filtered = items.slice();
+  if (kind === "horimetro" && hasBig) {
+    filtered = filtered.filter((c) => c.value > 200);
+  }
+
+  // filtros por tipo
+  if (kind === "abastecimento") {
+    filtered = filtered.filter((c) => c.value > 0 && c.value < 1000);
+  } else if (kind === "horimetro") {
+    filtered = filtered.filter((c) => c.value >= 0 && c.value < 500000);
+  }
+
+  if (!filtered.length) filtered = items.slice();
+
+  let best = filtered[0];
+  let bestScore = Number.NEGATIVE_INFINITY;
+
+  for (const c of filtered) {
+    let score = 0;
+
+    // posição (prioriza parte inferior da imagem)
+    if (yRange && c.centerY != null) {
+      const rel = (c.centerY - yRange.minY) / (yRange.maxY - yRange.minY);
+      // 0..1
+      if (rel > 0.60) score += 6;
+      if (rel > 0.78) score += 3;
+      if (rel < 0.40) score -= 6;
+    }
+
+    const intLen = String(Math.floor(c.value)).replace("-", "").length;
+
+    if (kind === "horimetro") {
+      // horímetro geralmente tem 4+ dígitos (ou 3 em alguns casos), evita 1-2 dígitos
+      if (intLen >= 4) score += 10;
+      else if (intLen === 3) score += 4;
+      else score -= 8;
+
+      // se temos referência do último mês, escolhe o mais próximo do valor esperado
+      if (refHor != null && Number.isFinite(refHor)) {
+        const delta = c.value - refHor;
+
+        // preferir >= refHor (ou bem perto, se foto ruim)
+        if (delta >= -5 && delta <= 2000) {
+          // quanto mais perto (principalmente acima), melhor
+          const closeness = 20 - clamp(Math.abs(delta) / 10, 0, 20);
+          score += 18 + closeness;
+        } else {
+          // muito fora: penaliza
+          score -= 15 + clamp(Math.abs(delta) / 50, 0, 30);
+        }
+      }
+
+      // decimal 1 casa é comum (não obrigatório)
+      if (c.hasDecimal) score += 2;
+    }
+
+    if (kind === "abastecimento") {
+      // litros: preferir decimal 1 casa
+      if (c.hasDecimal) score += 6;
+      // preferir 2–3 dígitos inteiros (10–999)
+      if (intLen === 2 || intLen === 3) score += 4;
+      if (intLen === 1) score -= 2;
+      if (intLen >= 4) score -= 4;
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      best = c;
+    }
+  }
+
+  return { best, bestScore, filteredCount: filtered.length };
+}
+
+export async function GET(req: Request) {
   try {
     const { searchParams } = new URL(req.url);
 
-    const kind = (searchParams.get("kind") || "generic") as Kind;
-    const url = searchParams.get("url");
-    const expectedStr = searchParams.get("expected");
-    const expected = expectedStr ? Number.parseFloat(expectedStr.replace(",", ".")) : null;
+    const kind = (searchParams.get("kind") || "horimetro").toLowerCase();
+    const url = searchParams.get("url") || "";
+    const equip =
+      searchParams.get("equip") ||
+      searchParams.get("equipamento") ||
+      "";
 
-    if (!url) return jsonError("Informe a query ?url=...");
-    if (!/^https?:\/\//i.test(url)) return jsonError("URL inválida.");
+    if (!url) return jsonError("Informe o parâmetro 'url'.");
 
-    // baixa a imagem (signed url do supabase funciona)
-    const imgResp = await fetch(url);
-    if (!imgResp.ok) return jsonError("Falha ao baixar imagem.", 400, { status: imgResp.status });
-
-    const buf = Buffer.from(await imgResp.arrayBuffer());
-    const contentB64 = buf.toString("base64");
-
-    const token = await getAccessToken(["https://www.googleapis.com/auth/cloud-platform"]);
-
-    const visionResp = await fetch("https://vision.googleapis.com/v1/images:annotate", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        requests: [
-          {
-            image: { content: contentB64 },
-            features: [{ type: "TEXT_DETECTION" }],
-            imageContext: { languageHints: ["pt", "en"] },
-          },
-        ],
-      }),
-    });
-
-    const visionJson: any = await visionResp.json();
-    if (!visionResp.ok) {
-      return jsonError("Erro no Vision API.", 500, { details: visionJson });
+    if (!["horimetro", "abastecimento", "odometro"].includes(kind)) {
+      return jsonError("Parâmetro 'kind' inválido. Use: horimetro | abastecimento | odometro");
     }
 
-    const ann = visionJson?.responses?.[0];
-    const raw =
-      (ann?.fullTextAnnotation?.text ||
-        ann?.textAnnotations?.[0]?.description ||
-        "")?.toString()?.trim() || "";
+    const imgRes = await fetch(url, { cache: "no-store" });
+    if (!imgRes.ok) {
+      return jsonError("Falha ao baixar a imagem (signed URL inválida/expirada?).", 400, { status: imgRes.status });
+    }
+    const buf = Buffer.from(await imgRes.arrayBuffer());
+    if (!buf.length) return jsonError("Imagem vazia.");
 
-    const candidates = extractCandidatesFromRaw(raw, kind);
+    const client = getVisionClient();
+    const [result] = await client.textDetection({ image: { content: buf } });
 
-    const scored = candidates
-      .map((n) => ({ n, s: scoreCandidate(kind, n, expected) }))
-      .sort((a, b) => b.s - a.s);
+    const anns: any[] = (result as any)?.textAnnotations || [];
+    const raw = (anns?.[0]?.description || "").toString().trim();
 
-    const best = scored.length ? scored[0].n : null;
+    // tokens com bbox (para saber “parte de baixo”)
+    const tokenAnns = anns.slice(1);
+    const yRange = computeYRange(tokenAnns);
+
+    const items: Array<{ input: string; value: number; hasDecimal: boolean; centerY: number | null }> = [];
+
+    // 1) pega dos tokens individuais (melhor pra bbox)
+    for (const a of tokenAnns) {
+      const t = (a?.description || "").toString().trim();
+      if (!t) continue;
+
+      // tenta extrair número(s) do token
+      const extracted = extractCandidatesFromText(t);
+      const centerY = getBoxCenterY(a);
+
+      for (const ex of extracted.length ? extracted : [t]) {
+        const norm = normalizeCandidate(ex);
+        if (!norm) continue;
+
+        items.push({
+          input: norm.input,
+          value: norm.value,
+          hasDecimal: norm.hasDecimal,
+          centerY,
+        });
+      }
+    }
+
+    // 2) complemento: pega do texto “raw” completo
+    for (const ex of extractCandidatesFromText(raw)) {
+      const norm = normalizeCandidate(ex);
+      if (!norm) continue;
+
+      items.push({
+        input: norm.input,
+        value: norm.value,
+        hasDecimal: norm.hasDecimal,
+        centerY: null,
+      });
+    }
+
+    // dedupe por input
+    const seen = new Set<string>();
+    const dedup = items.filter((c) => {
+      const k = `${c.input}|${c.value}`;
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+
+    let refHor: number | null = null;
+    if (kind === "horimetro" && equip) {
+      refHor = await getLastHorimetroByEquip(equip);
+    }
+
+    const picked = pickBest(kind, dedup, yRange, refHor);
+
+    const candidates = dedup
+      .map((c) => c.value)
+      .filter((n) => Number.isFinite(n));
+
+    const candidates_input = dedup.map((c) => c.input);
+
+    if (!picked) {
+      return NextResponse.json({
+        ok: true,
+        kind,
+        best: null,
+        best_input: null,
+        candidates,
+        candidates_input,
+        raw,
+        ref_horimetro: refHor,
+      });
+    }
 
     return NextResponse.json({
       ok: true,
       kind,
-      expected: expected ?? null,
-      best,
-      best_input: best != null ? fmt1(best) : null,
-      candidates: scored.slice(0, 12).map((x) => x.n),
-      candidates_input: scored.slice(0, 12).map((x) => fmt1(x.n)),
+      best: picked.best.value,
+      best_input: picked.best.input,
+      candidates,
+      candidates_input,
       raw,
+      ref_horimetro: refHor,
     });
   } catch (e: any) {
     return jsonError(e?.message || "Falha no OCR.", 500);
