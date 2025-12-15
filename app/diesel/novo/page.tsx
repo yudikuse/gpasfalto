@@ -12,7 +12,6 @@ function onlyDigits(s: string) {
 }
 
 function normalizeDecimalBRInput(raw: string) {
-  // mantém dígitos e no máximo 1 vírgula
   let v = (raw || "").replace(/[^\d,]/g, "");
   const parts = v.split(",");
   if (parts.length > 2) v = parts[0] + "," + parts.slice(1).join("");
@@ -22,7 +21,6 @@ function normalizeDecimalBRInput(raw: string) {
 function parseDecimalBR(raw: string): number | null {
   const v = (raw || "").trim();
   if (!v) return null;
-  // remove separador de milhar (.) e troca , por .
   const normalized = v.replace(/\./g, "").replace(",", ".");
   const n = Number.parseFloat(normalized);
   return Number.isFinite(n) ? n : null;
@@ -36,7 +34,6 @@ function formatDateBR(d: Date) {
 }
 
 async function loadEquipments(): Promise<EquipOption[]> {
-  // tenta primeiro o nome que você citou; se falhar, tenta o outro
   let data: any[] | null = null;
 
   {
@@ -44,7 +41,6 @@ async function loadEquipments(): Promise<EquipOption[]> {
       .from("equipament_costs_2025")
       .select("equipamento")
       .limit(2000);
-
     if (!r.error) data = r.data as any[];
   }
 
@@ -53,7 +49,6 @@ async function loadEquipments(): Promise<EquipOption[]> {
       .from("equipment_costs_2025")
       .select("equipamento")
       .limit(2000);
-
     if (!r2.error) data = r2.data as any[];
   }
 
@@ -78,22 +73,6 @@ async function uploadToDieselBucket(file: File, path: string) {
   return path;
 }
 
-async function fileToImage(file: File): Promise<HTMLImageElement> {
-  const url = URL.createObjectURL(file);
-  try {
-    const img = new Image();
-    img.decoding = "async";
-    img.src = url;
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error("Falha ao carregar imagem"));
-    });
-    return img;
-  } finally {
-    // não revoga aqui porque o browser pode precisar do src durante o draw; revogamos depois do canvas gerar
-  }
-}
-
 async function buildComprovantePNG(args: {
   dateLabel: string;
   solicitante: string;
@@ -112,31 +91,32 @@ async function buildComprovantePNG(args: {
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas indisponível");
 
-  // Fundo
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, W, H);
 
-  // Header
   const pad = 48;
   const headerH = 260;
 
   ctx.fillStyle = "#0b1220";
-  ctx.font = "700 44px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.font =
+    "700 44px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText("ABASTECIMENTO • DIESEL", pad, 80);
 
   ctx.fillStyle = "#334155";
-  ctx.font = "500 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.font =
+    "500 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(`Data: ${args.dateLabel}`, pad, 130);
 
   ctx.fillStyle = "#0f172a";
-  ctx.font = "700 34px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.font =
+    "700 34px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(`Equipamento: ${args.equipamento}`, pad, 185);
 
   ctx.fillStyle = "#334155";
-  ctx.font = "500 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.font =
+    "500 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(`Solicitante: ${args.solicitante}`, pad, 230);
 
-  // Bloco resumo
   const boxX = W - pad - 520;
   const boxY = 95;
   const boxW = 520;
@@ -150,15 +130,16 @@ async function buildComprovantePNG(args: {
   ctx.strokeRect(boxX, boxY, boxW, boxH);
 
   ctx.fillStyle = "#0f172a";
-  ctx.font = "700 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.font =
+    "700 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(`Litros: ${args.litrosLabel}`, boxX + 24, boxY + 52);
 
   ctx.fillStyle = "#334155";
-  ctx.font = "600 24px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.font =
+    "600 24px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(`Horímetro: ${args.horimetroLabel}`, boxX + 24, boxY + 98);
   ctx.fillText(`Odômetro: ${args.odometroLabel}`, boxX + 24, boxY + 136);
 
-  // Grid de fotos (2x2)
   const gridTop = headerH + 10;
   const gap = 18;
   const cellW = Math.floor((W - pad * 2 - gap) / 2);
@@ -180,19 +161,19 @@ async function buildComprovantePNG(args: {
     const slot = slots[i];
     const f = args.fotos[i]?.file || null;
 
-    // título
     ctx.fillStyle = "#0f172a";
-    ctx.font = "700 22px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    ctx.font =
+      "700 22px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
     ctx.fillText(slot.title, slot.x, slot.y - 10);
 
-    // moldura
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(slot.x, slot.y, cellW, cellH);
     ctx.strokeRect(slot.x, slot.y, cellW, cellH);
 
     if (!f) {
       ctx.fillStyle = "#94a3b8";
-      ctx.font = "600 26px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+      ctx.font =
+        "600 26px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
       ctx.fillText("SEM FOTO", slot.x + 30, slot.y + 60);
       continue;
     }
@@ -209,7 +190,6 @@ async function buildComprovantePNG(args: {
       img.onerror = () => reject(new Error("Falha ao carregar uma das fotos"));
     });
 
-    // encaixe mantendo proporção (cover)
     const iw = img.naturalWidth || img.width;
     const ih = img.naturalHeight || img.height;
 
@@ -223,9 +203,9 @@ async function buildComprovantePNG(args: {
     ctx.drawImage(img, dx, dy, dw, dh);
   }
 
-  // rodapé
   ctx.fillStyle = "#94a3b8";
-  ctx.font = "500 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+  ctx.font =
+    "500 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText("GP Asfalto • Registro interno", pad, H - 24);
 
   const blob = await new Promise<Blob>((resolve, reject) => {
@@ -236,7 +216,6 @@ async function buildComprovantePNG(args: {
     );
   });
 
-  // revoga urls
   for (const u of urlsToRevoke) URL.revokeObjectURL(u);
 
   return blob;
@@ -244,8 +223,8 @@ async function buildComprovantePNG(args: {
 
 export default function DieselNovoPage() {
   const router = useRouter();
-
   const today = useMemo(() => new Date(), []);
+
   const [solicitante, setSolicitante] = useState("");
   const [equipamento, setEquipamento] = useState("");
   const [equipOptions, setEquipOptions] = useState<EquipOption[]>([]);
@@ -254,7 +233,6 @@ export default function DieselNovoPage() {
   const [horimetro, setHorimetro] = useState("");
   const [odometro, setOdometro] = useState("");
   const [litros, setLitros] = useState("");
-
   const [obs, setObs] = useState("");
 
   const [fotoEquip, setFotoEquip] = useState<File | null>(null);
@@ -271,21 +249,17 @@ export default function DieselNovoPage() {
 
   useEffect(() => {
     (async () => {
-      const { data } = await supabase.auth.getSession();
-      if (!data.session) {
-        router.push(`/login?redirectTo=${encodeURIComponent("/diesel/novo")}`);
-        return;
-      }
-
       try {
         setEquipLoading(true);
         const list = await loadEquipments();
         setEquipOptions(list);
+      } catch {
+        // sem travar: ainda pode digitar manual
       } finally {
         setEquipLoading(false);
       }
     })();
-  }, [router]);
+  }, []);
 
   function buildResumoTexto(args: {
     dateLabel: string;
@@ -325,7 +299,6 @@ export default function DieselNovoPage() {
     if (!equip) return setError("Selecione/Informe o equipamento.");
     if (litrosN === null || litrosN <= 0) return setError("Informe os litros (valor > 0).");
 
-    // Fotos mínimas recomendadas (você pode endurecer depois)
     if (!fotoEquip) return setError("Envie a foto do código/placa do equipamento.");
     if (!fotoHor) return setError("Envie a foto do horímetro.");
     if (!fotoOdo) return setError("Envie a foto do odômetro/painel.");
@@ -338,7 +311,6 @@ export default function DieselNovoPage() {
       const d = String(today.getDate()).padStart(2, "0");
       const base = `diesel/${y}-${m}/${equip}/${id}`;
 
-      // 1) upload fotos
       const foto_equip_path = await uploadToDieselBucket(fotoEquip, `${base}/01_equip.jpg`);
       const foto_horimetro_path = await uploadToDieselBucket(fotoHor, `${base}/02_horimetro.jpg`);
       const foto_odometro_path = await uploadToDieselBucket(fotoOdo, `${base}/03_odometro.jpg`);
@@ -346,7 +318,6 @@ export default function DieselNovoPage() {
         ? await uploadToDieselBucket(fotoExtra, `${base}/04_extra.jpg`)
         : null;
 
-      // 2) insert tabela
       const { data: ins, error: insErr } = await supabase
         .from("diesel_logs")
         .insert({
@@ -368,7 +339,6 @@ export default function DieselNovoPage() {
 
       if (insErr) throw insErr;
 
-      // 3) gerar comprovante (PNG) com fotos + resumo
       const dateLabel = formatDateBR(today);
       const horLabel = horN === null ? "-" : horimetro;
       const odoLabel = odoN === null ? "-" : String(odoN);
@@ -407,7 +377,6 @@ export default function DieselNovoPage() {
 
       if (upErr) throw upErr;
 
-      // 4) criar URL local pra preview/compartilhar
       const localUrl = URL.createObjectURL(comprovanteBlob);
       setComprovanteUrl(localUrl);
       setSavedId(ins?.id || id);
@@ -473,7 +442,6 @@ export default function DieselNovoPage() {
       return;
     }
 
-    // fallback: download + copiar texto
     await handleCopyResumo();
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -524,15 +492,13 @@ export default function DieselNovoPage() {
           <div className="sm:col-span-2">
             <label className="mb-1 block text-sm font-medium text-slate-700">Equipamento *</label>
 
-            <div className="flex gap-2">
-              <input
-                value={equipamento}
-                onChange={(e) => setEquipamento(e.target.value)}
-                placeholder={equipLoading ? "Carregando lista..." : "Ex.: CB08 / Placa / Código"}
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-900 outline-none focus:border-slate-400"
-                list="equipamentos-list"
-              />
-            </div>
+            <input
+              value={equipamento}
+              onChange={(e) => setEquipamento(e.target.value)}
+              placeholder={equipLoading ? "Carregando lista..." : "Ex.: CB08 / Placa / Código"}
+              className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-slate-900 outline-none focus:border-slate-400"
+              list="equipamentos-list"
+            />
 
             <datalist id="equipamentos-list">
               {equipOptions.map((o) => (
@@ -590,26 +556,10 @@ export default function DieselNovoPage() {
         </div>
 
         <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <FileField
-            label="Foto do código / placa *"
-            file={fotoEquip}
-            onFile={(f) => setFotoEquip(f)}
-          />
-          <FileField
-            label="Foto do horímetro *"
-            file={fotoHor}
-            onFile={(f) => setFotoHor(f)}
-          />
-          <FileField
-            label="Foto do odômetro/painel *"
-            file={fotoOdo}
-            onFile={(f) => setFotoOdo(f)}
-          />
-          <FileField
-            label="Foto extra (opcional)"
-            file={fotoExtra}
-            onFile={(f) => setFotoExtra(f)}
-          />
+          <FileField label="Foto do código / placa *" file={fotoEquip} onFile={setFotoEquip} />
+          <FileField label="Foto do horímetro *" file={fotoHor} onFile={setFotoHor} />
+          <FileField label="Foto do odômetro/painel *" file={fotoOdo} onFile={setFotoOdo} />
+          <FileField label="Foto extra (opcional)" file={fotoExtra} onFile={setFotoExtra} />
         </div>
 
         <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -708,10 +658,7 @@ function FileField({
             accept="image/*"
             capture="environment"
             className="hidden"
-            onChange={(e) => {
-              const f = e.target.files?.[0] || null;
-              onFile(f);
-            }}
+            onChange={(e) => onFile(e.target.files?.[0] || null)}
           />
           Tirar/Enviar foto
         </label>
