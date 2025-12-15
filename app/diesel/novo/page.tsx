@@ -90,12 +90,14 @@ async function buildComprovantePNG(args: {
   const ctx = canvas.getContext("2d");
   if (!ctx) throw new Error("Canvas indisponível");
 
+  // Fundo
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, W, H);
 
   const pad = 48;
   const headerH = 260;
 
+  // Header
   ctx.fillStyle = "#0b1220";
   ctx.font =
     "700 44px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
@@ -116,6 +118,7 @@ async function buildComprovantePNG(args: {
     "500 28px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
   ctx.fillText(`Solicitante: ${args.solicitante}`, pad, 230);
 
+  // Box resumo
   const boxX = W - pad - 520;
   const boxY = 95;
   const boxW = 520;
@@ -139,6 +142,7 @@ async function buildComprovantePNG(args: {
   ctx.fillText(`Horímetro: ${args.horimetroLabel}`, boxX + 24, boxY + 98);
   ctx.fillText(`Odômetro: ${args.odometroLabel}`, boxX + 24, boxY + 136);
 
+  // Grid de fotos (2x2)
   const gridTop = headerH + 10;
   const gap = 18;
   const cellW = Math.floor((W - pad * 2 - gap) / 2);
@@ -172,14 +176,20 @@ async function buildComprovantePNG(args: {
     const slot = slots[i];
     const f = args.fotos[i]?.file || null;
 
+    // título
     ctx.fillStyle = "#0f172a";
     ctx.font =
       "700 22px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
     ctx.fillText(slot.title, slot.x, slot.y - 10);
 
+    // moldura
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(slot.x, slot.y, cellW, cellH);
     ctx.strokeRect(slot.x, slot.y, cellW, cellH);
+
+    // fundo suave dentro do quadro (pra “letterbox” ficar bonito)
+    ctx.fillStyle = "#f8fafc";
+    ctx.fillRect(slot.x + 2, slot.y + 2, cellW - 4, cellH - 4);
 
     if (!f) {
       ctx.fillStyle = "#94a3b8";
@@ -204,16 +214,18 @@ async function buildComprovantePNG(args: {
     const iw = img.naturalWidth || img.width;
     const ih = img.naturalHeight || img.height;
 
-    const scale = Math.max(cellW / iw, cellH / ih);
-    const dw = iw * scale;
-    const dh = ih * scale;
+    // ✅ CONTAIN (sem cortar): usa MIN
+    const scale = Math.min(cellW / iw, cellH / ih);
+    const dw = Math.max(1, Math.floor(iw * scale));
+    const dh = Math.max(1, Math.floor(ih * scale));
 
-    const dx = slot.x + (cellW - dw) / 2;
-    const dy = slot.y + (cellH - dh) / 2;
+    const dx = Math.floor(slot.x + (cellW - dw) / 2);
+    const dy = Math.floor(slot.y + (cellH - dh) / 2);
 
     ctx.drawImage(img, dx, dy, dw, dh);
   }
 
+  // rodapé
   ctx.fillStyle = "#94a3b8";
   ctx.font =
     "500 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
@@ -368,11 +380,17 @@ export default function DieselNovoPage() {
 
     const litrosN = parseDecimalBR(litros);
     const horN = parseDecimalBR(horimetro);
-    const odoN = odometro.trim() ? Number.parseInt(onlyDigits(odometro), 10) : null;
+    const odoN = odometro.trim()
+      ? Number.parseInt(onlyDigits(odometro), 10)
+      : null;
 
     if (!solicit) return setError("Informe o solicitante.");
     if (!equip) return setError("Selecione/Informe o equipamento.");
-    if (litrosN === null || litrosN <= 0) return setError("Informe os litros (valor > 0).");
+    if (litrosN === null || litrosN <= 0)
+      return setError("Informe os litros (valor > 0).");
+
+    // ✅ Horímetro obrigatório
+    if (horN === null) return setError("Informe o horímetro.");
 
     if (!fotoEquip) return setError("Envie a foto do código/placa do equipamento.");
     if (!fotoHor) return setError("Envie a foto do horímetro.");
@@ -386,9 +404,18 @@ export default function DieselNovoPage() {
       const d = String(today.getDate()).padStart(2, "0");
       const base = `diesel/${y}-${m}/${equip}/${id}`;
 
-      const foto_equip_path = await uploadToDieselBucket(fotoEquip, `${base}/01_equip.jpg`);
-      const foto_horimetro_path = await uploadToDieselBucket(fotoHor, `${base}/02_horimetro.jpg`);
-      const foto_odometro_path = await uploadToDieselBucket(fotoOdo, `${base}/03_odometro.jpg`);
+      const foto_equip_path = await uploadToDieselBucket(
+        fotoEquip,
+        `${base}/01_equip.jpg`
+      );
+      const foto_horimetro_path = await uploadToDieselBucket(
+        fotoHor,
+        `${base}/02_horimetro.jpg`
+      );
+      const foto_odometro_path = await uploadToDieselBucket(
+        fotoOdo,
+        `${base}/03_odometro.jpg`
+      );
       const foto_extra_path = fotoExtra
         ? await uploadToDieselBucket(fotoExtra, `${base}/04_extra.jpg`)
         : null;
@@ -415,7 +442,7 @@ export default function DieselNovoPage() {
       if (insErr) throw insErr;
 
       const dateLabel = formatDateBR(today);
-      const horLabel = horN === null ? "-" : horimetro;
+      const horLabel = horimetro.trim();
       const odoLabel = odoN === null ? "-" : String(odoN);
       const litrosLabel = litros;
 
@@ -440,7 +467,10 @@ export default function DieselNovoPage() {
         type: "image/png",
       });
 
-      const comprovante_path = await uploadToDieselBucket(comprovanteFile, `${base}/comprovante.png`);
+      const comprovante_path = await uploadToDieselBucket(
+        comprovanteFile,
+        `${base}/comprovante.png`
+      );
 
       const { error: upErr } = await supabase
         .from("diesel_logs")
@@ -463,7 +493,7 @@ export default function DieselNovoPage() {
     if (!savedId) return;
 
     const dateLabel = formatDateBR(today);
-    const horLabel = horimetro.trim() ? horimetro.trim() : "-";
+    const horLabel = horimetro.trim();
     const odoLabel = odometro.trim() ? onlyDigits(odometro.trim()) : "-";
     const litrosLabel = litros.trim();
 
@@ -488,7 +518,7 @@ export default function DieselNovoPage() {
     const file = new File([blob], "abastecimento.png", { type: "image/png" });
 
     const dateLabel = formatDateBR(today);
-    const horLabel = horimetro.trim() ? horimetro.trim() : "-";
+    const horLabel = horimetro.trim();
     const odoLabel = odometro.trim() ? onlyDigits(odometro.trim()) : "-";
     const litrosLabel = litros.trim();
 
@@ -529,14 +559,19 @@ export default function DieselNovoPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        {/* Header (mesmo “clima” do dashboard) */}
         <div className="page-header">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
           <div className="brand">
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/gpasfalto-logo.png" alt="GP Asfalto" className="brand-logo" />
+            <img
+              src="/gpasfalto-logo.png"
+              alt="GP Asfalto"
+              className="brand-logo"
+            />
             <div>
               <div className="brand-text-main">Abastecimento • Diesel</div>
-              <div className="brand-text-sub">Módulo operacional (fotos + comprovante)</div>
+              <div className="brand-text-sub">
+                Módulo operacional (fotos + comprovante)
+              </div>
             </div>
           </div>
 
@@ -545,12 +580,13 @@ export default function DieselNovoPage() {
           </div>
         </div>
 
-        {/* Form */}
         <div className="section-card">
           <div className="section-header">
             <div>
               <div className="section-title">Novo lançamento</div>
-              <div className="section-subtitle">Preencha e envie as fotos. O sistema gera um PNG para WhatsApp.</div>
+              <div className="section-subtitle">
+                Preencha e envie as fotos. O sistema gera um PNG para WhatsApp.
+              </div>
             </div>
           </div>
 
@@ -579,7 +615,11 @@ export default function DieselNovoPage() {
           >
             <div style={{ gridColumn: "span 4" }}>
               <label style={styles.label}>Data</label>
-              <input style={{ ...styles.input, background: "#f9fafb" }} value={formatDateBR(today)} disabled />
+              <input
+                style={{ ...styles.input, background: "#f9fafb" }}
+                value={formatDateBR(today)}
+                disabled
+              />
             </div>
 
             <div style={{ gridColumn: "span 8" }}>
@@ -598,7 +638,11 @@ export default function DieselNovoPage() {
                 style={styles.input}
                 value={equipamento}
                 onChange={(e) => setEquipamento(e.target.value)}
-                placeholder={equipLoading ? "Carregando lista..." : "Ex.: CB08 / Placa / Código"}
+                placeholder={
+                  equipLoading
+                    ? "Carregando lista..."
+                    : "Ex.: CB08 / Placa / Código"
+                }
                 list="equipamentos-list"
               />
               <datalist id="equipamentos-list">
@@ -606,15 +650,19 @@ export default function DieselNovoPage() {
                   <option key={o.value} value={o.value} />
                 ))}
               </datalist>
-              <div style={styles.hint}>Você pode escolher da lista ou digitar manualmente.</div>
+              <div style={styles.hint}>
+                Você pode escolher da lista ou digitar manualmente.
+              </div>
             </div>
 
             <div style={{ gridColumn: "span 4" }}>
-              <label style={styles.label}>Horímetro</label>
+              <label style={styles.label}>Horímetro *</label>
               <input
                 style={styles.input}
                 value={horimetro}
-                onChange={(e) => setHorimetro(normalizeDecimalBRInput(e.target.value))}
+                onChange={(e) =>
+                  setHorimetro(normalizeDecimalBRInput(e.target.value))
+                }
                 placeholder="Ex.: 1234,50"
                 inputMode="decimal"
               />
@@ -644,7 +692,12 @@ export default function DieselNovoPage() {
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Observação</label>
-              <input style={styles.input} value={obs} onChange={(e) => setObs(e.target.value)} placeholder="Opcional" />
+              <input
+                style={styles.input}
+                value={obs}
+                onChange={(e) => setObs(e.target.value)}
+                placeholder="Opcional"
+              />
             </div>
           </div>
 
@@ -658,40 +711,77 @@ export default function DieselNovoPage() {
             }}
           >
             <div style={{ gridColumn: "span 6" }}>
-              <FileField label="Foto do código / placa *" file={fotoEquip} onFile={setFotoEquip} />
+              <FileField
+                label="Foto do código / placa *"
+                file={fotoEquip}
+                onFile={setFotoEquip}
+              />
             </div>
             <div style={{ gridColumn: "span 6" }}>
-              <FileField label="Foto do horímetro *" file={fotoHor} onFile={setFotoHor} />
+              <FileField
+                label="Foto do horímetro *"
+                file={fotoHor}
+                onFile={setFotoHor}
+              />
             </div>
             <div style={{ gridColumn: "span 6" }}>
-              <FileField label="Foto do odômetro/painel *" file={fotoOdo} onFile={setFotoOdo} />
+              <FileField
+                label="Foto do odômetro/painel *"
+                file={fotoOdo}
+                onFile={setFotoOdo}
+              />
             </div>
             <div style={{ gridColumn: "span 6" }}>
-              <FileField label="Foto extra (opcional)" file={fotoExtra} onFile={setFotoExtra} />
+              <FileField
+                label="Foto extra (opcional)"
+                file={fotoExtra}
+                onFile={setFotoExtra}
+              />
             </div>
           </div>
 
           <div style={{ height: 18 }} />
 
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "space-between" }}>
-            <button onClick={handleSave} disabled={saving} style={{ ...styles.btnPrimary, opacity: saving ? 0.7 : 1 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: 10,
+              flexWrap: "wrap",
+              justifyContent: "space-between",
+            }}
+          >
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{ ...styles.btnPrimary, opacity: saving ? 0.7 : 1 }}
+            >
               {saving ? "Salvando..." : "Salvar abastecimento"}
             </button>
 
-            <button onClick={() => router.push("/dashboard")} style={styles.btnSecondary}>
+            <button
+              onClick={() => router.push("/dashboard")}
+              style={styles.btnSecondary}
+            >
               Voltar
             </button>
           </div>
         </div>
 
-        {/* Salvo */}
         {savedId ? (
           <div className="section-card">
             <div className="section-header">
               <div>
                 <div className="section-title">Salvo ✅</div>
                 <div className="section-subtitle">
-                  ID: <span style={{ fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace" }}>{savedId}</span>
+                  ID:{" "}
+                  <span
+                    style={{
+                      fontFamily:
+                        "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+                    }}
+                  >
+                    {savedId}
+                  </span>
                 </div>
               </div>
 
@@ -776,7 +866,9 @@ function FileField({
         {label}
       </div>
 
-      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+      <div
+        style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}
+      >
         <label
           style={{
             display: "inline-flex",
