@@ -1,51 +1,62 @@
+// FILE: app/api/vision/ocr/route.ts
 import { NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import { ImageAnnotatorClient } from "@google-cloud/vision";
+import { GoogleAuth } from "google-auth-library";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type Kind = "horimetro" | "abastecimento" | "odometro";
-
-type BBox = { minX: number; minY: number; maxX: number; maxY: number };
-type Token = {
-  text: string;
-  digits: string;
-  bbox: BBox;
+type BBox = {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+  w: number;
+  h: number;
   area: number;
   cx: number;
   cy: number;
-  w: number;
-  h: number;
 };
 
-type Run = {
-  parts: Token[];
+type Token = {
+  text: string;
   bbox: BBox;
-  digits: string;
-  area: number;
-  cx: number;
-  cy: number;
-  w: number;
-  h: number;
 };
 
 function jsonError(message: string, status = 400, extra?: any) {
-  return NextResponse.json({ ok: false, error: message, ...(extra ? { extra } : {}) }, { status });
+  return NextResponse.json({ ok: false, error: message, ...extra }, { status });
 }
 
-function clamp(n: number, a: number, b: number) {
+function clampNum(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
 }
 
-function bboxFromVertices(vertices?: Array<{ x?: number | null; y?: number | null }>): BBox | null {
-  if (!vertices || vertices.length === 0) return null;
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = Number.NEGATIVE_INFINITY;
-  let maxY = Number.NEGATIVE_INFINITY;
+function fmtPtBr1(value: number) {
+  // sempre 1 casa decimal, sem separador de milhar
+  return value.toFixed(1).replace(".", ",");
+}
 
-  for (const v of vertices) {
+function digitsOnly(s: string) {
+  return (s || "").replace(/[^\d]/g, "");
+}
+
+function keepNumPunct(s: string) {
+  return (s || "").replace(/[^0-9.,]/g, "");
+}
+
+function hasLetters(s: string) {
+  return /[A-Za-zÀ-ÿ]/.test(s || "");
+}
+
+function bboxFromPoly(poly: any): BBox | null {
+  const vs = poly?.vertices || poly?.normalizedVertices;
+  if (!Array.isArray(vs) || vs.length === 0) return null;
+
+  let minX = Infinity,
+    minY = Infinity,
+    maxX = -Infinity,
+    maxY = -Infinity;
+
+  for (const v of vs) {
     const x = typeof v?.x === "number" ? v.x : 0;
     const y = typeof v?.y === "number" ? v.y : 0;
     minX = Math.min(minX, x);
@@ -54,468 +65,384 @@ function bboxFromVertices(vertices?: Array<{ x?: number | null; y?: number | nul
     maxY = Math.max(maxY, y);
   }
 
-  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null;
-  return { minX, minY, maxX, maxY };
+  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY))
+    return null;
+
+  const w = Math.max(0, maxX - minX);
+  const h = Math.max(0, maxY - minY);
+  const area = w * h;
+
+  const cx = minX + w / 2;
+  const cy = minY + h / 2;
+
+  return { minX, minY, maxX, maxY, w, h, area, cx, cy };
 }
 
-function unionBBox(a: BBox, b: BBox): BBox {
+function buildTokens(textAnnotations: any[]): { tokens: Token[]; W: number; H: number; raw: string } {
+  const raw = textAnnotations?.[0]?.description || "";
+
+  const tokens: Token[] = [];
+  let maxX = 0;
+  let maxY = 0;
+
+  for (let i = 1; i < (textAnnotations?.length || 0); i++) {
+    const t = textAnnotations[i];
+    const text = String(t?.description || "").trim();
+    const bbox = bboxFromPoly(t?.boundingPoly);
+    if (!text || !bbox) continue;
+
+    maxX = Math.max(maxX, bbox.maxX);
+    maxY = Math.max(maxY, bbox.maxY);
+
+    tokens.push({ text, bbox });
+  }
+
+  // fallback se vier estranho
+  const W = Math.max(1, Math.round(maxX));
+  const H = Math.max(1, Math.round(maxY));
+
+  return { tokens, W, H, raw };
+}
+
+function pickHorimetro(tokens: Token[], W: number, H: number) {
+  // Horímetro: janela inferior → filtra pelo "miolo" de baixo e pega o maior grupo de dígitos.
+  const bottomMin = H * 0.55;
+
+  const numeric = tokens
+    .filter((t) => !hasLetters(t.text))
+    .map((t) => {
+      const d = digitsOnly(t.text);
+      return { t, d };
+    })
+    .filter(({ d, t }) => d.length >= 2 && t.bbox.cy >= bottomMin);
+
+  // score: prioriza mais dígitos, maior caixa, mais embaixo
+  const scored = numeric
+    .map(({ t, d }) => {
+      const normArea = t.bbox.area / (W * H);
+      const normH = t.bbox.h / H;
+      const bottomness = t.bbox.cy / H;
+
+      let score = 0;
+      score += d.length * 10;
+      score += normArea * 200;
+      score += normH * 80;
+      score += bottomness * 20;
+
+      // penaliza números típicos de escala (curtos)
+      const v = parseInt(d, 10);
+      if (d.length <= 3 && v <= 200) score -= 20;
+
+      return { t, d, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const main = scored[0];
+  if (!main) {
+    return {
+      best: null,
+      best_input: null,
+      candidates: [],
+      candidates_input: [],
+      picked: null,
+    };
+  }
+
+  // inteiro do horímetro = o grupo principal (NÃO quebrar no último dígito)
+  const intHours = parseInt(main.d, 10);
+  if (!isFinite(intHours)) {
+    return {
+      best: null,
+      best_input: null,
+      candidates: [],
+      candidates_input: [],
+      picked: { main: main.d },
+    };
+  }
+
+  // tenta achar o dígito decimal (um dígito) logo à direita do grupo principal
+  const decCandidates = numeric
+    .map(({ t, d }) => ({ t, d }))
+    .filter(({ t, d }) => d.length === 1)
+    .filter(({ t }) => {
+      const yOk = t.bbox.cy >= main.t.bbox.minY - main.t.bbox.h * 0.6 &&
+        t.bbox.cy <= main.t.bbox.maxY + main.t.bbox.h * 0.6;
+      const xOk = t.bbox.minX >= main.t.bbox.maxX - main.t.bbox.w * 0.05 &&
+        t.bbox.minX <= main.t.bbox.maxX + main.t.bbox.w * 1.2;
+      const hOk = t.bbox.h >= main.t.bbox.h * 0.35;
+      return yOk && xOk && hOk;
+    })
+    .map(({ t, d }) => {
+      const dist = Math.abs(t.bbox.minX - main.t.bbox.maxX);
+      const score = 1000 - dist + (t.bbox.area / (W * H)) * 100;
+      return { t, d, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const dec = decCandidates[0]?.d ?? "0";
+  const decDigit = clampNum(parseInt(dec, 10) || 0, 0, 9);
+
+  const best = intHours + decDigit / 10;
+  const best_input = fmtPtBr1(best);
+
+  // candidatos (pra debug)
+  const candidates = [
+    best,
+    ...scored.slice(0, 6).map((x) => parseInt(x.d, 10)).filter((n) => isFinite(n)).map((n) => n + 0 / 10),
+  ]
+    .filter((n) => isFinite(n))
+    .filter((v, i, a) => a.indexOf(v) === i);
+
+  const candidates_input = candidates.map((v) => fmtPtBr1(v));
+
   return {
-    minX: Math.min(a.minX, b.minX),
-    minY: Math.min(a.minY, b.minY),
-    maxX: Math.max(a.maxX, b.maxX),
-    maxY: Math.max(a.maxY, b.maxY),
+    best,
+    best_input,
+    candidates,
+    candidates_input,
+    picked: {
+      mainDigits: main.d,
+      decDigit: decCandidates[0]?.d ?? null,
+    },
   };
 }
 
-function bboxMetrics(b: BBox) {
-  const w = Math.max(0, b.maxX - b.minX);
-  const h = Math.max(0, b.maxY - b.minY);
-  const area = w * h;
-  const cx = b.minX + w / 2;
-  const cy = b.minY + h / 2;
-  return { w, h, area, cx, cy };
-}
-
-function toPtBr1(value: number) {
-  // 1 casa decimal sempre, com vírgula
-  if (!isFinite(value)) return "";
-  return value.toFixed(1).replace(".", ",");
-}
-
-function parseKind(k: string | null): Kind {
-  const v = (k || "").toLowerCase().trim();
-  if (v === "horimetro" || v === "abastecimento" || v === "odometro") return v;
-  return "horimetro";
-}
-
-function getSupabase() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key =
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) return null;
-
-  return createClient(url, key, { auth: { persistSession: false } });
-}
-
-function getVisionClient() {
-  const b64 = process.env.GCP_SA_KEY_BASE64 || process.env.GCP_KEY_BASE64 || "";
-  if (!b64) {
-    throw new Error("Env GCP_SA_KEY_BASE64 (ou GCP_KEY_BASE64) não configurada.");
-  }
-  const jsonStr = Buffer.from(b64, "base64").toString("utf-8");
-  const creds = JSON.parse(jsonStr);
-
-  const projectId = process.env.GCP_PROJECT_ID || creds.project_id || "";
-  if (!projectId) {
-    throw new Error("Env GCP_PROJECT_ID não configurada (e project_id não encontrado na key).");
-  }
-
-  return new ImageAnnotatorClient({
-    projectId,
-    credentials: {
-      client_email: creds.client_email,
-      private_key: creds.private_key,
-    },
-  });
-}
-
-function extractTokens(textAnnotations: any[]): { tokens: Token[]; imgW: number; imgH: number } {
-  const tokens: Token[] = [];
-
-  // Ignora o [0] que é o texto completo
-  for (let i = 1; i < (textAnnotations?.length || 0); i++) {
-    const a = textAnnotations[i];
-    const text = String(a?.description || "").trim();
-    if (!text) continue;
-
-    const digits = text.replace(/[^\d]/g, "");
-    if (!digits) continue;
-
-    const bb = bboxFromVertices(a?.boundingPoly?.vertices);
-    if (!bb) continue;
-
-    const m = bboxMetrics(bb);
-    tokens.push({
-      text,
-      digits,
-      bbox: bb,
-      area: m.area,
-      cx: m.cx,
-      cy: m.cy,
-      w: m.w,
-      h: m.h,
-    });
-  }
-
-  // tenta inferir dimensão da imagem via maior bounding box
-  let imgW = 0;
-  let imgH = 0;
-  for (const t of tokens) {
-    imgW = Math.max(imgW, t.bbox.maxX);
-    imgH = Math.max(imgH, t.bbox.maxY);
-  }
-  imgW = imgW || 1;
-  imgH = imgH || 1;
-
-  return { tokens, imgW, imgH };
-}
-
-function buildRuns(tokens: Token[], imgW: number, imgH: number): Run[] {
-  if (!tokens.length) return [];
-
-  // agrupa por "linha" (y parecido)
-  const sorted = [...tokens].sort((a, b) => a.cy - b.cy);
-  const lineTol = Math.max(12, imgH * 0.035);
-
-  const lines: Token[][] = [];
-  let cur: Token[] = [];
-  let curY = sorted[0].cy;
+function clusterByLine(tokens: Token[], tolY: number) {
+  const sorted = [...tokens].sort((a, b) => a.bbox.cy - b.bbox.cy);
+  const clusters: { cy: number; items: Token[] }[] = [];
 
   for (const t of sorted) {
-    if (!cur.length) {
-      cur = [t];
-      curY = t.cy;
-      continue;
+    let placed = false;
+    for (const c of clusters) {
+      if (Math.abs(t.bbox.cy - c.cy) <= tolY) {
+        c.items.push(t);
+        // atualiza cy médio
+        c.cy = c.items.reduce((s, x) => s + x.bbox.cy, 0) / c.items.length;
+        placed = true;
+        break;
+      }
     }
-    if (Math.abs(t.cy - curY) <= lineTol) {
-      cur.push(t);
-      // atualiza centro da linha suavemente
-      curY = (curY * (cur.length - 1) + t.cy) / cur.length;
-    } else {
-      lines.push(cur);
-      cur = [t];
-      curY = t.cy;
+    if (!placed) clusters.push({ cy: t.bbox.cy, items: [t] });
+  }
+  return clusters;
+}
+
+function pickAbastecimento(tokens: Token[], W: number, H: number) {
+  // Litros: pega a "linha" com dígitos maiores e monta left->right.
+  const numeric = tokens
+    .filter((t) => !hasLetters(t.text))
+    .map((t) => ({ t, s: keepNumPunct(t.text), d: digitsOnly(t.text) }))
+    .filter(({ s, d }) => s.length > 0 && d.length > 0);
+
+  if (numeric.length === 0) {
+    return { best: null, best_input: null, candidates: [], candidates_input: [], picked: null };
+  }
+
+  const maxH = Math.max(...numeric.map((x) => x.t.bbox.h));
+  const big = numeric
+    .filter((x) => x.t.bbox.h >= maxH * 0.6) // foca nos dígitos grandes
+    .map((x) => x.t);
+
+  const baseSet = big.length ? big : numeric.map((x) => x.t);
+
+  const tolY = Math.max(8, maxH * 0.6, H * 0.06);
+  const clusters = clusterByLine(baseSet, tolY);
+
+  const scored = clusters
+    .map((c) => {
+      const areaSum = c.items.reduce((s, t) => s + t.bbox.area, 0);
+      const avgH = c.items.reduce((s, t) => s + t.bbox.h, 0) / c.items.length;
+      const topBias = 1.0 - (c.cy / H) * 0.15; // leve preferência por linhas mais acima
+      const score = areaSum * (1 + avgH / Math.max(1, maxH)) * topBias;
+      return { ...c, score };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  const bestLine = scored[0];
+  if (!bestLine) {
+    return { best: null, best_input: null, candidates: [], candidates_input: [], picked: null };
+  }
+
+  const parts = [...bestLine.items]
+    .sort((a, b) => a.bbox.minX - b.bbox.minX)
+    .map((t) => keepNumPunct(t.text))
+    .join("");
+
+  // limpa separadores repetidos
+  let s = parts.replace(/\s+/g, "");
+  s = s.replace(/,+/g, ",").replace(/\.+/g, ".");
+  s = s.replace(/^[.,]+/, "").replace(/[.,]+$/, "");
+
+  // se veio algo tipo "031" (perdeu o decimal), assume que faltou o último dígito e completa com 0
+  const onlyDigits = digitsOnly(s);
+  const hasSep = s.includes(",") || s.includes(".");
+  let normalized = s;
+
+  if (!hasSep && onlyDigits.length === 3) {
+    normalized = onlyDigits + "0"; // 031 -> 0310 => 31,0
+  } else if (!hasSep && onlyDigits.length >= 2) {
+    normalized = onlyDigits;
+  } else if (hasSep) {
+    normalized = s;
+  }
+
+  let best: number | null = null;
+
+  if (normalized.includes(",") || normalized.includes(".")) {
+    const firstSep = normalized.includes(",") ? "," : ".";
+    const [a, b] = normalized.split(firstSep);
+    const intPart = digitsOnly(a);
+    const decPart = digitsOnly(b || "").slice(0, 1);
+    if (intPart.length >= 1) {
+      const i = parseInt(intPart, 10);
+      const d = clampNum(parseInt(decPart || "0", 10) || 0, 0, 9);
+      best = i + d / 10;
+    }
+  } else {
+    const d = digitsOnly(normalized);
+    if (d.length >= 2) {
+      const intStr = d.slice(0, -1);
+      const decStr = d.slice(-1);
+      const i = parseInt(intStr, 10);
+      const dec = clampNum(parseInt(decStr, 10) || 0, 0, 9);
+      if (isFinite(i)) best = i + dec / 10;
     }
   }
-  if (cur.length) lines.push(cur);
 
-  // dentro de cada linha, monta "runs" por proximidade em X
-  const runs: Run[] = [];
-  const gapTol = Math.max(18, imgW * 0.03);
-
-  for (const line of lines) {
-    const byX = [...line].sort((a, b) => a.cx - b.cx);
-
-    let parts: Token[] = [];
-    let bbox: BBox | null = null;
-
-    const flush = () => {
-      if (!parts.length || !bbox) return;
-      const digits = parts.map((p) => p.digits).join("");
-      const m = bboxMetrics(bbox);
-      runs.push({ parts, bbox, digits, area: m.area, cx: m.cx, cy: m.cy, w: m.w, h: m.h });
+  if (best === null || !isFinite(best)) {
+    return {
+      best: null,
+      best_input: null,
+      candidates: [],
+      candidates_input: [],
+      picked: { line: parts, normalized },
     };
-
-    for (const t of byX) {
-      if (!parts.length) {
-        parts = [t];
-        bbox = t.bbox;
-        continue;
-      }
-      const prev = parts[parts.length - 1];
-      const gap = t.bbox.minX - prev.bbox.maxX;
-
-      // se muito longe, fecha run e abre outro
-      if (gap > gapTol) {
-        flush();
-        parts = [t];
-        bbox = t.bbox;
-      } else {
-        parts.push(t);
-        bbox = unionBBox(bbox!, t.bbox);
-      }
-    }
-    flush();
   }
 
-  return runs;
-}
-
-function pickDecimalFromParts(run: Run): { mainDigits: string; decDigit: string | null } {
-  // heurística: main = partes "grandes" (altura próxima da maior)
-  const maxH = run.parts.reduce((acc, p) => Math.max(acc, p.h), 0) || 1;
-  const big = run.parts
-    .slice()
-    .sort((a, b) => a.cx - b.cx)
-    .filter((p) => p.digits.length >= 1 && p.h >= maxH * 0.75);
-
-  const mainDigits = big.map((p) => p.digits).join("");
-
-  // decimal: 1 dígito pequeno imediatamente à direita do bloco grande
-  const mainLast = big[big.length - 1];
-  const candidates = run.parts
-    .slice()
-    .sort((a, b) => a.cx - b.cx)
-    .filter((p) => p.digits.length === 1);
-
-  let dec: Token | null = null;
-  for (const c of candidates) {
-    if (!mainLast) continue;
-    const right = c.bbox.minX >= mainLast.bbox.maxX - 1;
-    const close = c.bbox.minX - mainLast.bbox.maxX <= Math.max(10, run.w * 0.08);
-    const similarY = Math.abs(c.cy - mainLast.cy) <= Math.max(10, run.h * 0.25);
-    const smaller = c.h <= mainLast.h * 0.95;
-
-    if (right && close && similarY && smaller) {
-      dec = c;
-      break;
-    }
-  }
-
-  return { mainDigits, decDigit: dec ? dec.digits : null };
-}
-
-function valueFromDigitsForLiters(digits: string): number | null {
-  const d = digits.replace(/[^\d]/g, "");
-  if (!d) return null;
-  if (d.length === 1) return null;
-
-  // regra: último dígito é decimal
-  const intPart = d.slice(0, -1);
-  const dec = d.slice(-1);
-  const intNum = parseInt(intPart || "0", 10);
-  const v = Number(`${intNum}.${dec}`);
-  return isFinite(v) ? v : null;
-}
-
-function genDigitsVariantsForLiters(raw: string): Array<{ digits: string; edits: number; note: string }> {
-  const base = raw.replace(/[^\d]/g, "");
-  const out: Array<{ digits: string; edits: number; note: string }> = [];
-  if (!base) return out;
-
-  const push = (digits: string, edits: number, note: string) => {
-    if (!digits) return;
-    if (!out.some((x) => x.digits === digits)) out.push({ digits, edits, note });
-  };
-
-  push(base, 0, "raw");
-
-  // se veio com 3 dígitos, é MUITO comum o OCR "comer" o último 0 decimal → tenta append 0
-  if (base.length === 3) push(base + "0", 1, "append0");
-
-  // correção comum: 3 ↔ 9 (glare). tenta trocar qualquer '9' por '3'
-  for (let i = 0; i < base.length; i++) {
-    if (base[i] === "9") {
-      const replaced = base.slice(0, i) + "3" + base.slice(i + 1);
-      push(replaced, 1, "9to3");
-      if (base.length === 3) push(replaced + "0", 2, "9to3+append0");
-    }
-  }
-
-  return out;
-}
-
-function scoreHorimetro(run: Run, imgW: number, imgH: number, ref?: number | null) {
-  const { mainDigits, decDigit } = pickDecimalFromParts(run);
-
-  // horímetro: NÃO inventa decimal se não achou
-  if (!mainDigits) return { ok: false as const };
-
-  const intNum = parseInt(mainDigits, 10);
-  if (!isFinite(intNum)) return { ok: false as const };
-
-  const value = decDigit ? Number(`${intNum}.${decDigit}`) : Number(intNum);
-  if (!isFinite(value)) return { ok: false as const };
-
-  // heurísticas
-  let s = 0;
-  const len = mainDigits.length;
-
-  s += Math.log(run.area + 1) * 10;
-  s += len * 25;
-
-  // evita pegar 60/70/110/100 do painel: valores muito baixos penalizam
-  if (value < 200) s -= 200;
-
-  // horímetro geralmente fica mais na metade de baixo da foto
-  if (run.cy > imgH * 0.45) s += 40;
-  else s -= 15;
-
-  // se tiver referência (fim de mês), tenta ficar próximo
-  if (typeof ref === "number" && isFinite(ref)) {
-    const diff = Math.abs(value - ref);
-    s += clamp(80 - diff * 2, -40, 80);
-    if (value < ref - 5) s -= 60;
-  }
+  const best_input = fmtPtBr1(best);
 
   return {
-    ok: true as const,
-    score: s,
-    value,
-    best_input: toPtBr1(value),
-    picked: { mainDigits, decDigit: decDigit || null },
+    best,
+    best_input,
+    candidates: [best],
+    candidates_input: [best_input],
+    picked: {
+      line: parts,
+      normalized,
+      usedMaxH: maxH,
+    },
   };
 }
 
-function scoreAbastecimento(run: Run, imgW: number, imgH: number) {
-  // abastecimento: regra último dígito decimal e normalmente está mais na metade de cima
-  // pega "digits brutos" da run (já concatenado)
-  const rawDigits = run.digits.replace(/[^\d]/g, "");
-  if (!rawDigits || rawDigits.length < 2) return { ok: false as const };
+async function getGcpAccessToken() {
+  const b64 =
+    process.env.GCP_SA_KEY_BASE64 ||
+    process.env.GCP_KEY_BASE64 || // fallback (se existir)
+    "";
 
-  const variants = genDigitsVariantsForLiters(rawDigits);
+  if (!b64) throw new Error("Env GCP_SA_KEY_BASE64 não configurada.");
 
-  // avalia variantes: prefere faixa plausível e poucas edições
-  let best: { score: number; value: number; best_input: string; picked: any } | null = null;
-
-  for (const v of variants) {
-    const value = valueFromDigitsForLiters(v.digits);
-    if (value == null) continue;
-
-    let s = 0;
-
-    // preferir run grande (dígitos grandes do medidor)
-    s += Math.log(run.area + 1) * 12;
-
-    // abastecimento fica no topo (serial fica embaixo)
-    if (run.cy < imgH * 0.65) s += 50;
-    else s -= 80;
-
-    // faixa plausível (ajuste fino depois, mas já mata 9,1 em muitos casos)
-    if (value >= 10 && value <= 600) s += 120;
-    else if (value >= 5 && value <= 800) s += 50;
-    else s -= 120;
-
-    // penaliza “correções”
-    s -= v.edits * 35;
-
-    // preferir 3–4 dígitos antes do decimal (ex.: 0310 / 1146)
-    if (v.digits.length === 4) s += 25;
-    if (v.digits.length === 3) s -= 10;
-
-    const best_input = toPtBr1(value);
-    if (!best || s > best.score) {
-      best = { score: s, value, best_input, picked: { digits: v.digits, note: v.note, edits: v.edits } };
-    }
-  }
-
-  if (!best) return { ok: false as const };
-
-  return { ok: true as const, ...best };
+  const json = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+  const auth = new GoogleAuth({
+    credentials: json,
+    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+  });
+  const client = await auth.getClient();
+  const tok = await client.getAccessToken();
+  const token = typeof tok === "string" ? tok : tok?.token;
+  if (!token) throw new Error("Falha ao obter access_token do Google.");
+  return token;
 }
 
-async function tryFetchRefHorimetro(equip: string): Promise<number | null> {
-  // best-effort: se a tabela/view existir com colunas esperadas, usamos.
-  // Se não existir, não quebra nada.
-  try {
-    const sb = getSupabase();
-    if (!sb) return null;
+async function visionTextDetect(base64: string) {
+  const token = await getGcpAccessToken();
 
-    const code = equip.trim().toUpperCase();
+  const body = {
+    requests: [
+      {
+        image: { content: base64 },
+        features: [{ type: "TEXT_DETECTION", maxResults: 50 }],
+        imageContext: {
+          languageHints: ["pt", "en"],
+        },
+      },
+    ],
+  };
 
-    // tenta alguns nomes comuns (sem saber teu schema exato)
-    const tablesToTry = ["equipament_hours", "equipment_hours", "equipament_hours_2025"];
-    for (const table of tablesToTry) {
-      const { data, error } = await sb
-        .from(table)
-        .select("horimetro, data, mes, ano, created_at")
-        .eq("equipamento", code)
-        .order("data", { ascending: false, nullsFirst: false })
-        .order("created_at", { ascending: false, nullsFirst: false })
-        .limit(1);
+  const r = await fetch("https://vision.googleapis.com/v1/images:annotate", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
 
-      if (error) continue;
-      const h = data?.[0]?.horimetro;
-      const num = typeof h === "number" ? h : typeof h === "string" ? Number(h.replace(",", ".")) : NaN;
-      if (isFinite(num)) return num;
-    }
-
-    return null;
-  } catch {
-    return null;
+  const j = await r.json().catch(() => null);
+  if (!r.ok) {
+    const msg =
+      j?.error?.message ||
+      j?.responses?.[0]?.error?.message ||
+      `Vision API HTTP ${r.status}`;
+    throw new Error(msg);
   }
+
+  return j;
 }
 
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  const kind = parseKind(searchParams.get("kind"));
-  const url = searchParams.get("url");
-  const equip = searchParams.get("equip") || undefined;
+  const kind = (searchParams.get("kind") || "").toLowerCase();
+  const url = searchParams.get("url") || "";
+  const equip = (searchParams.get("equip") || "").toUpperCase() || null;
 
-  if (!url) return jsonError("Parâmetro url é obrigatório.", 400);
-
-  let client: ImageAnnotatorClient;
-  try {
-    client = getVisionClient();
-  } catch (e: any) {
-    return jsonError("OCR: configuração do Google inválida.", 500, { message: String(e?.message || e) });
+  if (!url) return jsonError("Parâmetro 'url' é obrigatório.", 400);
+  if (kind !== "horimetro" && kind !== "abastecimento" && kind !== "odometro") {
+    return jsonError("Parâmetro 'kind' inválido (use horimetro | abastecimento | odometro).", 400);
   }
 
-  // referência opcional (ajuda horímetro a não pegar 100/70/60)
-  const ref_horimetro = kind === "horimetro" && equip ? await tryFetchRefHorimetro(equip) : null;
-
   try {
-    const [result] = await client.documentTextDetection({
-      image: { source: { imageUri: url } },
-    });
-
-    const textAnnotations = (result as any)?.textAnnotations || [];
-    const fullRaw = String(textAnnotations?.[0]?.description || "");
-
-    const { tokens, imgW, imgH } = extractTokens(textAnnotations);
-    const runs = buildRuns(tokens, imgW, imgH);
-
-    // calcula scores por kind
-    const scored = runs
-      .map((r) => {
-        if (kind === "horimetro") {
-          const s = scoreHorimetro(r, imgW, imgH, ref_horimetro);
-          return s.ok ? { run: r, score: s.score, value: s.value, best_input: s.best_input, picked: s.picked } : null;
-        }
-        if (kind === "abastecimento") {
-          const s = scoreAbastecimento(r, imgW, imgH);
-          return s.ok ? { run: r, score: s.score, value: s.value, best_input: s.best_input, picked: s.picked } : null;
-        }
-        // odometro (fallback): usa regra de litros (último dígito decimal) mas sem faixa tão restrita
-        const s = scoreAbastecimento(r, imgW, imgH);
-        return s.ok ? { run: r, score: s.score - 40, value: s.value, best_input: s.best_input, picked: s.picked } : null;
-      })
-      .filter(Boolean) as Array<{ run: Run; score: number; value: number; best_input: string; picked: any }>;
-
-    scored.sort((a, b) => b.score - a.score);
-
-    const top = scored.slice(0, 8).map((x) => ({
-      value: x.value,
-      best_input: x.best_input,
-      score: Math.round(x.score),
-      digits: x.run.digits,
-      bbox: x.run.bbox,
-      picked: x.picked,
-    }));
-
-    const best = scored[0];
-    if (!best) {
-      return NextResponse.json({
-        ok: false,
-        kind,
-        error: "Não consegui identificar um número confiável na imagem.",
-        raw: fullRaw,
-        ref_horimetro,
-        debug: { imgW, imgH, token_count: tokens.length, run_count: runs.length },
+    const imgRes = await fetch(url, { cache: "no-store" });
+    if (!imgRes.ok) {
+      return jsonError("Não consegui baixar a imagem (url inválida/expirada).", 400, {
+        status: imgRes.status,
       });
     }
+
+    const ab = await imgRes.arrayBuffer();
+    const base64 = Buffer.from(ab).toString("base64");
+
+    const vision = await visionTextDetect(base64);
+    const ann = vision?.responses?.[0] || {};
+    const textAnnotations = ann?.textAnnotations || [];
+    const { tokens, W, H, raw } = buildTokens(textAnnotations);
+
+    let out:
+      | ReturnType<typeof pickHorimetro>
+      | ReturnType<typeof pickAbastecimento>;
+
+    if (kind === "horimetro") out = pickHorimetro(tokens, W, H);
+    else out = pickAbastecimento(tokens, W, H);
 
     return NextResponse.json({
       ok: true,
       kind,
-      best: String(best.value),          // ex: "31" ou "31.0" / "3647.2"
-      best_input: best.best_input,       // pt-BR com vírgula e 1 casa
-      candidates: top.map((c) => c.value),
-      raw: fullRaw,
-      ref_horimetro,
+      equip,
+      best: out.best,
+      best_input: out.best_input,
+      candidates: out.candidates,
+      candidates_input: out.candidates_input,
+      raw,
       debug: {
-        imgW,
-        imgH,
         token_count: tokens.length,
-        run_count: runs.length,
-        top,
-        picked: best.picked,
+        imgW: W,
+        imgH: H,
+        picked: (out as any).picked ?? null,
       },
     });
   } catch (e: any) {
-    return jsonError("Erro ao executar OCR.", 500, { message: String(e?.message || e) });
+    return jsonError(e?.message || "Erro no OCR.", 500);
   }
 }
