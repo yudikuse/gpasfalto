@@ -1,3 +1,4 @@
+// FILE: app/api/ocr/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleAuth } from "google-auth-library";
 
@@ -71,10 +72,7 @@ function resolveServiceAccount() {
 
 async function getVisionAuth() {
   // Compatibilidade: aceite qualquer um desses nomes
-  const apiKey =
-    process.env.GCP_VISION_API_KEY ||
-    process.env.GOOGLE_VISION_API_KEY ||
-    "";
+  const apiKey = process.env.GCP_VISION_API_KEY || process.env.GOOGLE_VISION_API_KEY || "";
 
   if (apiKey) return { mode: "apikey" as const, apiKey };
 
@@ -171,7 +169,8 @@ function clusterRows(tokens: TokenBox[]) {
 }
 
 function compactnessMetrics(tokens: TokenBox[], docW: number) {
-  if (!tokens.length) return { spanX: 0, sumW: 1, avgW: 1, maxGap: 0, compactness: 999, spanNorm: 1 };
+  if (!tokens.length)
+    return { spanX: 0, sumW: 1, avgW: 1, maxGap: 0, compactness: 999, spanNorm: 1 };
 
   const tks = [...tokens].sort((a, b) => a.minX - b.minX);
   const first = tks[0];
@@ -193,6 +192,14 @@ function compactnessMetrics(tokens: TokenBox[], docW: number) {
   return { spanX, sumW, avgW, maxGap, compactness, spanNorm };
 }
 
+function rightMost(tokens: TokenBox[]) {
+  let best: TokenBox | null = null;
+  for (const t of tokens) {
+    if (!best || t.maxX > best.maxX) best = t;
+  }
+  return best;
+}
+
 function findDecimalRight(main: TokenBox, digitTokens: TokenBox[]) {
   // 1 dígito alinhado horizontalmente à direita
   const mainCy = main.cy;
@@ -201,13 +208,13 @@ function findDecimalRight(main: TokenBox, digitTokens: TokenBox[]) {
   const candidates = digitTokens
     .filter((t) => t !== main)
     .filter((t) => t.digitLen === 1)
-    .filter((t) => Math.abs(t.cy - mainCy) <= Math.max(8, mainH * 0.7))
+    .filter((t) => Math.abs(t.cy - mainCy) <= Math.max(10, mainH * 0.85))
     .filter((t) => t.minX >= main.maxX)
     .map((t) => {
       const gap = t.minX - main.maxX;
       return { t, gap };
     })
-    .filter(({ gap }) => gap >= 0 && gap <= Math.max(40, mainH * 2.5))
+    .filter(({ gap }) => gap >= 0 && gap <= Math.max(70, mainH * 3.2))
     .sort((a, b) => a.gap - b.gap);
 
   return candidates[0]?.t || null;
@@ -217,7 +224,7 @@ function findDecimalRight(main: TokenBox, digitTokens: TokenBox[]) {
  * HORÍMETRO
  * - Preferir grupos 4–6 dígitos com altura maior (>= 70% do maxH)
  * - Ignorar <4 dígitos (escala RPM)
- * - Se achar (4–6 dígitos) + (1 dígito) alinhado, juntar como decimal
+ * - Se achar (4 dígitos) + (1 dígito) alinhado, juntar como decimal
  */
 function pickHorimetroDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
@@ -243,18 +250,20 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
     const main = longTokens[0];
     let digits = main.digits;
 
-    // se veio 4 dígitos, tenta achar 1 dígito à direita como decimal
+    let decTok: TokenBox | null = null;
     if (digits.length === 4) {
-      const dec = findDecimalRight(main, clean);
-      if (dec) digits = digits + dec.digits;
-      dbg.decFound = !!dec;
+      decTok = findDecimalRight(main, clean);
+      if (decTok) digits = digits + decTok.digits;
+      dbg.decFound = !!decTok;
     }
 
     dbg.method = "long-token";
     dbg.maxH = maxH;
     dbg.minBigH = minBigH;
     dbg.bounds = { w: bounds.w, h: bounds.h };
-    return { digits, used: [main, ...(dbg.decFound ? [findDecimalRight(main, clean)!] : [])].filter(Boolean), dbg };
+
+    const used = [main, ...(decTok ? [decTok] : [])].filter(Boolean) as TokenBox[];
+    return { digits, used, dbg };
   }
 
   // 2) fallback por linha: usa só tokens "grandes" (>=70% maxH) e exige 4+ dígitos
@@ -263,7 +272,6 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
 
   const rowCands = rows
     .map((r) => {
-      // filtra por altura da linha (evita tokens menores)
       const strong = r.items.filter((t) => t.h >= r.avgH * 0.8);
       const digits = strong.map((t) => t.digits).join("");
       const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
@@ -277,7 +285,7 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
     // bônus leve pra linhas mais abaixo (horímetro costuma estar abaixo da escala)
     .map((c) => ({
       ...c,
-      score: c.r.avgH * (1 + c.digits.length) * (1 + c.yNorm * 0.35) / Math.max(1, c.m.compactness),
+      score: (c.r.avgH * (1 + c.digits.length) * (1 + c.yNorm * 0.35)) / Math.max(1, c.m.compactness),
     }))
     .sort((a, b) => b.score - a.score);
 
@@ -290,12 +298,14 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
   const picked = rowCands[0];
   let digits = picked.digits;
 
-  // tentar achar decimal à direita (se só 4 dígitos)
+  let decTok: TokenBox | null = null;
   if (digits.length === 4) {
-    const main = picked.strong[picked.strong.length - 1];
-    const dec = main ? findDecimalRight(main, clean) : null;
-    if (dec) digits = digits + dec.digits;
-    dbg.decFound = !!dec;
+    const last = picked.strong[picked.strong.length - 1];
+    if (last) {
+      decTok = findDecimalRight(last, clean);
+      if (decTok) digits = digits + decTok.digits;
+    }
+    dbg.decFound = !!decTok;
   }
 
   dbg.method = "row";
@@ -310,13 +320,7 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
     compactness: c.m.compactness,
   }));
 
-  const used = [...picked.strong];
-  if (dbg.decFound) {
-    const main = picked.strong[picked.strong.length - 1];
-    const dec = main ? findDecimalRight(main, clean) : null;
-    if (dec) used.push(dec);
-  }
-
+  const used = [...picked.strong, ...(decTok ? [decTok] : [])];
   return { digits, used, dbg };
 }
 
@@ -344,13 +348,44 @@ function parseHorimetro(digits: string) {
 }
 
 /**
- * ABASTECIMENTO
- * - pegar dígitos grandes (altura próxima da máxima)
- * - exigir 4 dígitos (se 3 => padStart)
- * - último dígito = decimal (litros)
- * - ignorar linha muito abaixo (contador pequeno inferior)
- * - escolher pela maior altura média (avgH); empate -> mais acima
+ * ABASTECIMENTO (APRENDIZADO)
+ * - Os números grandes são 3 dígitos inteiros (com zero à esquerda) + 1 dígito decimal em um “rolete” à direita.
+ * - Se o OCR retornar só 3 dígitos (ex: "114"), NÃO é "11,4". É "114,?" (precisa achar o decimal à direita; se não achar, assume ,0).
+ * - Então: normaliza para sempre 4 dígitos = [3 inteiros] + [1 decimal].
  */
+function normalizeAbastecimentoDigits(
+  mainDigitsRaw: string,
+  used: TokenBox[],
+  allCleanDigitTokens: TokenBox[],
+) {
+  let d = digitsOf(mainDigitsRaw);
+  if (!d) return null;
+
+  // Se vier "muito longo", pega os últimos 4 como fallback (ruído/concatenação)
+  if (d.length > 4) d = d.slice(-4);
+
+  // Caso já tenha 4 dígitos, assume (### + decimal)
+  if (d.length === 4) {
+    return { digits: d, used, meta: { mode: "as-is" } };
+  }
+
+  // Caso tenha 1–3 dígitos: trata como parte inteira e tenta achar decimal à direita
+  const int3 = d.padStart(3, "0").slice(-3);
+
+  const rm = used.length ? rightMost(used) : null;
+  const decTok = rm ? findDecimalRight(rm, allCleanDigitTokens) : null;
+  const dec = decTok?.digits?.slice(-1) || "0";
+
+  const digits = int3 + dec;
+  const used2 = decTok ? [...used, decTok] : used;
+
+  return {
+    digits,
+    used: used2,
+    meta: { mode: decTok ? "int+dec" : "int+0", decFound: !!decTok, int3, dec },
+  };
+}
+
 function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
   if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
@@ -376,15 +411,15 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
 
   const rows = clusterRows(big);
 
-  // monta candidatos por linha
+  // monta candidatos por linha (normalmente os 3 dígitos inteiros estarão aqui)
   const rowCands = rows
     .map((r) => {
       const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
 
-      // descarta muito abaixo (onde mora o contador pequeno)
+      // descarta muito abaixo (onde mora o contador pequeno inferior)
       if (yNorm > 0.82) return null;
 
-      // usa só tokens realmente altos dentro da linha
+      // “strong” só pros dígitos inteiros (decimal pode vir menor e será buscado à direita)
       const strong = r.items.filter((t) => t.h >= r.avgH * 0.85);
       const digitsRaw = strong.map((t) => t.digits).join("");
 
@@ -392,20 +427,28 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
     })
     .filter(Boolean) as { r: Row; strong: TokenBox[]; digitsRaw: string; yNorm: number }[];
 
-  // também tenta token único 3–4 dígitos
+  // também tenta token único 2–4 dígitos (às vezes o Vision junta)
   const tokenCands = big
-    .filter((t) => t.digitLen >= 3 && t.digitLen <= 4)
+    .filter((t) => t.digitLen >= 2 && t.digitLen <= 4)
     .map((t) => {
       const yNorm = clamp((t.cy - bounds.minY) / bounds.h, 0, 1);
       return { t, digitsRaw: t.digits, yNorm };
     })
     .filter((c) => c.yNorm <= 0.82);
 
-  type Cand = { digitsRaw: string; used: TokenBox[]; avgH: number; cy: number; yNorm: number; src: string };
+  type Cand = {
+    digitsRaw: string;
+    used: TokenBox[];
+    avgH: number;
+    cy: number;
+    yNorm: number;
+    src: string;
+  };
 
   const candidates: Cand[] = [];
 
   for (const c of rowCands) {
+    if (!c.strong.length) continue;
     candidates.push({
       digitsRaw: c.digitsRaw,
       used: c.strong,
@@ -442,17 +485,24 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
 
   if (!candidates.length) return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
 
-  // pega o primeiro candidato que consiga virar 4 dígitos plausíveis
+  // pega o primeiro candidato que consiga virar "3 inteiros + 1 decimal"
   for (const c of candidates) {
-    let d = digitsOf(c.digitsRaw);
+    const norm = normalizeAbastecimentoDigits(c.digitsRaw, c.used, clean);
+    if (!norm) continue;
 
-    if (d.length === 3) d = d.padStart(4, "0");
-    if (d.length > 4) d = d.slice(-4); // usa os últimos 4 (regra)
+    const d = norm.digits;
     if (d.length !== 4) continue;
 
     dbg.method = `picked-${c.src}`;
-    dbg.picked = { digitsRaw: c.digitsRaw, digits: d, avgH: c.avgH, yNorm: c.yNorm };
-    return { digits: d, used: c.used, dbg };
+    dbg.picked = {
+      digitsRaw: c.digitsRaw,
+      digits: d,
+      avgH: c.avgH,
+      yNorm: c.yNorm,
+      norm: norm.meta || null,
+    };
+
+    return { digits: d, used: norm.used, dbg };
   }
 
   return { digits: "", used: [], dbg: { ...dbg, method: "no-4digits" } };
@@ -462,8 +512,15 @@ function parseAbastecimento(digits: string) {
   let d = digitsOf(digits);
   if (!d) return null;
 
-  if (d.length === 3) d = d.padStart(4, "0");
+  // aprendizado: se vier 3 dígitos, é parte inteira (###) -> assume decimal 0
+  if (d.length === 3) d = d + "0";
+
+  // se vier 1–2 dígitos, padStart para 3 inteiros e assume decimal 0
+  if (d.length === 1 || d.length === 2) d = d.padStart(3, "0") + "0";
+
+  // se vier longo por ruído, pega os últimos 4
   if (d.length > 4) d = d.slice(-4);
+
   if (d.length !== 4) return null;
 
   const intPart = d.slice(0, 3);
@@ -475,7 +532,7 @@ function parseAbastecimento(digits: string) {
 
   const value = i + dc / 10;
 
-  // sanidade: ajuste se quiser (eu deixei largo mas seguro)
+  // sanidade
   if (value < 0 || value > 1200) return null;
 
   return { value, best_input: `${i},${dc}` };
@@ -511,9 +568,7 @@ async function visionTextDetection(imageBytes: Uint8Array) {
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error(
-      `Vision API falhou: HTTP ${res.status} - ${JSON.stringify(data)?.slice(0, 500)}`,
-    );
+    throw new Error(`Vision API falhou: HTTP ${res.status} - ${JSON.stringify(data)?.slice(0, 500)}`);
   }
   return data;
 }
@@ -620,7 +675,7 @@ export async function GET(req: NextRequest) {
       debug: {
         token_count: digitTokens.length,
         picked_digits: pickedDigits,
-        picked_strategy: pickedDebug?.method || pickedDebug?.method || pickedDebug?.strategy || null,
+        picked_strategy: pickedDebug?.method || null,
         picked_meta: pickedDebug || null,
         used_tokens: usedTokens.map((t) => ({
           text: t.text,
