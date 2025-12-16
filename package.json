@@ -9,14 +9,14 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@google-cloud/vision": "^5.3.4",
     "@supabase/supabase-js": "^2.49.0",
     "chart.js": "^4.5.1",
     "google-auth-library": "^9.15.1",
     "next": "latest",
     "react": "latest",
     "react-chartjs-2": "^5.3.0",
-    "react-dom": "latest"
+    "react-dom": "latest",
+    "sharp": "^0.34.3"
   },
   "devDependencies": {
     "@types/node": "latest",
