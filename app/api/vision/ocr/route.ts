@@ -5,444 +5,389 @@ import { GoogleAuth } from "google-auth-library";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type BBox = {
-  minX: number;
-  minY: number;
-  maxX: number;
-  maxY: number;
-  w: number;
-  h: number;
-  area: number;
-  cx: number;
-  cy: number;
-};
+type Vertex = { x?: number; y?: number };
+type BoundingPoly = { vertices?: Vertex[] };
+type TextAnnotation = { description?: string; boundingPoly?: BoundingPoly };
 
-type Token = {
-  text: string;
-  bbox: BBox;
+type VisionResponse = {
+  textAnnotations?: TextAnnotation[];
+  fullTextAnnotation?: { text?: string };
+  error?: { message?: string };
 };
 
 function jsonError(message: string, status = 400, extra?: any) {
-  return NextResponse.json({ ok: false, error: message, ...extra }, { status });
+  return NextResponse.json({ ok: false, error: message, ...(extra || {}) }, { status });
 }
 
-function clampNum(n: number, a: number, b: number) {
-  return Math.max(a, Math.min(b, n));
-}
-
-function fmtPtBr1(value: number) {
-  // sempre 1 casa decimal, sem separador de milhar
-  return value.toFixed(1).replace(".", ",");
-}
-
-function digitsOnly(s: string) {
+function onlyDigits(s: string) {
   return (s || "").replace(/[^\d]/g, "");
 }
 
-function keepNumPunct(s: string) {
-  return (s || "").replace(/[^0-9.,]/g, "");
+function formatPt1(value: number) {
+  // 1 casa decimal com vírgula
+  return value.toFixed(1).replace(".", ",");
 }
 
-function hasLetters(s: string) {
-  return /[A-Za-zÀ-ÿ]/.test(s || "");
+function clampInt(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, Math.round(n)));
 }
 
-function bboxFromPoly(poly: any): BBox | null {
-  const vs = poly?.vertices || poly?.normalizedVertices;
-  if (!Array.isArray(vs) || vs.length === 0) return null;
-
-  let minX = Infinity,
-    minY = Infinity,
-    maxX = -Infinity,
-    maxY = -Infinity;
-
-  for (const v of vs) {
-    const x = typeof v?.x === "number" ? v.x : 0;
-    const y = typeof v?.y === "number" ? v.y : 0;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  }
-
-  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY))
-    return null;
-
-  const w = Math.max(0, maxX - minX);
-  const h = Math.max(0, maxY - minY);
-  const area = w * h;
-
-  const cx = minX + w / 2;
-  const cy = minY + h / 2;
-
-  return { minX, minY, maxX, maxY, w, h, area, cx, cy };
+function bboxFromVertices(vertices?: Vertex[]) {
+  const vs = vertices || [];
+  const xs = vs.map((v) => (typeof v.x === "number" ? v.x : 0));
+  const ys = vs.map((v) => (typeof v.y === "number" ? v.y : 0));
+  const minX = xs.length ? Math.min(...xs) : 0;
+  const maxX = xs.length ? Math.max(...xs) : 0;
+  const minY = ys.length ? Math.min(...ys) : 0;
+  const maxY = ys.length ? Math.max(...ys) : 0;
+  return { minX, maxX, minY, maxY, w: maxX - minX, h: maxY - minY };
 }
 
-function buildTokens(textAnnotations: any[]): { tokens: Token[]; W: number; H: number; raw: string } {
-  const raw = textAnnotations?.[0]?.description || "";
+function pickBestNumericWord(
+  annos: TextAnnotation[],
+  opts: { minDigits: number; maxDigits: number; imgH: number }
+) {
+  // ignora o [0] porque geralmente é o texto completo
+  let best: { a: TextAnnotation; score: number; digits: string; bbox: any } | null = null;
 
-  const tokens: Token[] = [];
-  let maxX = 0;
-  let maxY = 0;
+  for (let i = 1; i < annos.length; i++) {
+    const a = annos[i];
+    const desc = a.description || "";
+    const digits = onlyDigits(desc);
+    if (!digits) continue;
+    if (digits.length < opts.minDigits || digits.length > opts.maxDigits) continue;
 
-  for (let i = 1; i < (textAnnotations?.length || 0); i++) {
-    const t = textAnnotations[i];
-    const text = String(t?.description || "").trim();
-    const bbox = bboxFromPoly(t?.boundingPoly);
-    if (!text || !bbox) continue;
+    const bbox = bboxFromVertices(a.boundingPoly?.vertices);
+    if (!bbox.h || !bbox.w) continue;
 
-    maxX = Math.max(maxX, bbox.maxX);
-    maxY = Math.max(maxY, bbox.maxY);
+    // prefere o que é maior (normalmente o visor principal)
+    // e mais “alto na imagem” (topo), porque a linha de baixo (odômetro) é pequena
+    const centerY = bbox.minY + bbox.h / 2;
+    const topBias = Math.max(0, 1 - centerY / Math.max(1, opts.imgH)); // 0..1
+    const score = bbox.h * 1000 + bbox.w * 2 + topBias * 200;
 
-    tokens.push({ text, bbox });
+    if (!best || score > best.score) best = { a, score, digits, bbox };
   }
 
-  // fallback se vier estranho
-  const W = Math.max(1, Math.round(maxX));
-  const H = Math.max(1, Math.round(maxY));
-
-  return { tokens, W, H, raw };
+  return best;
 }
 
-function pickHorimetro(tokens: Token[], W: number, H: number) {
-  // Horímetro: janela inferior → filtra pelo "miolo" de baixo e pega o maior grupo de dígitos.
-  const bottomMin = H * 0.55;
+let cachedToken: { token: string; expMs: number } | null = null;
 
-  const numeric = tokens
-    .filter((t) => !hasLetters(t.text))
-    .map((t) => {
-      const d = digitsOnly(t.text);
-      return { t, d };
-    })
-    .filter(({ d, t }) => d.length >= 2 && t.bbox.cy >= bottomMin);
+async function getAccessToken() {
+  const now = Date.now();
+  if (cachedToken && now < cachedToken.expMs) return cachedToken.token;
 
-  // score: prioriza mais dígitos, maior caixa, mais embaixo
-  const scored = numeric
-    .map(({ t, d }) => {
-      const normArea = t.bbox.area / (W * H);
-      const normH = t.bbox.h / H;
-      const bottomness = t.bbox.cy / H;
-
-      let score = 0;
-      score += d.length * 10;
-      score += normArea * 200;
-      score += normH * 80;
-      score += bottomness * 20;
-
-      // penaliza números típicos de escala (curtos)
-      const v = parseInt(d, 10);
-      if (d.length <= 3 && v <= 200) score -= 20;
-
-      return { t, d, score };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  const main = scored[0];
-  if (!main) {
-    return {
-      best: null,
-      best_input: null,
-      candidates: [],
-      candidates_input: [],
-      picked: null,
-    };
-  }
-
-  // inteiro do horímetro = o grupo principal (NÃO quebrar no último dígito)
-  const intHours = parseInt(main.d, 10);
-  if (!isFinite(intHours)) {
-    return {
-      best: null,
-      best_input: null,
-      candidates: [],
-      candidates_input: [],
-      picked: { main: main.d },
-    };
-  }
-
-  // tenta achar o dígito decimal (um dígito) logo à direita do grupo principal
-  const decCandidates = numeric
-    .map(({ t, d }) => ({ t, d }))
-    .filter(({ t, d }) => d.length === 1)
-    .filter(({ t }) => {
-      const yOk = t.bbox.cy >= main.t.bbox.minY - main.t.bbox.h * 0.6 &&
-        t.bbox.cy <= main.t.bbox.maxY + main.t.bbox.h * 0.6;
-      const xOk = t.bbox.minX >= main.t.bbox.maxX - main.t.bbox.w * 0.05 &&
-        t.bbox.minX <= main.t.bbox.maxX + main.t.bbox.w * 1.2;
-      const hOk = t.bbox.h >= main.t.bbox.h * 0.35;
-      return yOk && xOk && hOk;
-    })
-    .map(({ t, d }) => {
-      const dist = Math.abs(t.bbox.minX - main.t.bbox.maxX);
-      const score = 1000 - dist + (t.bbox.area / (W * H)) * 100;
-      return { t, d, score };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  const dec = decCandidates[0]?.d ?? "0";
-  const decDigit = clampNum(parseInt(dec, 10) || 0, 0, 9);
-
-  const best = intHours + decDigit / 10;
-  const best_input = fmtPtBr1(best);
-
-  // candidatos (pra debug)
-  const candidates = [
-    best,
-    ...scored.slice(0, 6).map((x) => parseInt(x.d, 10)).filter((n) => isFinite(n)).map((n) => n + 0 / 10),
-  ]
-    .filter((n) => isFinite(n))
-    .filter((v, i, a) => a.indexOf(v) === i);
-
-  const candidates_input = candidates.map((v) => fmtPtBr1(v));
-
-  return {
-    best,
-    best_input,
-    candidates,
-    candidates_input,
-    picked: {
-      mainDigits: main.d,
-      decDigit: decCandidates[0]?.d ?? null,
-    },
-  };
-}
-
-function clusterByLine(tokens: Token[], tolY: number) {
-  const sorted = [...tokens].sort((a, b) => a.bbox.cy - b.bbox.cy);
-  const clusters: { cy: number; items: Token[] }[] = [];
-
-  for (const t of sorted) {
-    let placed = false;
-    for (const c of clusters) {
-      if (Math.abs(t.bbox.cy - c.cy) <= tolY) {
-        c.items.push(t);
-        // atualiza cy médio
-        c.cy = c.items.reduce((s, x) => s + x.bbox.cy, 0) / c.items.length;
-        placed = true;
-        break;
-      }
-    }
-    if (!placed) clusters.push({ cy: t.bbox.cy, items: [t] });
-  }
-  return clusters;
-}
-
-function pickAbastecimento(tokens: Token[], W: number, H: number) {
-  // Litros: pega a "linha" com dígitos maiores e monta left->right.
-  const numeric = tokens
-    .filter((t) => !hasLetters(t.text))
-    .map((t) => ({ t, s: keepNumPunct(t.text), d: digitsOnly(t.text) }))
-    .filter(({ s, d }) => s.length > 0 && d.length > 0);
-
-  if (numeric.length === 0) {
-    return { best: null, best_input: null, candidates: [], candidates_input: [], picked: null };
-  }
-
-  const maxH = Math.max(...numeric.map((x) => x.t.bbox.h));
-  const big = numeric
-    .filter((x) => x.t.bbox.h >= maxH * 0.6) // foca nos dígitos grandes
-    .map((x) => x.t);
-
-  const baseSet = big.length ? big : numeric.map((x) => x.t);
-
-  const tolY = Math.max(8, maxH * 0.6, H * 0.06);
-  const clusters = clusterByLine(baseSet, tolY);
-
-  const scored = clusters
-    .map((c) => {
-      const areaSum = c.items.reduce((s, t) => s + t.bbox.area, 0);
-      const avgH = c.items.reduce((s, t) => s + t.bbox.h, 0) / c.items.length;
-      const topBias = 1.0 - (c.cy / H) * 0.15; // leve preferência por linhas mais acima
-      const score = areaSum * (1 + avgH / Math.max(1, maxH)) * topBias;
-      return { ...c, score };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  const bestLine = scored[0];
-  if (!bestLine) {
-    return { best: null, best_input: null, candidates: [], candidates_input: [], picked: null };
-  }
-
-  const parts = [...bestLine.items]
-    .sort((a, b) => a.bbox.minX - b.bbox.minX)
-    .map((t) => keepNumPunct(t.text))
-    .join("");
-
-  // limpa separadores repetidos
-  let s = parts.replace(/\s+/g, "");
-  s = s.replace(/,+/g, ",").replace(/\.+/g, ".");
-  s = s.replace(/^[.,]+/, "").replace(/[.,]+$/, "");
-
-  // se veio algo tipo "031" (perdeu o decimal), assume que faltou o último dígito e completa com 0
-  const onlyDigits = digitsOnly(s);
-  const hasSep = s.includes(",") || s.includes(".");
-  let normalized = s;
-
-  if (!hasSep && onlyDigits.length === 3) {
-    normalized = onlyDigits + "0"; // 031 -> 0310 => 31,0
-  } else if (!hasSep && onlyDigits.length >= 2) {
-    normalized = onlyDigits;
-  } else if (hasSep) {
-    normalized = s;
-  }
-
-  let best: number | null = null;
-
-  if (normalized.includes(",") || normalized.includes(".")) {
-    const firstSep = normalized.includes(",") ? "," : ".";
-    const [a, b] = normalized.split(firstSep);
-    const intPart = digitsOnly(a);
-    const decPart = digitsOnly(b || "").slice(0, 1);
-    if (intPart.length >= 1) {
-      const i = parseInt(intPart, 10);
-      const d = clampNum(parseInt(decPart || "0", 10) || 0, 0, 9);
-      best = i + d / 10;
-    }
-  } else {
-    const d = digitsOnly(normalized);
-    if (d.length >= 2) {
-      const intStr = d.slice(0, -1);
-      const decStr = d.slice(-1);
-      const i = parseInt(intStr, 10);
-      const dec = clampNum(parseInt(decStr, 10) || 0, 0, 9);
-      if (isFinite(i)) best = i + dec / 10;
-    }
-  }
-
-  if (best === null || !isFinite(best)) {
-    return {
-      best: null,
-      best_input: null,
-      candidates: [],
-      candidates_input: [],
-      picked: { line: parts, normalized },
-    };
-  }
-
-  const best_input = fmtPtBr1(best);
-
-  return {
-    best,
-    best_input,
-    candidates: [best],
-    candidates_input: [best_input],
-    picked: {
-      line: parts,
-      normalized,
-      usedMaxH: maxH,
-    },
-  };
-}
-
-async function getGcpAccessToken() {
   const b64 =
     process.env.GCP_SA_KEY_BASE64 ||
-    process.env.GCP_KEY_BASE64 || // fallback (se existir)
+    process.env.GCP_KEY_BASE64 ||
+    process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64 ||
     "";
 
-  if (!b64) throw new Error("Env GCP_SA_KEY_BASE64 não configurada.");
+  if (!b64) throw new Error("Env GCP_SA_KEY_BASE64 (ou GCP_KEY_BASE64) não configurada.");
 
-  const json = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+  const saJson = JSON.parse(Buffer.from(b64, "base64").toString("utf8"));
+
   const auth = new GoogleAuth({
-    credentials: json,
-    scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    credentials: saJson,
+    scopes: ["https://www.googleapis.com/auth/cloud-platform"]
   });
+
   const client = await auth.getClient();
-  const tok = await client.getAccessToken();
-  const token = typeof tok === "string" ? tok : tok?.token;
+  const tokResp = await client.getAccessToken();
+  const token = typeof tokResp === "string" ? tokResp : tokResp?.token;
+
   if (!token) throw new Error("Falha ao obter access_token do Google.");
+
+  // cache simples ~45 min
+  cachedToken = { token, expMs: Date.now() + 45 * 60 * 1000 };
   return token;
 }
 
-async function visionTextDetect(base64: string) {
-  const token = await getGcpAccessToken();
+async function visionAnnotateBatch(imagesBase64: string[], featureType: "TEXT_DETECTION" | "DOCUMENT_TEXT_DETECTION") {
+  const token = await getAccessToken();
 
   const body = {
-    requests: [
-      {
-        image: { content: base64 },
-        features: [{ type: "TEXT_DETECTION", maxResults: 50 }],
-        imageContext: {
-          languageHints: ["pt", "en"],
-        },
-      },
-    ],
+    requests: imagesBase64.map((content) => ({
+      image: { content },
+      features: [{ type: featureType, maxResults: 10 }],
+      imageContext: { languageHints: ["en"] }
+    }))
   };
 
   const r = await fetch("https://vision.googleapis.com/v1/images:annotate", {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
+      "content-type": "application/json",
+      authorization: `Bearer ${token}`
     },
     body: JSON.stringify(body),
-    cache: "no-store",
+    cache: "no-store"
   });
 
-  const j = await r.json().catch(() => null);
+  const json = await r.json().catch(() => null);
+
   if (!r.ok) {
-    const msg =
-      j?.error?.message ||
-      j?.responses?.[0]?.error?.message ||
-      `Vision API HTTP ${r.status}`;
-    throw new Error(msg);
+    const msg = json?.error?.message || `HTTP ${r.status}`;
+    throw new Error(`Vision API: ${msg}`);
   }
 
-  return j;
+  const responses: VisionResponse[] = json?.responses || [];
+  return responses;
+}
+
+async function cropBuffer(buf: Buffer, left: number, top: number, width: number, height: number, preprocess = true) {
+  const sharpMod = await import("sharp");
+  const sharp = sharpMod.default;
+
+  let s = sharp(buf).extract({ left, top, width, height });
+
+  if (preprocess) {
+    // melhora contraste p/ visor mecânico
+    s = s.grayscale().normalize().sharpen();
+  }
+
+  return await s.toBuffer();
+}
+
+function pickSingleDigitFromVision(resp: VisionResponse) {
+  const t = resp?.textAnnotations?.[0]?.description || resp?.fullTextAnnotation?.text || "";
+  const m = t.match(/[0-9]/);
+  return m ? m[0] : null;
+}
+
+async function handleHorimetro(imgBuf: Buffer, imgW: number, imgH: number, first: VisionResponse) {
+  const annos = first.textAnnotations || [];
+  const picked = pickBestNumericWord(annos, { minDigits: 4, maxDigits: 6, imgH });
+
+  const raw = first.fullTextAnnotation?.text || annos?.[0]?.description || "";
+
+  // fallback simples
+  if (!picked) {
+    const digits = onlyDigits(raw);
+    const main = digits ? parseInt(digits, 10) : null;
+    const best = main !== null ? main : null;
+    return {
+      best,
+      best_input: best !== null ? formatPt1(best) : "",
+      candidates: best !== null ? [best] : [],
+      candidates_input: best !== null ? [formatPt1(best)] : [],
+      raw,
+      debug: { note: "no-picked-word" }
+    };
+  }
+
+  const mainDigits = picked.digits.replace(/^0+/, "") || "0";
+  const main = parseInt(mainDigits, 10);
+
+  // tenta ler a casa decimal recortando uma “janela” à direita do grupo principal
+  const padY = Math.round(picked.bbox.h * 0.25);
+  const padX = Math.round(picked.bbox.w * 0.08);
+
+  const decLeft = clampInt(picked.bbox.maxX + padX, 0, imgW - 1);
+  const decTop = clampInt(picked.bbox.minY - padY, 0, imgH - 1);
+  const decWidth = clampInt(Math.round(picked.bbox.w * 0.30), 20, imgW - decLeft);
+  const decHeight = clampInt(picked.bbox.h + padY * 2, 20, imgH - decTop);
+
+  let decDigit: string | null = null;
+  try {
+    const decCrop = await cropBuffer(imgBuf, decLeft, decTop, decWidth, decHeight, true);
+    const decB64 = decCrop.toString("base64");
+    const [resp] = await visionAnnotateBatch([decB64], "TEXT_DETECTION");
+    decDigit = pickSingleDigitFromVision(resp);
+  } catch {
+    decDigit = null;
+  }
+
+  const dec = decDigit ? parseInt(decDigit, 10) : 0;
+  const best = main + dec / 10;
+
+  return {
+    best,
+    best_input: formatPt1(best),
+    candidates: [best],
+    candidates_input: [formatPt1(best)],
+    raw,
+    debug: {
+      picked_main: picked.digits,
+      decDigit: decDigit ?? null,
+      decCrop: { decLeft, decTop, decWidth, decHeight }
+    }
+  };
+}
+
+async function handleAbastecimento(imgBuf: Buffer, imgW: number, imgH: number, first: VisionResponse) {
+  const annos = first.textAnnotations || [];
+  const raw = first.fullTextAnnotation?.text || annos?.[0]?.description || "";
+
+  const picked = pickBestNumericWord(annos, { minDigits: 2, maxDigits: 4, imgH });
+
+  // fallback simples
+  if (!picked) {
+    const digits = onlyDigits(raw);
+    // tenta 4 dígitos (xxxD)
+    const d4 = digits.length >= 4 ? digits.slice(0, 4) : digits;
+    if (d4.length >= 2) {
+      const main = parseInt(d4.slice(0, -1) || "0", 10);
+      const dec = parseInt(d4.slice(-1), 10);
+      const best = main + dec / 10;
+      return {
+        best,
+        best_input: formatPt1(best),
+        candidates: [best],
+        candidates_input: [formatPt1(best)],
+        raw,
+        debug: { note: "fallback-raw", digits }
+      };
+    }
+    return { best: null, best_input: "", candidates: [], candidates_input: [], raw, debug: { note: "no-digits" } };
+  }
+
+  // recorte baseado no melhor “word” numérico (normalmente 3 dígitos grandes)
+  // e EXPANDE para a direita para incluir o 4º dígito (decimal), que às vezes o OCR não pega.
+  const padY = Math.round(picked.bbox.h * 0.35);
+  const padX = Math.round(picked.bbox.w * 0.06);
+
+  const left = clampInt(picked.bbox.minX - padX, 0, imgW - 1);
+  const top = clampInt(picked.bbox.minY - padY, 0, imgH - 1);
+
+  const extraRight = Math.round(picked.bbox.w * 0.45); // espaço pro dígito decimal
+  const width = clampInt(picked.bbox.w + padX * 2 + extraRight, 40, imgW - left);
+  const height = clampInt(picked.bbox.h + padY * 2, 30, imgH - top);
+
+  // 1) recorta visor
+  const visor = await cropBuffer(imgBuf, left, top, width, height, true);
+
+  // 2) divide em 4 janelas e OCR por dígito (batch)
+  const sharpMod = await import("sharp");
+  const sharp = sharpMod.default;
+
+  const segW = Math.floor(width / 4);
+  const segH = height;
+
+  const segs: Buffer[] = [];
+  for (let i = 0; i < 4; i++) {
+    const segLeft = i * segW;
+    const w = i === 3 ? width - segLeft : segW;
+
+    // margenzinha interna pra não pegar borda do visor
+    const innerPad = Math.max(1, Math.round(w * 0.06));
+    const innerTop = Math.max(0, Math.round(segH * 0.08));
+    const innerH = Math.max(10, segH - innerTop * 2);
+
+    const seg = await sharp(visor)
+      .extract({
+        left: clampInt(segLeft + innerPad, 0, width - 1),
+        top: clampInt(innerTop, 0, segH - 1),
+        width: clampInt(w - innerPad * 2, 10, width - segLeft),
+        height: clampInt(innerH, 10, segH - innerTop)
+      })
+      .grayscale()
+      .normalize()
+      .sharpen()
+      .toBuffer();
+
+    segs.push(seg);
+  }
+
+  const segB64 = segs.map((b) => b.toString("base64"));
+  const segResps = await visionAnnotateBatch(segB64, "TEXT_DETECTION");
+  const digits = segResps.map((r) => pickSingleDigitFromVision(r));
+
+  // monta xxxx (onde o 4º é decimal)
+  const d0 = digits[0] ?? "";
+  const d1 = digits[1] ?? "";
+  const d2 = digits[2] ?? "";
+  const d3 = digits[3] ?? "";
+
+  const assembled = `${d0}${d1}${d2}${d3}`.replace(/[^\d]/g, "");
+
+  let best: number | null = null;
+
+  if (assembled.length === 4) {
+    const main = parseInt(assembled.slice(0, 3), 10);
+    const dec = parseInt(assembled.slice(3), 10);
+    best = main + dec / 10;
+  } else {
+    // fallback: tenta usar o que veio do OCR da linha (ex: "091" -> assume "0910")
+    const norm = (picked.digits || "").padStart(3, "0") + "0";
+    const main = parseInt(norm.slice(0, 3), 10);
+    const dec = parseInt(norm.slice(3), 10);
+    best = main + dec / 10;
+  }
+
+  return {
+    best,
+    best_input: best !== null ? formatPt1(best) : "",
+    candidates: best !== null ? [best] : [],
+    candidates_input: best !== null ? [formatPt1(best)] : [],
+    raw,
+    debug: {
+      picked_line: picked.digits,
+      crop: { left, top, width, height },
+      digit_windows: digits,
+      assembled
+    }
+  };
 }
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
-
-  const kind = (searchParams.get("kind") || "").toLowerCase();
-  const url = searchParams.get("url") || "";
-  const equip = (searchParams.get("equip") || "").toUpperCase() || null;
-
-  if (!url) return jsonError("Parâmetro 'url' é obrigatório.", 400);
-  if (kind !== "horimetro" && kind !== "abastecimento" && kind !== "odometro") {
-    return jsonError("Parâmetro 'kind' inválido (use horimetro | abastecimento | odometro).", 400);
-  }
-
   try {
-    const imgRes = await fetch(url, { cache: "no-store" });
-    if (!imgRes.ok) {
-      return jsonError("Não consegui baixar a imagem (url inválida/expirada).", 400, {
-        status: imgRes.status,
-      });
+    const { searchParams } = new URL(req.url);
+
+    const kind = (searchParams.get("kind") || "").toLowerCase();
+    const equip = searchParams.get("equip") || null;
+    const url = searchParams.get("url") || "";
+
+    if (!kind || (kind !== "horimetro" && kind !== "abastecimento")) {
+      return jsonError("kind inválido. Use horimetro ou abastecimento.", 400);
+    }
+    if (!url || !/^https?:\/\//i.test(url)) {
+      return jsonError("url inválida.", 400);
     }
 
-    const ab = await imgRes.arrayBuffer();
-    const base64 = Buffer.from(ab).toString("base64");
+    const imgResp = await fetch(url, { cache: "no-store" });
+    if (!imgResp.ok) {
+      return jsonError(`Falha ao baixar imagem: HTTP ${imgResp.status}`, 400);
+    }
 
-    const vision = await visionTextDetect(base64);
-    const ann = vision?.responses?.[0] || {};
-    const textAnnotations = ann?.textAnnotations || [];
-    const { tokens, W, H, raw } = buildTokens(textAnnotations);
+    const arr = await imgResp.arrayBuffer();
+    const imgBuf = Buffer.from(arr);
 
-    let out:
-      | ReturnType<typeof pickHorimetro>
-      | ReturnType<typeof pickAbastecimento>;
+    const sharpMod = await import("sharp");
+    const sharp = sharpMod.default;
+    const meta = await sharp(imgBuf).metadata();
+    const imgW = meta.width || 0;
+    const imgH = meta.height || 0;
 
-    if (kind === "horimetro") out = pickHorimetro(tokens, W, H);
-    else out = pickAbastecimento(tokens, W, H);
+    const base64 = imgBuf.toString("base64");
+    const [first] = await visionAnnotateBatch([base64], "DOCUMENT_TEXT_DETECTION");
+
+    if (first?.error?.message) {
+      return jsonError(`Vision error: ${first.error.message}`, 500, { kind, equip });
+    }
+
+    const result =
+      kind === "horimetro"
+        ? await handleHorimetro(imgBuf, imgW, imgH, first)
+        : await handleAbastecimento(imgBuf, imgW, imgH, first);
 
     return NextResponse.json({
       ok: true,
       kind,
       equip,
-      best: out.best,
-      best_input: out.best_input,
-      candidates: out.candidates,
-      candidates_input: out.candidates_input,
-      raw,
+      best: result.best,
+      best_input: result.best_input,
+      candidates: result.candidates,
+      candidates_input: result.candidates_input,
+      raw: result.raw,
       debug: {
-        token_count: tokens.length,
-        imgW: W,
-        imgH: H,
-        picked: (out as any).picked ?? null,
-      },
+        imgW,
+        imgH,
+        ...result.debug
+      }
     });
   } catch (e: any) {
-    return jsonError(e?.message || "Erro no OCR.", 500);
+    return jsonError(e?.message || "Erro inesperado no OCR.", 500);
   }
 }
