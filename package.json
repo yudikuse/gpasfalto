@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@google-cloud/vision": "^4.4.2",
+    "@google-cloud/vision": "latest",
     "@supabase/supabase-js": "^2.49.0",
     "chart.js": "^4.5.1",
     "google-auth-library": "^9.15.1",
