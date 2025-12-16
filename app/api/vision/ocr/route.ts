@@ -11,25 +11,8 @@ type VisionAnnot = {
   boundingPoly?: { vertices?: VisionVertex[] };
 };
 
-type TokenBox = {
-  text: string;
-  digits: string;
-  digitLen: number;
-  minX: number;
-  maxX: number;
-  minY: number;
-  maxY: number;
-  w: number;
-  h: number;
-  cx: number;
-  cy: number;
-};
-
 function jsonError(message: string, status = 400, extra?: any) {
-  return NextResponse.json(
-    { ok: false, error: message, ...(extra ? { extra } : {}) },
-    { status },
-  );
+  return NextResponse.json({ ok: false, error: message, ...(extra ? { extra } : {}) }, { status });
 }
 
 function clamp(n: number, a: number, b: number) {
@@ -41,16 +24,9 @@ function safeNum(n: any, fallback = 0) {
   return Number.isFinite(x) ? x : fallback;
 }
 
-function digitsOf(s: string) {
-  return (s || "").replace(/[^\d]/g, "");
-}
-
-function hasLetters(s: string) {
-  return /[a-zA-Z]/.test(s || "");
-}
-
 function resolveServiceAccount() {
-  // Base64 do JSON do service account
+  // Use o mesmo padrão que você já usa nos outros projetos:
+  // - GCP_KEY_BASE64 = base64 do JSON do service account
   const b64 =
     process.env.GCP_KEY_BASE64 ||
     process.env.GOOGLE_SERVICE_ACCOUNT_B64 ||
@@ -63,26 +39,18 @@ function resolveServiceAccount() {
     const json = Buffer.from(b64, "base64").toString("utf8");
     return JSON.parse(json);
   } catch {
-    throw new Error(
-      "Falha ao ler o service account. Verifique o base64 do JSON em GCP_KEY_BASE64 (ou GOOGLE_SERVICE_ACCOUNT_B64).",
-    );
+    throw new Error("Falha ao ler o service account. Verifique o base64 do JSON em GCP_KEY_BASE64.");
   }
 }
 
-async function getVisionAuth() {
-  // Compatibilidade: aceite qualquer um desses nomes
-  const apiKey =
-    process.env.GCP_VISION_API_KEY ||
-    process.env.GOOGLE_VISION_API_KEY ||
-    "";
-
+async function getBearerToken() {
+  // Opcional: se você preferir API KEY, configure GCP_VISION_API_KEY e não usa token.
+  const apiKey = process.env.GCP_VISION_API_KEY || "";
   if (apiKey) return { mode: "apikey" as const, apiKey };
 
   const creds = resolveServiceAccount();
   if (!creds) {
-    throw new Error(
-      "Sem credenciais: configure GCP_VISION_API_KEY (ou GOOGLE_VISION_API_KEY) ou GCP_KEY_BASE64.",
-    );
+    throw new Error("Sem credenciais: configure GCP_KEY_BASE64 (ou GCP_VISION_API_KEY).");
   }
 
   const auth = new GoogleAuth({
@@ -91,10 +59,22 @@ async function getVisionAuth() {
   });
 
   const token = await auth.getAccessToken();
-  if (!token) throw new Error("Não consegui obter access token (GoogleAuth).");
+  if (!token) throw new Error("Não consegui obter access token do GoogleAuth.");
 
   return { mode: "bearer" as const, token };
 }
+
+type TokenBox = {
+  text: string;
+  minX: number;
+  maxX: number;
+  minY: number;
+  maxY: number;
+  w: number;
+  h: number;
+  cx: number;
+  cy: number;
+};
 
 function polyToBox(annot: VisionAnnot): TokenBox | null {
   const text = (annot.description || "").trim();
@@ -114,12 +94,8 @@ function polyToBox(annot: VisionAnnot): TokenBox | null {
   const w = Math.max(1, maxX - minX);
   const h = Math.max(1, maxY - minY);
 
-  const digits = digitsOf(text);
-
   return {
     text,
-    digits,
-    digitLen: digits.length,
     minX,
     maxX,
     minY,
@@ -131,27 +107,16 @@ function polyToBox(annot: VisionAnnot): TokenBox | null {
   };
 }
 
-function docBounds(tokens: TokenBox[]) {
-  const minX = Math.min(...tokens.map((t) => t.minX));
-  const maxX = Math.max(...tokens.map((t) => t.maxX));
-  const minY = Math.min(...tokens.map((t) => t.minY));
-  const maxY = Math.max(...tokens.map((t) => t.maxY));
-  const w = Math.max(1, maxX - minX);
-  const h = Math.max(1, maxY - minY);
-  return { minX, maxX, minY, maxY, w, h };
-}
-
-type Row = { cy: number; avgH: number; items: TokenBox[] };
-
 function clusterRows(tokens: TokenBox[]) {
+  // agrupa por “linha” usando proximidade do cy
   const sorted = [...tokens].sort((a, b) => a.cy - b.cy);
-  const rows: Row[] = [];
+  const rows: { cy: number; items: TokenBox[]; avgH: number }[] = [];
 
   for (const t of sorted) {
+    const tol = Math.max(12, t.h * 0.6);
     let placed = false;
 
     for (const r of rows) {
-      const tol = Math.max(12, Math.min(t.h, r.avgH) * 0.7);
       if (Math.abs(t.cy - r.cy) <= tol) {
         r.items.push(t);
         r.cy = r.items.reduce((s, x) => s + x.cy, 0) / r.items.length;
@@ -161,324 +126,76 @@ function clusterRows(tokens: TokenBox[]) {
       }
     }
 
-    if (!placed) rows.push({ cy: t.cy, avgH: t.h, items: [t] });
+    if (!placed) {
+      rows.push({ cy: t.cy, items: [t], avgH: t.h });
+    }
   }
-
-  // ordena tokens em cada linha por X
-  for (const r of rows) r.items.sort((a, b) => a.minX - b.minX);
 
   return rows;
 }
 
-function compactnessMetrics(tokens: TokenBox[], docW: number) {
-  if (!tokens.length) return { spanX: 0, sumW: 1, avgW: 1, maxGap: 0, compactness: 999, spanNorm: 1 };
+function pickBestRowForBigDigits(rows: { cy: number; items: TokenBox[]; avgH: number }[]) {
+  if (!rows.length) return null;
 
-  const tks = [...tokens].sort((a, b) => a.minX - b.minX);
-  const first = tks[0];
-  const last = tks[tks.length - 1];
+  // altura “total” aproximada do documento (pra penalizar linha muito embaixo)
+  const docMaxY = Math.max(...rows.flatMap((r) => r.items.map((t) => t.maxY)));
+  const docMinY = Math.min(...rows.flatMap((r) => r.items.map((t) => t.minY)));
+  const docH = Math.max(1, docMaxY - docMinY);
 
-  const spanX = last.maxX - first.minX;
-  const sumW = tks.reduce((acc, t) => acc + t.w, 0);
-  const avgW = sumW / Math.max(1, tks.length);
+  let best = { score: -1, row: rows[0] as any };
 
-  let maxGap = 0;
-  for (let i = 1; i < tks.length; i++) {
-    const gap = Math.max(0, tks[i].minX - tks[i - 1].maxX);
-    maxGap = Math.max(maxGap, gap);
+  for (const r of rows) {
+    const digitsCount = r.items
+      .map((t) => (t.text.match(/\d/g) || []).length)
+      .reduce((a, b) => a + b, 0);
+
+    if (digitsCount < 2) continue;
+
+    const yNorm = clamp((r.cy - docMinY) / docH, 0, 1);
+
+    // score: prioriza maior altura (dígitos grandes) + quantidade de dígitos
+    // penaliza o rodapé (onde normalmente ficam os dígitos pequenos)
+    const bottomPenalty = yNorm > 0.72 ? (yNorm - 0.72) * 3.0 : 0; // 0..~0.84
+    const score = r.avgH * (1 + Math.log2(1 + digitsCount)) * (1 - clamp(bottomPenalty, 0, 0.75));
+
+    if (score > best.score) best = { score, row: r };
   }
 
-  const compactness = spanX / Math.max(1, sumW);
-  const spanNorm = spanX / Math.max(1, docW);
-
-  return { spanX, sumW, avgW, maxGap, compactness, spanNorm };
+  return best.row as { cy: number; items: TokenBox[]; avgH: number };
 }
 
-function findDecimalRight(main: TokenBox, digitTokens: TokenBox[]) {
-  // 1 dígito alinhado horizontalmente à direita
-  const mainCy = main.cy;
-  const mainH = main.h;
+function buildDigitsString(row: { cy: number; items: TokenBox[]; avgH: number }) {
+  // filtra só tokens que “parecem” ser da linha grande (remove ruído menor)
+  const strong = row.items.filter((t) => t.h >= row.avgH * 0.78);
 
-  const candidates = digitTokens
-    .filter((t) => t !== main)
-    .filter((t) => t.digitLen === 1)
-    .filter((t) => Math.abs(t.cy - mainCy) <= Math.max(8, mainH * 0.7))
-    .filter((t) => t.minX >= main.maxX)
-    .map((t) => {
-      const gap = t.minX - main.maxX;
-      return { t, gap };
-    })
-    .filter(({ gap }) => gap >= 0 && gap <= Math.max(40, mainH * 2.5))
-    .sort((a, b) => a.gap - b.gap);
+  // ordena por X (esquerda -> direita)
+  strong.sort((a, b) => a.minX - b.minX);
 
-  return candidates[0]?.t || null;
+  const joined = strong.map((t) => t.text).join(" ");
+  const digitsOnly = joined.replace(/[^\d]/g, "");
+
+  return { joined, digitsOnly, used: strong };
 }
 
-/**
- * HORÍMETRO
- * - Preferir grupos 4–6 dígitos com altura maior (>= 70% do maxH)
- * - Ignorar <4 dígitos (escala RPM)
- * - Se achar (4–6 dígitos) + (1 dígito) alinhado, juntar como decimal
- */
-function pickHorimetroDigits(digitTokens: TokenBox[]) {
-  const dbg: any = {};
-  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
+function parseFuelLitersFromDigits(digitsOnly: string) {
+  // regra do seu visor: "4 números grandes, sendo o último a casa decimal"
+  // aceitamos também 5+ dígitos (com zeros à esquerda), sempre: inteiro = tudo menos o último, decimal = último
+  if (!digitsOnly || digitsOnly.length < 3) return null;
 
-  const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
+  const dec = digitsOnly.slice(-1);
+  const intPart = digitsOnly.slice(0, -1);
 
-  const bounds = docBounds(clean);
-  const maxH = Math.max(...clean.map((t) => t.h));
-  const minBigH = maxH * 0.7;
+  const intVal = parseInt(intPart || "0", 10);
+  const decVal = parseInt(dec || "0", 10);
 
-  // 1) token único 4–6 dígitos e alto
-  const longTokens = clean
-    .filter((t) => t.h >= minBigH)
-    .filter((t) => t.digitLen >= 4 && t.digitLen <= 6)
-    .sort((a, b) => {
-      if (b.h !== a.h) return b.h - a.h;
-      return b.digitLen - a.digitLen;
-    });
+  if (!Number.isFinite(intVal) || !Number.isFinite(decVal)) return null;
 
-  if (longTokens.length) {
-    const main = longTokens[0];
-    let digits = main.digits;
+  const value = Number(`${intVal}.${decVal}`);
+  // sanity: litros normalmente não explode (evita pegar linha errada)
+  if (value < 0 || value > 5000) return null;
 
-    // se veio 4 dígitos, tenta achar 1 dígito à direita como decimal
-    if (digits.length === 4) {
-      const dec = findDecimalRight(main, clean);
-      if (dec) digits = digits + dec.digits;
-      dbg.decFound = !!dec;
-    }
-
-    dbg.method = "long-token";
-    dbg.maxH = maxH;
-    dbg.minBigH = minBigH;
-    dbg.bounds = { w: bounds.w, h: bounds.h };
-    return { digits, used: [main, ...(dbg.decFound ? [findDecimalRight(main, clean)!] : [])].filter(Boolean), dbg };
-  }
-
-  // 2) fallback por linha: usa só tokens "grandes" (>=70% maxH) e exige 4+ dígitos
-  const big = clean.filter((t) => t.h >= minBigH).sort((a, b) => a.minX - b.minX);
-  const rows = clusterRows(big);
-
-  const rowCands = rows
-    .map((r) => {
-      // filtra por altura da linha (evita tokens menores)
-      const strong = r.items.filter((t) => t.h >= r.avgH * 0.8);
-      const digits = strong.map((t) => t.digits).join("");
-      const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-      const m = compactnessMetrics(strong, bounds.w);
-
-      return { r, strong, digits, yNorm, m };
-    })
-    .filter((c) => c.digits.length >= 4 && c.digits.length <= 7)
-    // anti-RPM: linha muito espalhada costuma ser escala
-    .filter((c) => c.m.spanNorm <= 0.62 && c.m.compactness <= 3.4 && c.m.maxGap <= c.m.avgW * 3.0)
-    // bônus leve pra linhas mais abaixo (horímetro costuma estar abaixo da escala)
-    .map((c) => ({
-      ...c,
-      score: c.r.avgH * (1 + c.digits.length) * (1 + c.yNorm * 0.35) / Math.max(1, c.m.compactness),
-    }))
-    .sort((a, b) => b.score - a.score);
-
-  if (!rowCands.length) {
-    dbg.method = "none-row";
-    dbg.maxH = maxH;
-    return { digits: "", used: [], dbg };
-  }
-
-  const picked = rowCands[0];
-  let digits = picked.digits;
-
-  // tentar achar decimal à direita (se só 4 dígitos)
-  if (digits.length === 4) {
-    const main = picked.strong[picked.strong.length - 1];
-    const dec = main ? findDecimalRight(main, clean) : null;
-    if (dec) digits = digits + dec.digits;
-    dbg.decFound = !!dec;
-  }
-
-  dbg.method = "row";
-  dbg.maxH = maxH;
-  dbg.minBigH = minBigH;
-  dbg.top = rowCands.slice(0, 6).map((c) => ({
-    digits: c.digits,
-    score: c.score,
-    yNorm: c.yNorm,
-    avgH: c.r.avgH,
-    spanNorm: c.m.spanNorm,
-    compactness: c.m.compactness,
-  }));
-
-  const used = [...picked.strong];
-  if (dbg.decFound) {
-    const main = picked.strong[picked.strong.length - 1];
-    const dec = main ? findDecimalRight(main, clean) : null;
-    if (dec) used.push(dec);
-  }
-
-  return { digits, used, dbg };
-}
-
-function parseHorimetro(digits: string) {
-  const d = digitsOf(digits);
-  if (d.length < 4) return null;
-
-  // 5+ => último dígito é decimal
-  if (d.length >= 5) {
-    const intPart = d.slice(0, -1);
-    const dec = d.slice(-1);
-    const i = parseInt(intPart, 10);
-    const dc = parseInt(dec, 10);
-    if (!Number.isFinite(i) || !Number.isFinite(dc)) return null;
-    const v = i + dc / 10;
-    if (v < 0 || v > 1000000) return null;
-    return { value: v, best_input: `${i},${dc}` };
-  }
-
-  // 4 dígitos => inteiro
-  const i = parseInt(d, 10);
-  if (!Number.isFinite(i)) return null;
-  if (i < 0 || i > 1000000) return null;
-  return { value: i, best_input: `${i},0` };
-}
-
-/**
- * ABASTECIMENTO
- * - pegar dígitos grandes (altura próxima da máxima)
- * - exigir 4 dígitos (se 3 => padStart)
- * - último dígito = decimal (litros)
- * - ignorar linha muito abaixo (contador pequeno inferior)
- * - escolher pela maior altura média (avgH); empate -> mais acima
- */
-function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
-  const dbg: any = {};
-  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
-
-  const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
-
-  const bounds = docBounds(clean);
-
-  // maxH ignorando tokens muito longos (que podem ser ruído)
-  const pool = clean.filter((t) => t.digitLen <= 6);
-  const maxH = Math.max(...(pool.length ? pool : clean).map((t) => t.h));
-  const minBigH = maxH * 0.72;
-
-  // BIG tokens (dígitos grandes)
-  const big = clean.filter((t) => t.digitLen <= 6 && t.h >= minBigH);
-
-  dbg.maxH = maxH;
-  dbg.minBigH = minBigH;
-  dbg.bigCount = big.length;
-
-  if (!big.length) return { digits: "", used: [], dbg: { ...dbg, method: "no-big" } };
-
-  const rows = clusterRows(big);
-
-  // monta candidatos por linha
-  const rowCands = rows
-    .map((r) => {
-      const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-
-      // descarta muito abaixo (onde mora o contador pequeno)
-      if (yNorm > 0.82) return null;
-
-      // usa só tokens realmente altos dentro da linha
-      const strong = r.items.filter((t) => t.h >= r.avgH * 0.85);
-      const digitsRaw = strong.map((t) => t.digits).join("");
-
-      return { r, strong, digitsRaw, yNorm };
-    })
-    .filter(Boolean) as { r: Row; strong: TokenBox[]; digitsRaw: string; yNorm: number }[];
-
-  // também tenta token único 3–4 dígitos
-  const tokenCands = big
-    .filter((t) => t.digitLen >= 3 && t.digitLen <= 4)
-    .map((t) => {
-      const yNorm = clamp((t.cy - bounds.minY) / bounds.h, 0, 1);
-      return { t, digitsRaw: t.digits, yNorm };
-    })
-    .filter((c) => c.yNorm <= 0.82);
-
-  type Cand = { digitsRaw: string; used: TokenBox[]; avgH: number; cy: number; yNorm: number; src: string };
-
-  const candidates: Cand[] = [];
-
-  for (const c of rowCands) {
-    candidates.push({
-      digitsRaw: c.digitsRaw,
-      used: c.strong,
-      avgH: c.r.avgH,
-      cy: c.r.cy,
-      yNorm: c.yNorm,
-      src: "row",
-    });
-  }
-
-  for (const c of tokenCands) {
-    candidates.push({
-      digitsRaw: c.digitsRaw,
-      used: [c.t],
-      avgH: c.t.h,
-      cy: c.t.cy,
-      yNorm: c.yNorm,
-      src: "token",
-    });
-  }
-
-  // ordena: maior avgH primeiro; empate -> mais acima (cy menor)
-  candidates.sort((a, b) => {
-    if (b.avgH !== a.avgH) return b.avgH - a.avgH;
-    return a.cy - b.cy;
-  });
-
-  dbg.top = candidates.slice(0, 10).map((c) => ({
-    src: c.src,
-    digits: c.digitsRaw,
-    avgH: c.avgH,
-    yNorm: c.yNorm,
-  }));
-
-  if (!candidates.length) return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
-
-  // pega o primeiro candidato que consiga virar 4 dígitos plausíveis
-  for (const c of candidates) {
-    let d = digitsOf(c.digitsRaw);
-
-    if (d.length === 3) d = d.padStart(4, "0");
-    if (d.length > 4) d = d.slice(-4); // usa os últimos 4 (regra)
-    if (d.length !== 4) continue;
-
-    dbg.method = `picked-${c.src}`;
-    dbg.picked = { digitsRaw: c.digitsRaw, digits: d, avgH: c.avgH, yNorm: c.yNorm };
-    return { digits: d, used: c.used, dbg };
-  }
-
-  return { digits: "", used: [], dbg: { ...dbg, method: "no-4digits" } };
-}
-
-function parseAbastecimento(digits: string) {
-  let d = digitsOf(digits);
-  if (!d) return null;
-
-  if (d.length === 3) d = d.padStart(4, "0");
-  if (d.length > 4) d = d.slice(-4);
-  if (d.length !== 4) return null;
-
-  const intPart = d.slice(0, 3);
-  const dec = d.slice(3);
-
-  const i = parseInt(intPart, 10);
-  const dc = parseInt(dec, 10);
-  if (!Number.isFinite(i) || !Number.isFinite(dc)) return null;
-
-  const value = i + dc / 10;
-
-  // sanidade: ajuste se quiser (eu deixei largo mas seguro)
-  if (value < 0 || value > 1200) return null;
-
-  return { value, best_input: `${i},${dc}` };
+  const best_input = `${intVal},${decVal}`; // BR
+  return { value, best_input };
 }
 
 async function visionTextDetection(imageBytes: Uint8Array) {
@@ -492,7 +209,7 @@ async function visionTextDetection(imageBytes: Uint8Array) {
     ],
   };
 
-  const auth = await getVisionAuth();
+  const auth = await getBearerToken();
 
   const endpoint =
     auth.mode === "apikey"
@@ -511,9 +228,7 @@ async function visionTextDetection(imageBytes: Uint8Array) {
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error(
-      `Vision API falhou: HTTP ${res.status} - ${JSON.stringify(data)?.slice(0, 500)}`,
-    );
+    throw new Error(`Vision API falhou: HTTP ${res.status} - ${JSON.stringify(data)?.slice(0, 500)}`);
   }
   return data;
 }
@@ -549,7 +264,7 @@ export async function GET(req: NextRequest) {
       .map(polyToBox)
       .filter(Boolean) as TokenBox[];
 
-    const digitTokens = tokens.filter((t) => t.digitLen > 0);
+    const digitTokens = tokens.filter((t) => /\d/.test(t.text));
 
     if (!digitTokens.length) {
       return NextResponse.json({
@@ -565,47 +280,60 @@ export async function GET(req: NextRequest) {
       });
     }
 
+    const rows = clusterRows(digitTokens);
+    const bestRow = pickBestRowForBigDigits(rows);
+
+    if (!bestRow) {
+      return NextResponse.json({
+        ok: true,
+        kind,
+        equip: equip || null,
+        best: null,
+        best_input: "",
+        candidates: [],
+        candidates_input: [],
+        raw: rawFull,
+        debug: { token_count: digitTokens.length, note: "não achei linha candidata" },
+      });
+    }
+
+    const { joined, digitsOnly, used } = buildDigitsString(bestRow);
+
     let best: number | null = null;
     let best_input = "";
     let candidates: (number | null)[] = [];
     let candidates_input: string[] = [];
 
-    let pickedDigits = "";
-    let usedTokens: TokenBox[] = [];
-    let pickedDebug: any = {};
-
-    if (kind === "horimetro") {
-      const picked = pickHorimetroDigits(digitTokens);
-      pickedDigits = picked.digits;
-      usedTokens = picked.used;
-      pickedDebug = picked.dbg;
-
-      const parsed = parseHorimetro(pickedDigits);
+    if (kind === "abastecimento") {
+      const parsed = parseFuelLitersFromDigits(digitsOnly);
       if (parsed) {
         best = parsed.value;
         best_input = parsed.best_input;
         candidates = [best];
         candidates_input = [best_input];
-      } else {
-        best = null;
-      }
-    } else if (kind === "abastecimento") {
-      const picked = pickAbastecimentoDigits(digitTokens);
-      pickedDigits = picked.digits;
-      usedTokens = picked.used;
-      pickedDebug = picked.dbg;
-
-      const parsed = parseAbastecimento(pickedDigits);
-      if (parsed) {
-        best = parsed.value;
-        best_input = parsed.best_input;
-        candidates = [best];
-        candidates_input = [best_input];
-      } else {
-        best = null;
       }
     } else {
-      return jsonError("kind inválido. Use horimetro ou abastecimento.", 400);
+      // horímetro: mantém tudo como inteiro e coloca ",0" se não vier decimal
+      // se vier 5+ dígitos, assume último é decimal (horímetro mecânico pode ter casa decimal)
+      const d = digitsOnly;
+      if (d.length >= 5) {
+        const dec = d.slice(-1);
+        const intPart = d.slice(0, -1);
+        const v = Number(`${parseInt(intPart, 10)}.${parseInt(dec, 10)}`);
+        if (Number.isFinite(v)) {
+          best = v;
+          best_input = `${parseInt(intPart, 10)},${parseInt(dec, 10)}`;
+        }
+      } else if (d.length >= 3) {
+        const v = parseInt(d, 10);
+        if (Number.isFinite(v)) {
+          best = v;
+          best_input = `${v},0`;
+        }
+      }
+
+      candidates = best == null ? [] : [best];
+      candidates_input = best == null ? [] : [best_input];
     }
 
     return NextResponse.json({
@@ -616,15 +344,15 @@ export async function GET(req: NextRequest) {
       best_input,
       candidates,
       candidates_input,
-      raw: rawFull,
+      raw: rawFull || joined,
       debug: {
         token_count: digitTokens.length,
-        picked_digits: pickedDigits,
-        picked_strategy: pickedDebug?.method || pickedDebug?.method || pickedDebug?.strategy || null,
-        picked_meta: pickedDebug || null,
-        used_tokens: usedTokens.map((t) => ({
+        picked_line: joined,
+        picked_digits: digitsOnly,
+        row_avg_h: bestRow.avgH,
+        row_cy: bestRow.cy,
+        used_tokens: used.map((t) => ({
           text: t.text,
-          digits: t.digits,
           h: t.h,
           x: [t.minX, t.maxX],
           y: [t.minY, t.maxY],
