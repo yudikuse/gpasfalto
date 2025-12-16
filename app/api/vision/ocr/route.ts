@@ -1,227 +1,94 @@
 import { NextResponse } from "next/server";
-import { createSign } from "crypto";
+import { createClient } from "@supabase/supabase-js";
+import { ImageAnnotatorClient } from "@google-cloud/vision";
 
 export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 type Kind = "horimetro" | "abastecimento" | "odometro";
 
-type Vertex = { x?: number; y?: number };
-type VisionText = {
-  description?: string;
-  boundingPoly?: { vertices?: Vertex[] };
+type BBox = { minX: number; minY: number; maxX: number; maxY: number };
+type Token = {
+  text: string;
+  digits: string;
+  bbox: BBox;
+  area: number;
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
 };
 
-let tokenCache: { accessToken: string; expMs: number } | null = null;
-
-function jsonError(message: string, status = 400) {
-  return NextResponse.json({ ok: false, error: message }, { status });
-}
-
-function b64url(input: Buffer | string) {
-  const b = Buffer.isBuffer(input) ? input : Buffer.from(input, "utf8");
-  return b
-    .toString("base64")
-    .replace(/=/g, "")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_");
-}
-
-function safeParseJSON<T = any>(s: string): T | null {
-  try {
-    return JSON.parse(s);
-  } catch {
-    return null;
-  }
-}
-
-function decodeServiceAccountFromEnv() {
-  const b64 =
-    process.env.GCP_SA_KEY_BASE64 ||
-    process.env.GCP_KEY_BASE64 || // compat
-    "";
-
-  if (!b64) return null;
-
-  const raw = Buffer.from(b64, "base64").toString("utf8").trim();
-  const sa = safeParseJSON<any>(raw);
-  if (!sa?.client_email || !sa?.private_key) return null;
-  return sa as { client_email: string; private_key: string };
-}
-
-async function getAccessToken() {
-  const now = Date.now();
-  if (tokenCache && tokenCache.expMs - now > 60_000) return tokenCache.accessToken;
-
-  const sa = decodeServiceAccountFromEnv();
-  if (!sa) throw new Error("Env GCP_SA_KEY_BASE64 (ou GCP_KEY_BASE64) inválida/não configurada.");
-
-  const iat = Math.floor(now / 1000);
-  const exp = iat + 55 * 60;
-
-  const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-  const payload = b64url(
-    JSON.stringify({
-      iss: sa.client_email,
-      scope: "https://www.googleapis.com/auth/cloud-platform",
-      aud: "https://oauth2.googleapis.com/token",
-      iat,
-      exp,
-    })
-  );
-
-  const unsigned = `${header}.${payload}`;
-  const signer = createSign("RSA-SHA256");
-  signer.update(unsigned);
-  signer.end();
-  const signature = signer.sign(sa.private_key);
-  const jwt = `${unsigned}.${b64url(signature)}`;
-
-  const form = new URLSearchParams();
-  form.set("grant_type", "urn:ietf:params:oauth:grant-type:jwt-bearer");
-  form.set("assertion", jwt);
-
-  const resp = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: form.toString(),
-  });
-
-  const data = await resp.json();
-  if (!resp.ok || !data?.access_token) {
-    throw new Error(`Falha ao obter access_token: ${JSON.stringify(data)}`);
-  }
-
-  tokenCache = { accessToken: data.access_token, expMs: exp * 1000 };
-  return data.access_token as string;
-}
-
-async function fetchImageAsBase64(url: string) {
-  if (url.startsWith("data:")) {
-    const comma = url.indexOf(",");
-    if (comma === -1) throw new Error("dataURL inválida");
-    return url.slice(comma + 1);
-  }
-
-  const r = await fetch(url, { cache: "no-store" });
-  if (!r.ok) throw new Error(`Falha ao baixar imagem: HTTP ${r.status}`);
-  const ab = await r.arrayBuffer();
-  return Buffer.from(ab).toString("base64");
-}
-
-function bboxOf(vertices?: Vertex[]) {
-  const v = vertices || [];
-  const xs = v.map((p) => p.x ?? 0);
-  const ys = v.map((p) => p.y ?? 0);
-  const x1 = Math.min(...xs, 0);
-  const x2 = Math.max(...xs, 0);
-  const y1 = Math.min(...ys, 0);
-  const y2 = Math.max(...ys, 0);
-  const w = Math.max(1, x2 - x1);
-  const h = Math.max(1, y2 - y1);
-  return { x1, x2, y1, y2, w, h, area: w * h, cx: (x1 + x2) / 2, cy: (y1 + y2) / 2 };
-}
-
-type Tok = {
-  raw: string;
-  digits: string; // só números
-  hasSep: boolean;
-  box: ReturnType<typeof bboxOf>;
+type Run = {
+  parts: Token[];
+  bbox: BBox;
+  digits: string;
+  area: number;
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
 };
 
-function isLikelyScaleNumber(n: number) {
-  // números típicos de escala/mostrador que atrapalham (RPM/temperatura/etc)
-  const bad = new Set([
-    0, 1, 2, 3, 4, 5,
-    10, 11, 15, 20, 25, 30, 35, 40,
-    50, 60, 70, 80, 90, 100, 110, 120,
-    150, 200,
-  ]);
-  return bad.has(Math.round(n));
+function jsonError(message: string, status = 400, extra?: any) {
+  return NextResponse.json({ ok: false, error: message, ...(extra ? { extra } : {}) }, { status });
 }
 
-function formatPtBr(main: number, decDigit: string | null) {
-  const d = decDigit && /^\d$/.test(decDigit) ? decDigit : "0";
-  return `${main},${d}`;
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
-function parseCandidateFromDigits(kind: Kind, digits: string, attachDec: boolean) {
-  if (!digits) return null;
+function bboxFromVertices(vertices?: Array<{ x?: number | null; y?: number | null }>): BBox | null {
+  if (!vertices || vertices.length === 0) return null;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
+  let maxX = Number.NEGATIVE_INFINITY;
+  let maxY = Number.NEGATIVE_INFINITY;
 
-  // remove lixo (só por segurança)
-  const pure = digits.replace(/[^\d]/g, "");
-  if (!pure) return null;
-
-  // regras por tipo
-  if (kind === "abastecimento") {
-    if (pure.length < 2) return null;
-    const main = Number(pure.slice(0, -1)); // preserva "0310" -> main=31
-    const dec = pure.slice(-1);
-    const value = main + Number(dec) / 10;
-    return { value, main, dec, input: formatPtBr(main, dec) };
+  for (const v of vertices) {
+    const x = typeof v?.x === "number" ? v.x : 0;
+    const y = typeof v?.y === "number" ? v.y : 0;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
   }
 
-  if (kind === "horimetro") {
-    if (pure.length < 3) return null;
-
-    if (attachDec && pure.length >= 2) {
-      const main = Number(pure.slice(0, -1));
-      const dec = pure.slice(-1);
-      const value = main + Number(dec) / 10;
-      return { value, main, dec, input: formatPtBr(main, dec) };
-    }
-
-    const main = Number(pure);
-    const value = main;
-    return { value, main, dec: "0", input: formatPtBr(main, "0") };
-  }
-
-  // odometro (se usar depois): inteiro
-  const main = Number(pure);
-  return { value: main, main, dec: null, input: String(main) };
+  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null;
+  return { minX, minY, maxX, maxY };
 }
 
-function pickDecimalNear(mainTok: Tok, all: Tok[]) {
-  // procura 1 dígito pequeno perto do canto direito/baixo do bloco principal (decimal mecânico)
-  const candidates = all
-    .filter((t) => t.digits.length === 1)
-    .filter((t) => t.box.area < mainTok.box.area * 0.35)
-    .filter((t) => {
-      const nearX = t.box.cx >= mainTok.box.x2 - mainTok.box.w * 0.1 && t.box.cx <= mainTok.box.x2 + mainTok.box.w * 0.7;
-      const nearY = t.box.cy >= mainTok.box.y1 - mainTok.box.h * 0.2 && t.box.cy <= mainTok.box.y2 + mainTok.box.h * 0.8;
-      return nearX && nearY;
-    })
-    .sort((a, b) => b.box.area - a.box.area);
-
-  return candidates[0]?.digits ?? null;
+function unionBBox(a: BBox, b: BBox): BBox {
+  return {
+    minX: Math.min(a.minX, b.minX),
+    minY: Math.min(a.minY, b.minY),
+    maxX: Math.max(a.maxX, b.maxX),
+    maxY: Math.max(a.maxY, b.maxY),
+  };
 }
 
-function score(kind: Kind, value: number, tok: Tok, refHorimetro: number | null) {
-  let s = Math.log(tok.box.area + 1) + tok.digits.length * 0.6;
-
-  if (isLikelyScaleNumber(value)) s -= 10;
-
-  if (kind === "abastecimento") {
-    // diesel normalmente 1..800 L
-    if (value < 1 || value > 800) s -= 50;
-    if (tok.digits.length >= 3 && tok.digits.length <= 5) s += 2;
-  }
-
-  if (kind === "horimetro") {
-    if (value < 0 || value > 300000) s -= 50;
-    if (refHorimetro != null) {
-      const diff = Math.abs(value - refHorimetro);
-      s -= diff / 40; // puxa pro mais próximo do histórico
-      if (value + 0.05 < refHorimetro) s -= 3; // evita “voltar”
-    }
-    if (tok.digits.length >= 4) s += 1.5;
-  }
-
-  return s;
+function bboxMetrics(b: BBox) {
+  const w = Math.max(0, b.maxX - b.minX);
+  const h = Math.max(0, b.maxY - b.minY);
+  const area = w * h;
+  const cx = b.minX + w / 2;
+  const cy = b.minY + h / 2;
+  return { w, h, area, cx, cy };
 }
 
-async function getRefHorimetro(equip: string | null) {
-  if (!equip) return null;
+function toPtBr1(value: number) {
+  // 1 casa decimal sempre, com vírgula
+  if (!isFinite(value)) return "";
+  return value.toFixed(1).replace(".", ",");
+}
 
+function parseKind(k: string | null): Kind {
+  const v = (k || "").toLowerCase().trim();
+  if (v === "horimetro" || v === "abastecimento" || v === "odometro") return v;
+  return "horimetro";
+}
+
+function getSupabase() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
@@ -229,26 +96,333 @@ async function getRefHorimetro(equip: string | null) {
 
   if (!url || !key) return null;
 
+  return createClient(url, key, { auth: { persistSession: false } });
+}
+
+function getVisionClient() {
+  const b64 = process.env.GCP_SA_KEY_BASE64 || process.env.GCP_KEY_BASE64 || "";
+  if (!b64) {
+    throw new Error("Env GCP_SA_KEY_BASE64 (ou GCP_KEY_BASE64) não configurada.");
+  }
+  const jsonStr = Buffer.from(b64, "base64").toString("utf-8");
+  const creds = JSON.parse(jsonStr);
+
+  const projectId = process.env.GCP_PROJECT_ID || creds.project_id || "";
+  if (!projectId) {
+    throw new Error("Env GCP_PROJECT_ID não configurada (e project_id não encontrado na key).");
+  }
+
+  return new ImageAnnotatorClient({
+    projectId,
+    credentials: {
+      client_email: creds.client_email,
+      private_key: creds.private_key,
+    },
+  });
+}
+
+function extractTokens(textAnnotations: any[]): { tokens: Token[]; imgW: number; imgH: number } {
+  const tokens: Token[] = [];
+
+  // Ignora o [0] que é o texto completo
+  for (let i = 1; i < (textAnnotations?.length || 0); i++) {
+    const a = textAnnotations[i];
+    const text = String(a?.description || "").trim();
+    if (!text) continue;
+
+    const digits = text.replace(/[^\d]/g, "");
+    if (!digits) continue;
+
+    const bb = bboxFromVertices(a?.boundingPoly?.vertices);
+    if (!bb) continue;
+
+    const m = bboxMetrics(bb);
+    tokens.push({
+      text,
+      digits,
+      bbox: bb,
+      area: m.area,
+      cx: m.cx,
+      cy: m.cy,
+      w: m.w,
+      h: m.h,
+    });
+  }
+
+  // tenta inferir dimensão da imagem via maior bounding box
+  let imgW = 0;
+  let imgH = 0;
+  for (const t of tokens) {
+    imgW = Math.max(imgW, t.bbox.maxX);
+    imgH = Math.max(imgH, t.bbox.maxY);
+  }
+  imgW = imgW || 1;
+  imgH = imgH || 1;
+
+  return { tokens, imgW, imgH };
+}
+
+function buildRuns(tokens: Token[], imgW: number, imgH: number): Run[] {
+  if (!tokens.length) return [];
+
+  // agrupa por "linha" (y parecido)
+  const sorted = [...tokens].sort((a, b) => a.cy - b.cy);
+  const lineTol = Math.max(12, imgH * 0.035);
+
+  const lines: Token[][] = [];
+  let cur: Token[] = [];
+  let curY = sorted[0].cy;
+
+  for (const t of sorted) {
+    if (!cur.length) {
+      cur = [t];
+      curY = t.cy;
+      continue;
+    }
+    if (Math.abs(t.cy - curY) <= lineTol) {
+      cur.push(t);
+      // atualiza centro da linha suavemente
+      curY = (curY * (cur.length - 1) + t.cy) / cur.length;
+    } else {
+      lines.push(cur);
+      cur = [t];
+      curY = t.cy;
+    }
+  }
+  if (cur.length) lines.push(cur);
+
+  // dentro de cada linha, monta "runs" por proximidade em X
+  const runs: Run[] = [];
+  const gapTol = Math.max(18, imgW * 0.03);
+
+  for (const line of lines) {
+    const byX = [...line].sort((a, b) => a.cx - b.cx);
+
+    let parts: Token[] = [];
+    let bbox: BBox | null = null;
+
+    const flush = () => {
+      if (!parts.length || !bbox) return;
+      const digits = parts.map((p) => p.digits).join("");
+      const m = bboxMetrics(bbox);
+      runs.push({ parts, bbox, digits, area: m.area, cx: m.cx, cy: m.cy, w: m.w, h: m.h });
+    };
+
+    for (const t of byX) {
+      if (!parts.length) {
+        parts = [t];
+        bbox = t.bbox;
+        continue;
+      }
+      const prev = parts[parts.length - 1];
+      const gap = t.bbox.minX - prev.bbox.maxX;
+
+      // se muito longe, fecha run e abre outro
+      if (gap > gapTol) {
+        flush();
+        parts = [t];
+        bbox = t.bbox;
+      } else {
+        parts.push(t);
+        bbox = unionBBox(bbox!, t.bbox);
+      }
+    }
+    flush();
+  }
+
+  return runs;
+}
+
+function pickDecimalFromParts(run: Run): { mainDigits: string; decDigit: string | null } {
+  // heurística: main = partes "grandes" (altura próxima da maior)
+  const maxH = run.parts.reduce((acc, p) => Math.max(acc, p.h), 0) || 1;
+  const big = run.parts
+    .slice()
+    .sort((a, b) => a.cx - b.cx)
+    .filter((p) => p.digits.length >= 1 && p.h >= maxH * 0.75);
+
+  const mainDigits = big.map((p) => p.digits).join("");
+
+  // decimal: 1 dígito pequeno imediatamente à direita do bloco grande
+  const mainLast = big[big.length - 1];
+  const candidates = run.parts
+    .slice()
+    .sort((a, b) => a.cx - b.cx)
+    .filter((p) => p.digits.length === 1);
+
+  let dec: Token | null = null;
+  for (const c of candidates) {
+    if (!mainLast) continue;
+    const right = c.bbox.minX >= mainLast.bbox.maxX - 1;
+    const close = c.bbox.minX - mainLast.bbox.maxX <= Math.max(10, run.w * 0.08);
+    const similarY = Math.abs(c.cy - mainLast.cy) <= Math.max(10, run.h * 0.25);
+    const smaller = c.h <= mainLast.h * 0.95;
+
+    if (right && close && similarY && smaller) {
+      dec = c;
+      break;
+    }
+  }
+
+  return { mainDigits, decDigit: dec ? dec.digits : null };
+}
+
+function valueFromDigitsForLiters(digits: string): number | null {
+  const d = digits.replace(/[^\d]/g, "");
+  if (!d) return null;
+  if (d.length === 1) return null;
+
+  // regra: último dígito é decimal
+  const intPart = d.slice(0, -1);
+  const dec = d.slice(-1);
+  const intNum = parseInt(intPart || "0", 10);
+  const v = Number(`${intNum}.${dec}`);
+  return isFinite(v) ? v : null;
+}
+
+function genDigitsVariantsForLiters(raw: string): Array<{ digits: string; edits: number; note: string }> {
+  const base = raw.replace(/[^\d]/g, "");
+  const out: Array<{ digits: string; edits: number; note: string }> = [];
+  if (!base) return out;
+
+  const push = (digits: string, edits: number, note: string) => {
+    if (!digits) return;
+    if (!out.some((x) => x.digits === digits)) out.push({ digits, edits, note });
+  };
+
+  push(base, 0, "raw");
+
+  // se veio com 3 dígitos, é MUITO comum o OCR "comer" o último 0 decimal → tenta append 0
+  if (base.length === 3) push(base + "0", 1, "append0");
+
+  // correção comum: 3 ↔ 9 (glare). tenta trocar qualquer '9' por '3'
+  for (let i = 0; i < base.length; i++) {
+    if (base[i] === "9") {
+      const replaced = base.slice(0, i) + "3" + base.slice(i + 1);
+      push(replaced, 1, "9to3");
+      if (base.length === 3) push(replaced + "0", 2, "9to3+append0");
+    }
+  }
+
+  return out;
+}
+
+function scoreHorimetro(run: Run, imgW: number, imgH: number, ref?: number | null) {
+  const { mainDigits, decDigit } = pickDecimalFromParts(run);
+
+  // horímetro: NÃO inventa decimal se não achou
+  if (!mainDigits) return { ok: false as const };
+
+  const intNum = parseInt(mainDigits, 10);
+  if (!isFinite(intNum)) return { ok: false as const };
+
+  const value = decDigit ? Number(`${intNum}.${decDigit}`) : Number(intNum);
+  if (!isFinite(value)) return { ok: false as const };
+
+  // heurísticas
+  let s = 0;
+  const len = mainDigits.length;
+
+  s += Math.log(run.area + 1) * 10;
+  s += len * 25;
+
+  // evita pegar 60/70/110/100 do painel: valores muito baixos penalizam
+  if (value < 200) s -= 200;
+
+  // horímetro geralmente fica mais na metade de baixo da foto
+  if (run.cy > imgH * 0.45) s += 40;
+  else s -= 15;
+
+  // se tiver referência (fim de mês), tenta ficar próximo
+  if (typeof ref === "number" && isFinite(ref)) {
+    const diff = Math.abs(value - ref);
+    s += clamp(80 - diff * 2, -40, 80);
+    if (value < ref - 5) s -= 60;
+  }
+
+  return {
+    ok: true as const,
+    score: s,
+    value,
+    best_input: toPtBr1(value),
+    picked: { mainDigits, decDigit: decDigit || null },
+  };
+}
+
+function scoreAbastecimento(run: Run, imgW: number, imgH: number) {
+  // abastecimento: regra último dígito decimal e normalmente está mais na metade de cima
+  // pega "digits brutos" da run (já concatenado)
+  const rawDigits = run.digits.replace(/[^\d]/g, "");
+  if (!rawDigits || rawDigits.length < 2) return { ok: false as const };
+
+  const variants = genDigitsVariantsForLiters(rawDigits);
+
+  // avalia variantes: prefere faixa plausível e poucas edições
+  let best: { score: number; value: number; best_input: string; picked: any } | null = null;
+
+  for (const v of variants) {
+    const value = valueFromDigitsForLiters(v.digits);
+    if (value == null) continue;
+
+    let s = 0;
+
+    // preferir run grande (dígitos grandes do medidor)
+    s += Math.log(run.area + 1) * 12;
+
+    // abastecimento fica no topo (serial fica embaixo)
+    if (run.cy < imgH * 0.65) s += 50;
+    else s -= 80;
+
+    // faixa plausível (ajuste fino depois, mas já mata 9,1 em muitos casos)
+    if (value >= 10 && value <= 600) s += 120;
+    else if (value >= 5 && value <= 800) s += 50;
+    else s -= 120;
+
+    // penaliza “correções”
+    s -= v.edits * 35;
+
+    // preferir 3–4 dígitos antes do decimal (ex.: 0310 / 1146)
+    if (v.digits.length === 4) s += 25;
+    if (v.digits.length === 3) s -= 10;
+
+    const best_input = toPtBr1(value);
+    if (!best || s > best.score) {
+      best = { score: s, value, best_input, picked: { digits: v.digits, note: v.note, edits: v.edits } };
+    }
+  }
+
+  if (!best) return { ok: false as const };
+
+  return { ok: true as const, ...best };
+}
+
+async function tryFetchRefHorimetro(equip: string): Promise<number | null> {
+  // best-effort: se a tabela/view existir com colunas esperadas, usamos.
+  // Se não existir, não quebra nada.
   try {
-    // import dinâmico evita treta em build/edge
-    const { createClient } = await import("@supabase/supabase-js");
-    const sb = createClient(url, key, { auth: { persistSession: false } });
+    const sb = getSupabase();
+    if (!sb) return null;
 
-    // tentativa 1 (mais provável)
-    let q = sb
-      .from("equipament_hours")
-      .select("horimetro,data,equipamento,equip")
-      .limit(1);
+    const code = equip.trim().toUpperCase();
 
-    // tenta encaixar coluna/valor
-    q = q.or(`equipamento.eq.${equip},equip.eq.${equip}`);
+    // tenta alguns nomes comuns (sem saber teu schema exato)
+    const tablesToTry = ["equipament_hours", "equipment_hours", "equipament_hours_2025"];
+    for (const table of tablesToTry) {
+      const { data, error } = await sb
+        .from(table)
+        .select("horimetro, data, mes, ano, created_at")
+        .eq("equipamento", code)
+        .order("data", { ascending: false, nullsFirst: false })
+        .order("created_at", { ascending: false, nullsFirst: false })
+        .limit(1);
 
-    const { data, error } = await q.order("data", { ascending: false });
+      if (error) continue;
+      const h = data?.[0]?.horimetro;
+      const num = typeof h === "number" ? h : typeof h === "string" ? Number(h.replace(",", ".")) : NaN;
+      if (isFinite(num)) return num;
+    }
 
-    if (error || !data?.[0]) return null;
-
-    const v = Number((data[0] as any).horimetro);
-    return Number.isFinite(v) ? v : null;
+    return null;
   } catch {
     return null;
   }
@@ -257,148 +431,91 @@ async function getRefHorimetro(equip: string | null) {
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
-  const kind = (searchParams.get("kind") || "horimetro") as Kind;
-  const url = searchParams.get("url") || "";
-  const equip = searchParams.get("equip");
+  const kind = parseKind(searchParams.get("kind"));
+  const url = searchParams.get("url");
+  const equip = searchParams.get("equip") || undefined;
 
-  if (!url) return jsonError("Parâmetro 'url' é obrigatório.", 400);
+  if (!url) return jsonError("Parâmetro url é obrigatório.", 400);
 
-  let refHorimetro: number | null = null;
-  if (kind === "horimetro") {
-    refHorimetro = await getRefHorimetro(equip);
+  let client: ImageAnnotatorClient;
+  try {
+    client = getVisionClient();
+  } catch (e: any) {
+    return jsonError("OCR: configuração do Google inválida.", 500, { message: String(e?.message || e) });
   }
 
+  // referência opcional (ajuda horímetro a não pegar 100/70/60)
+  const ref_horimetro = kind === "horimetro" && equip ? await tryFetchRefHorimetro(equip) : null;
+
   try {
-    const accessToken = await getAccessToken();
-    const imageB64 = await fetchImageAsBase64(url);
-
-    const body = {
-      requests: [
-        {
-          image: { content: imageB64 },
-          features: [{ type: "TEXT_DETECTION" }],
-          imageContext: {
-            languageHints: ["pt", "en"],
-          },
-        },
-      ],
-    };
-
-    const vr = await fetch("https://vision.googleapis.com/v1/images:annotate", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(body),
+    const [result] = await client.documentTextDetection({
+      image: { source: { imageUri: url } },
     });
 
-    const vjson = await vr.json();
-    if (!vr.ok) {
-      return NextResponse.json(
-        { ok: false, error: "Vision API error", details: vjson },
-        { status: 500 }
-      );
-    }
+    const textAnnotations = (result as any)?.textAnnotations || [];
+    const fullRaw = String(textAnnotations?.[0]?.description || "");
 
-    const r0 = vjson?.responses?.[0] || {};
-    const fullText: string =
-      r0?.fullTextAnnotation?.text ||
-      r0?.textAnnotations?.[0]?.description ||
-      "";
+    const { tokens, imgW, imgH } = extractTokens(textAnnotations);
+    const runs = buildRuns(tokens, imgW, imgH);
 
-    const words: VisionText[] = Array.isArray(r0?.textAnnotations)
-      ? (r0.textAnnotations as VisionText[]).slice(1)
-      : [];
-
-    const toks: Tok[] = words
-      .map((w) => {
-        const raw = String(w?.description || "").trim();
-        const digits = raw.replace(/[^\d]/g, "");
-        const hasSep = /[.,]/.test(raw);
-        const box = bboxOf(w?.boundingPoly?.vertices);
-        return { raw, digits, hasSep, box };
+    // calcula scores por kind
+    const scored = runs
+      .map((r) => {
+        if (kind === "horimetro") {
+          const s = scoreHorimetro(r, imgW, imgH, ref_horimetro);
+          return s.ok ? { run: r, score: s.score, value: s.value, best_input: s.best_input, picked: s.picked } : null;
+        }
+        if (kind === "abastecimento") {
+          const s = scoreAbastecimento(r, imgW, imgH);
+          return s.ok ? { run: r, score: s.score, value: s.value, best_input: s.best_input, picked: s.picked } : null;
+        }
+        // odometro (fallback): usa regra de litros (último dígito decimal) mas sem faixa tão restrita
+        const s = scoreAbastecimento(r, imgW, imgH);
+        return s.ok ? { run: r, score: s.score - 40, value: s.value, best_input: s.best_input, picked: s.picked } : null;
       })
-      .filter((t) => t.digits.length > 0);
+      .filter(Boolean) as Array<{ run: Run; score: number; value: number; best_input: string; picked: any }>;
 
-    // GUARD: se pediram abastecimento mas a imagem parece horímetro/mostrador (evita sugestão errada)
-    if (
-      kind === "abastecimento" &&
-      /(QUARTZO|RPM|TUR|RPM\s*x\s*100)/i.test(fullText)
-    ) {
+    scored.sort((a, b) => b.score - a.score);
+
+    const top = scored.slice(0, 8).map((x) => ({
+      value: x.value,
+      best_input: x.best_input,
+      score: Math.round(x.score),
+      digits: x.run.digits,
+      bbox: x.run.bbox,
+      picked: x.picked,
+    }));
+
+    const best = scored[0];
+    if (!best) {
       return NextResponse.json({
-        ok: true,
+        ok: false,
         kind,
-        best: null,
-        best_input: null,
-        candidates: [],
-        candidates_input: [],
-        raw: fullText,
-        ref_horimetro: refHorimetro,
-        debug: { token_count: toks.length, guarded: true },
+        error: "Não consegui identificar um número confiável na imagem.",
+        raw: fullRaw,
+        ref_horimetro,
+        debug: { imgW, imgH, token_count: tokens.length, run_count: runs.length },
       });
     }
-
-    // candidatos: pega tokens “grandes” e/ou com muitos dígitos
-    const pre = toks
-      .filter((t) => t.digits.length >= 2) // ignora 1 dígito solto (escala)
-      .sort((a, b) => b.box.area - a.box.area)
-      .slice(0, 25);
-
-    const candidates: { value: number; input: string; tok: Tok }[] = [];
-
-    for (const t of pre) {
-      // decimal “anexado” quando tem 1 dígito pequeno perto
-      const nearDec = pickDecimalNear(t, toks);
-
-      // horímetro: só anexa decimal se realmente achar um dígito próximo
-      const attachDec = kind === "abastecimento" ? true : nearDec != null;
-
-      // se achou decimal perto, “cola” no final (ex: 03647 + 2 => 036472)
-      const digitsWithDec =
-        attachDec && nearDec ? `${t.digits}${nearDec}` : t.digits;
-
-      const parsed = parseCandidateFromDigits(kind, digitsWithDec, attachDec);
-      if (!parsed) continue;
-
-      candidates.push({ value: parsed.value, input: parsed.input, tok: t });
-    }
-
-    // fallback: se nada entrou, tenta pelo fullText (último recurso)
-    if (candidates.length === 0 && fullText) {
-      const allNums = fullText.match(/\d+/g) || [];
-      for (const d of allNums) {
-        const parsed = parseCandidateFromDigits(kind, d, false);
-        if (parsed) candidates.push({ value: parsed.value, input: parsed.input, tok: { raw: d, digits: d, hasSep: false, box: { x1: 0, x2: 1, y1: 0, y2: 1, w: 1, h: 1, area: 1, cx: 0, cy: 0 } } });
-      }
-    }
-
-    // escolhe melhor pelo score
-    let best = candidates
-      .map((c) => ({
-        ...c,
-        s: score(kind, c.value, c.tok, refHorimetro),
-      }))
-      .sort((a, b) => b.s - a.s)[0];
-
-    const bestValue = best ? best.value : null;
-    const bestInput = best ? best.input : null;
 
     return NextResponse.json({
       ok: true,
       kind,
-      best: bestValue != null ? String(bestValue) : null,
-      best_input: bestInput,
-      candidates: candidates.slice(0, 10).map((c) => c.value),
-      candidates_input: candidates.slice(0, 10).map((c) => c.input),
-      raw: fullText,
-      ref_horimetro: refHorimetro,
+      best: String(best.value),          // ex: "31" ou "31.0" / "3647.2"
+      best_input: best.best_input,       // pt-BR com vírgula e 1 casa
+      candidates: top.map((c) => c.value),
+      raw: fullRaw,
+      ref_horimetro,
       debug: {
-        token_count: toks.length,
-        used_top_boxes: pre.length,
+        imgW,
+        imgH,
+        token_count: tokens.length,
+        run_count: runs.length,
+        top,
+        picked: best.picked,
       },
     });
   } catch (e: any) {
-    return jsonError(`OCR: ${e?.message || String(e)}`, 500);
+    return jsonError("Erro ao executar OCR.", 500, { message: String(e?.message || e) });
   }
 }
