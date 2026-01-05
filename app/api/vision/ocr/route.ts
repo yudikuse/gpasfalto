@@ -1,4 +1,3 @@
-// FILE: app/api/ocr/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleAuth } from "google-auth-library";
 import sharp from "sharp";
@@ -72,7 +71,9 @@ function resolveServiceAccount() {
 
 async function getVisionAuth() {
   const apiKey =
-    process.env.GCP_VISION_API_KEY || process.env.GOOGLE_VISION_API_KEY || "";
+    process.env.GCP_VISION_API_KEY ||
+    process.env.GOOGLE_VISION_API_KEY ||
+    "";
 
   if (apiKey) return { mode: "apikey" as const, apiKey };
 
@@ -166,78 +167,76 @@ function clusterRows(tokens: TokenBox[]) {
   return rows;
 }
 
-function compactnessMetrics(tokens: TokenBox[], docW: number) {
-  if (!tokens.length) {
-    return {
-      spanX: 0,
-      sumW: 1,
-      avgW: 1,
-      maxGap: 0,
-      compactness: 999,
-      spanNorm: 1,
-    };
-  }
-
-  const tks = [...tokens].sort((a, b) => a.minX - b.minX);
-  const first = tks[0];
-  const last = tks[tks.length - 1];
-
-  const spanX = last.maxX - first.minX;
-  const sumW = tks.reduce((acc, t) => acc + t.w, 0);
-  const avgW = sumW / Math.max(1, tks.length);
-
-  let maxGap = 0;
-  for (let i = 1; i < tks.length; i++) {
-    const gap = Math.max(0, tks[i].minX - tks[i - 1].maxX);
-    maxGap = Math.max(maxGap, gap);
-  }
-
-  const compactness = spanX / Math.max(1, sumW);
-  const spanNorm = spanX / Math.max(1, docW);
-
-  return { spanX, sumW, avgW, maxGap, compactness, spanNorm };
+function groupBox(tokens: TokenBox[]): TokenBox | null {
+  if (!tokens.length) return null;
+  const minX = Math.min(...tokens.map((t) => t.minX));
+  const maxX = Math.max(...tokens.map((t) => t.maxX));
+  const minY = Math.min(...tokens.map((t) => t.minY));
+  const maxY = Math.max(...tokens.map((t) => t.maxY));
+  const w = Math.max(1, maxX - minX);
+  const h = Math.max(1, maxY - minY);
+  return {
+    text: tokens.map((t) => t.text).join(" "),
+    digits: tokens.map((t) => t.digits).join(""),
+    digitLen: tokens.reduce((s, t) => s + t.digitLen, 0),
+    minX,
+    maxX,
+    minY,
+    maxY,
+    w,
+    h,
+    cx: minX + w / 2,
+    cy: minY + h / 2,
+  };
 }
 
-function findDecimalRight(main: TokenBox, digitTokens: TokenBox[]) {
+/** acha 1 dígito à direita (mesma “linha visual”), útil pra casa decimal */
+function findOneDigitRight(main: TokenBox, allDigits: TokenBox[]) {
   const mainCy = main.cy;
   const mainH = main.h;
 
-  const candidates = digitTokens
+  const candidates = allDigits
     .filter((t) => t !== main)
     .filter((t) => t.digitLen === 1)
-    .filter((t) => Math.abs(t.cy - mainCy) <= Math.max(8, mainH * 0.7))
+    .filter((t) => !hasLetters(t.text))
+    .filter((t) => Math.abs(t.cy - mainCy) <= Math.max(10, mainH * 0.9))
     .filter((t) => t.minX >= main.maxX)
-    .map((t) => {
-      const gap = t.minX - main.maxX;
-      return { t, gap };
-    })
-    .filter(({ gap }) => gap >= 0 && gap <= Math.max(50, mainH * 3.0))
+    .map((t) => ({ t, gap: t.minX - main.maxX }))
+    .filter(({ gap }) => gap >= 0 && gap <= Math.max(70, mainH * 3.2))
     .sort((a, b) => a.gap - b.gap);
 
   return candidates[0]?.t || null;
 }
 
+/* ===========================
+   PARSERS
+=========================== */
+
 /**
- * HORÍMETRO
+ * HORÍMETRO (corrigido):
+ * - mostradores comuns: "03644" + "9" (decimal separado)
+ * - regra nova:
+ *   - se vier 5 dígitos, NÃO assumir decimal embutida
+ *   - tentar achar 1 dígito à direita e anexar => 6 dígitos
+ *   - parse:
+ *       6+ => último é decimal
+ *       5 => inteiro (",0")
  */
 function pickHorimetroDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
-  if (!digitTokens.length) {
-    return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
-  }
+  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
 
   const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) {
-    return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
-  }
+  if (!clean.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
 
   const bounds = docBounds(clean);
   const maxH = Math.max(...clean.map((t) => t.h));
-  const minBigH = maxH * 0.7;
+  const minBigH = maxH * 0.66;
 
+  // tokens longos (4–6) e altos
   const longTokens = clean
     .filter((t) => t.h >= minBigH)
-    .filter((t) => t.digitLen >= 4 && t.digitLen <= 7)
+    .filter((t) => t.digitLen >= 4 && t.digitLen <= 6)
     .sort((a, b) => {
       if (b.h !== a.h) return b.h - a.h;
       return b.digitLen - a.digitLen;
@@ -246,15 +245,29 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
   if (longTokens.length) {
     const main = longTokens[0];
     let digits = main.digits;
-    let used: TokenBox[] = [main];
+    const used: TokenBox[] = [main];
 
-    // tenta achar decimal separado
-    if (digits.length === 4) {
-      const dec = findDecimalRight(main, clean);
+    // SE vier 5 dígitos, tenta anexar 1 dígito à direita (decimal separado)
+    if (digits.length === 5) {
+      const dec = findOneDigitRight(main, clean);
       if (dec) {
         digits = digits + dec.digits;
-        used = [main, dec];
+        used.push(dec);
         dbg.decFound = true;
+      } else {
+        dbg.decFound = false;
+      }
+    }
+
+    // SE vier 4 dígitos, também tenta anexar decimal
+    if (digits.length === 4) {
+      const dec = findOneDigitRight(main, clean);
+      if (dec) {
+        digits = digits + dec.digits;
+        used.push(dec);
+        dbg.decFound = true;
+      } else {
+        dbg.decFound = false;
       }
     }
 
@@ -262,31 +275,27 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
     dbg.maxH = maxH;
     dbg.minBigH = minBigH;
     dbg.bounds = { w: bounds.w, h: bounds.h };
+    dbg.picked = { digitsRaw: main.digits, digitsFinal: digits };
     return { digits, used, dbg };
   }
 
-  // fallback por linha (mais robusto em painéis)
-  const big = clean.filter((t) => t.h >= minBigH).sort((a, b) => a.minX - b.minX);
-  const rows = clusterRows(big);
+  // fallback por linha
+  const rows = clusterRows(clean);
 
   const rowCands = rows
     .map((r) => {
-      const strong = r.items.filter((t) => t.h >= r.avgH * 0.8);
-      const digits = strong.map((t) => t.digits).join("");
       const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-      const m = compactnessMetrics(strong, bounds.w);
 
-      return { r, strong, digits, yNorm, m };
+      // horímetro costuma ficar na parte de baixo do recorte
+      const strong = r.items.filter((t) => t.h >= r.avgH * 0.75);
+      const digitsRaw = strong.map((t) => t.digits).join("");
+
+      return { r, strong, digitsRaw, yNorm };
     })
-    .filter((c) => c.digits.length >= 4 && c.digits.length <= 7)
-    .filter((c) => c.m.spanNorm <= 0.7 && c.m.compactness <= 4.0)
+    .filter((c) => c.digitsRaw.length >= 4 && c.digitsRaw.length <= 7)
     .map((c) => ({
       ...c,
-      score:
-        c.r.avgH *
-        (1 + c.digits.length) *
-        (1 + c.yNorm * 0.25) /
-        Math.max(1, c.m.compactness),
+      score: c.r.avgH * (1 + c.digitsRaw.length) * (1 + c.yNorm * 0.35),
     }))
     .sort((a, b) => b.score - a.score);
 
@@ -297,12 +306,12 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
   }
 
   const picked = rowCands[0];
-  let digits = picked.digits;
-  let used = [...picked.strong];
+  let digits = digitsOf(picked.digitsRaw);
+  const used = [...picked.strong];
 
-  if (digits.length === 4) {
-    const main = picked.strong[picked.strong.length - 1];
-    const dec = main ? findDecimalRight(main, clean) : null;
+  const gb = groupBox(picked.strong);
+  if (gb && (digits.length === 4 || digits.length === 5)) {
+    const dec = findOneDigitRight(gb, clean);
     if (dec) {
       digits = digits + dec.digits;
       used.push(dec);
@@ -314,23 +323,24 @@ function pickHorimetroDigits(digitTokens: TokenBox[]) {
   dbg.maxH = maxH;
   dbg.minBigH = minBigH;
   dbg.top = rowCands.slice(0, 6).map((c) => ({
-    digits: c.digits,
+    digits: c.digitsRaw,
     score: c.score,
     yNorm: c.yNorm,
     avgH: c.r.avgH,
-    spanNorm: c.m.spanNorm,
-    compactness: c.m.compactness,
   }));
 
   return { digits, used, dbg };
 }
 
 function parseHorimetro(digits: string) {
-  const d = digitsOf(digits);
+  let d = digitsOf(digits);
   if (d.length < 4) return null;
 
-  // 5+ => último dígito é decimal
-  if (d.length >= 5) {
+  // se vier muita coisa, fica com os últimos 6 (normalmente inclui o decimal no final)
+  if (d.length > 6) d = d.slice(-6);
+
+  // 6 => último dígito é decimal
+  if (d.length === 6) {
     const intPart = d.slice(0, -1);
     const dec = d.slice(-1);
     const i = parseInt(intPart, 10);
@@ -341,6 +351,15 @@ function parseHorimetro(digits: string) {
     return { value: v, best_input: `${i},${dc}` };
   }
 
+  // 5 => inteiro (não assume decimal embutida)
+  if (d.length === 5) {
+    const i = parseInt(d, 10);
+    if (!Number.isFinite(i)) return null;
+    if (i < 0 || i > 1000000) return null;
+    return { value: i, best_input: `${i},0` };
+  }
+
+  // 4 => inteiro
   const i = parseInt(d, 10);
   if (!Number.isFinite(i)) return null;
   if (i < 0 || i > 1000000) return null;
@@ -348,107 +367,11 @@ function parseHorimetro(digits: string) {
 }
 
 /**
- * ODOMETRO
- * - por padrão retorna inteiro (sem decimal)
- * - se detectar vírgula/ponto no token usado, remove o último dígito como decimal
- */
-function pickOdometroDigits(digitTokens: TokenBox[]) {
-  const dbg: any = {};
-  if (!digitTokens.length) {
-    return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
-  }
-
-  const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) {
-    return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
-  }
-
-  const bounds = docBounds(clean);
-  const maxH = Math.max(...clean.map((t) => t.h));
-  const minBigH = maxH * 0.65;
-
-  // preferir tokens longos e grandes (5–8 dígitos)
-  const cands = clean
-    .filter((t) => t.h >= minBigH)
-    .filter((t) => t.digitLen >= 4 && t.digitLen <= 9)
-    .map((t) => {
-      const yNorm = clamp((t.cy - bounds.minY) / bounds.h, 0, 1);
-      // odômetro geralmente no meio/baixo do painel
-      const yBonus = yNorm >= 0.25 && yNorm <= 0.9 ? 1.15 : 1.0;
-      return { t, yNorm, score: t.h * (1 + t.digitLen) * yBonus };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  if (cands.length) {
-    const main = cands[0].t;
-    const hasDecMark = /[.,]/.test(main.text || "");
-    dbg.method = "long-token";
-    dbg.hasDecMark = hasDecMark;
-    dbg.maxH = maxH;
-    dbg.minBigH = minBigH;
-    return { digits: main.digits, used: [main], dbg };
-  }
-
-  // fallback por linha
-  const big = clean.filter((t) => t.h >= minBigH);
-  const rows = clusterRows(big);
-
-  const rowCands = rows
-    .map((r) => {
-      const strong = r.items.filter((t) => t.h >= r.avgH * 0.82);
-      const digits = strong.map((t) => t.digits).join("");
-      const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-      const m = compactnessMetrics(strong, bounds.w);
-      return { r, strong, digits, yNorm, m };
-    })
-    .filter((c) => c.digits.length >= 4 && c.digits.length <= 9)
-    .filter((c) => c.m.compactness <= 5.0)
-    .map((c) => ({
-      ...c,
-      score: c.r.avgH * (1 + c.digits.length) * (1 + c.yNorm * 0.2) / Math.max(1, c.m.compactness),
-    }))
-    .sort((a, b) => b.score - a.score);
-
-  if (!rowCands.length) {
-    dbg.method = "none-row";
-    return { digits: "", used: [], dbg };
-  }
-
-  const picked = rowCands[0];
-  dbg.method = "row";
-  dbg.top = rowCands.slice(0, 6).map((c) => ({
-    digits: c.digits,
-    score: c.score,
-    yNorm: c.yNorm,
-    avgH: c.r.avgH,
-    compactness: c.m.compactness,
-  }));
-  return { digits: picked.digits, used: picked.strong, dbg };
-}
-
-function parseOdometro(digits: string, used: TokenBox[]) {
-  const d = digitsOf(digits);
-  if (!d || d.length < 3) return null;
-
-  const hasDecMark = used.some((t) => /[.,]/.test(t.text || ""));
-
-  // se houver marca decimal (ex: 00093,7), remove último dígito
-  const raw = hasDecMark && d.length >= 2 ? d.slice(0, -1) : d;
-
-  // remove zeros à esquerda mas preserva "0"
-  const cleaned = raw.replace(/^0+/, "") || "0";
-
-  const value = Number.parseInt(cleaned, 10);
-  if (!Number.isFinite(value)) return null;
-  if (value < 0 || value > 999999999) return null;
-
-  return { value, best_input: String(value), hasDecMark };
-}
-
-/**
- * ABASTECIMENTO (LITROS)
- * - evita contador pequeno (linha inferior) filtrando candidatos com muitos dígitos
- * - usa só linhas com 3–6 dígitos (litros reais)
+ * ABASTECIMENTO (corrigido):
+ * - casos comuns: "026" + "5" (decimal separado)
+ * - regra:
+ *   - tenta pegar a LINHA dos dígitos grandes
+ *   - se formar 3 dígitos, busca 1 dígito à direita e anexa
  */
 function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
@@ -459,80 +382,57 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
 
   const bounds = docBounds(clean);
 
+  // maxH ignorando tokens muito longos
   const pool = clean.filter((t) => t.digitLen <= 6);
   const maxH = Math.max(...(pool.length ? pool : clean).map((t) => t.h));
-  const minBigH = maxH * 0.72;
+  const minBigH = maxH * 0.68;
 
-  const big = clean.filter((t) => t.digitLen <= 6 && t.h >= minBigH);
+  const bigish = clean.filter((t) => t.digitLen <= 6 && t.h >= minBigH);
 
   dbg.maxH = maxH;
   dbg.minBigH = minBigH;
-  dbg.bigCount = big.length;
+  dbg.bigCount = bigish.length;
 
-  if (!big.length) return { digits: "", used: [], dbg: { ...dbg, method: "no-big" } };
+  const rows = clusterRows(bigish.length ? bigish : clean);
 
-  const rows = clusterRows(big);
-
-  const rowCands = rows
-    .map((r) => {
-      const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-
-      // abastecimento fica na metade superior da foto (contador baixo é inferior)
-      if (yNorm > 0.78) return null;
-
-      const strong = r.items.filter((t) => t.h >= r.avgH * 0.85);
-      const digitsRaw = strong.map((t) => t.digits).join("");
-
-      // 🔥 evita contador pequeno: geralmente vira 7+ dígitos
-      if (digitsRaw.length < 3 || digitsRaw.length > 6) return null;
-
-      // também evita linhas muito “espalhadas” (contador costuma ser espaçado)
-      const m = compactnessMetrics(strong, bounds.w);
-      if (m.spanNorm > 0.75 || m.compactness > 4.5 || m.maxGap > m.avgW * 4.0) return null;
-
-      return { r, strong, digitsRaw, yNorm };
-    })
-    .filter(Boolean) as { r: Row; strong: TokenBox[]; digitsRaw: string; yNorm: number }[];
-
-  const tokenCands = big
-    .filter((t) => t.digitLen >= 3 && t.digitLen <= 5)
-    .map((t) => {
-      const yNorm = clamp((t.cy - bounds.minY) / bounds.h, 0, 1);
-      return { t, digitsRaw: t.digits, yNorm };
-    })
-    .filter((c) => c.yNorm <= 0.78)
-    .filter((c) => c.digitsRaw.length >= 3 && c.digitsRaw.length <= 6);
-
-  type Cand = {
-    digitsRaw: string;
-    used: TokenBox[];
-    avgH: number;
-    cy: number;
-    yNorm: number;
-    src: string;
-  };
+  type Cand = { digitsRaw: string; used: TokenBox[]; avgH: number; cy: number; yNorm: number; src: string; mainBox?: TokenBox | null };
 
   const candidates: Cand[] = [];
 
-  for (const c of rowCands) {
+  for (const r of rows) {
+    const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
+
+    // litros: linha dos dígitos grandes fica acima do contador pequeno
+    if (yNorm > 0.78) continue;
+
+    // usa os mais fortes
+    const strong = r.items.filter((t) => t.h >= r.avgH * 0.72);
+    if (!strong.length) continue;
+
+    const digitsRaw = strong.map((t) => t.digits).join("");
     candidates.push({
-      digitsRaw: c.digitsRaw,
-      used: c.strong,
-      avgH: c.r.avgH,
-      cy: c.r.cy,
-      yNorm: c.yNorm,
+      digitsRaw,
+      used: strong,
+      avgH: r.avgH,
+      cy: r.cy,
+      yNorm,
       src: "row",
+      mainBox: groupBox(strong),
     });
   }
 
-  for (const c of tokenCands) {
+  // fallback: tokens avulsos grandes
+  for (const t of bigish) {
+    const yNorm = clamp((t.cy - bounds.minY) / bounds.h, 0, 1);
+    if (yNorm > 0.78) continue;
     candidates.push({
-      digitsRaw: c.digitsRaw,
-      used: [c.t],
-      avgH: c.t.h,
-      cy: c.t.cy,
-      yNorm: c.yNorm,
+      digitsRaw: t.digits,
+      used: [t],
+      avgH: t.h,
+      cy: t.cy,
+      yNorm,
       src: "token",
+      mainBox: t,
     });
   }
 
@@ -554,6 +454,19 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   for (const c of candidates) {
     let d = digitsOf(c.digitsRaw);
 
+    // se veio 3 dígitos, tenta achar o 1 dígito decimal à direita
+    if (d.length === 3 && c.mainBox) {
+      const dec = findOneDigitRight(c.mainBox, clean);
+      if (dec) {
+        d = d + dec.digits; // vira 4 dígitos
+        c.used = [...c.used, dec];
+        dbg.decFound = true;
+      } else {
+        dbg.decFound = false;
+      }
+    }
+
+    // normaliza para 4 dígitos
     if (d.length === 3) d = d.padStart(4, "0");
     if (d.length > 4) d = d.slice(-4);
     if (d.length !== 4) continue;
@@ -587,7 +500,194 @@ function parseAbastecimento(digits: string) {
   return { value, best_input: `${i},${dc}` };
 }
 
-async function visionTextDetection(imageBytes: Uint8Array | Buffer) {
+/**
+ * ODÔMETRO (novo):
+ * - junta tokens da MESMA LINHA (ex.: "12" + "195,0")
+ * - devolve inteiro SEM vírgula (pra não virar 121950 no onlyDigits)
+ */
+function pickOdometroDigits(digitTokens: TokenBox[], rawFull: string) {
+  const dbg: any = {};
+  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none" } };
+
+  const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
+  if (!clean.length) return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none-clean" } };
+
+  const bounds = docBounds(clean);
+  const rows = clusterRows(clean);
+
+  const rowCands = rows
+    .map((r) => {
+      const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
+
+      // odômetro costuma estar mais “baixo” e central
+      if (yNorm < 0.25) return null;
+
+      const strong = r.items
+        .filter((t) => t.h >= r.avgH * 0.65)
+        .filter((t) => t.digitLen > 0);
+
+      const digitsRaw = strong.map((t) => t.digits).join("");
+      const hadSepToken = strong.some((t) => /[.,]/.test(t.text));
+      const hadSepRaw = /(\d+[.,]\d)/.test(rawFull || "");
+
+      return {
+        r,
+        strong,
+        digitsRaw,
+        yNorm,
+        hadSep: hadSepToken || hadSepRaw,
+        score: (digitsRaw.length || 0) * r.avgH * (1 + yNorm * 0.15),
+      };
+    })
+    .filter(Boolean) as any[];
+
+  rowCands.sort((a, b) => b.score - a.score);
+
+  dbg.top = rowCands.slice(0, 6).map((c) => ({
+    digits: c.digitsRaw,
+    yNorm: c.yNorm,
+    avgH: c.r.avgH,
+    score: c.score,
+    hadSep: c.hadSep,
+  }));
+
+  const picked = rowCands.find((c) => digitsOf(c.digitsRaw).length >= 4) || rowCands[0];
+  if (!picked) return { digits: "", used: [], hadSep: false, dbg: { ...dbg, method: "no-row" } };
+
+  dbg.method = "row";
+  dbg.picked = { digitsRaw: picked.digitsRaw, hadSep: picked.hadSep };
+
+  return { digits: digitsOf(picked.digitsRaw), used: picked.strong, hadSep: !!picked.hadSep, dbg };
+}
+
+function parseOdometro(digits: string, hadSep: boolean) {
+  let d = digitsOf(digits);
+  if (d.length < 3) return null;
+
+  // se veio com separador (12195,0 => 121950), remove o último dígito (decimal)
+  if (hadSep && d.length >= 6) d = d.slice(0, -1);
+
+  // fallback “esperto”: se tem 6 dígitos e termina em 0, geralmente é decimal ,0
+  if (!hadSep && d.length === 6 && d.endsWith("0")) {
+    const as5 = parseInt(d.slice(0, -1), 10);
+    if (Number.isFinite(as5) && as5 >= 1000 && as5 <= 999999) {
+      d = d.slice(0, -1);
+    }
+  }
+
+  const i = parseInt(d, 10);
+  if (!Number.isFinite(i)) return null;
+  if (i < 0 || i > 99999999) return null;
+
+  return { value: i, best_input: String(i) };
+}
+
+/* ===========================
+   SHARP PREPROCESS
+=========================== */
+
+type Variant = { name: string; bytes: Buffer; meta: any };
+
+function rectByKind(kind: string, w: number, h: number, variant: "main" | "tight") {
+  // recortes por proporção (ajustados para “cortar ruído” e focar nos números)
+  if (kind === "abastecimento") {
+    // pega a faixa dos dígitos grandes e evita o contador pequeno inferior
+    const x0 = variant === "tight" ? 0.06 : 0.04;
+    const x1 = variant === "tight" ? 0.94 : 0.96;
+    const y0 = variant === "tight" ? 0.22 : 0.18;
+    const y1 = variant === "tight" ? 0.62 : 0.70;
+    return {
+      left: Math.floor(w * x0),
+      top: Math.floor(h * y0),
+      width: Math.max(1, Math.floor(w * (x1 - x0))),
+      height: Math.max(1, Math.floor(h * (y1 - y0))),
+    };
+  }
+
+  if (kind === "horimetro") {
+    // visor do horímetro costuma ficar mais embaixo
+    const x0 = variant === "tight" ? 0.18 : 0.12;
+    const x1 = variant === "tight" ? 0.88 : 0.92;
+    const y0 = variant === "tight" ? 0.50 : 0.42;
+    const y1 = variant === "tight" ? 0.92 : 0.95;
+    return {
+      left: Math.floor(w * x0),
+      top: Math.floor(h * y0),
+      width: Math.max(1, Math.floor(w * (x1 - x0))),
+      height: Math.max(1, Math.floor(h * (y1 - y0))),
+    };
+  }
+
+  // odômetro: normalmente faixa inferior do painel
+  const x0 = variant === "tight" ? 0.14 : 0.08;
+  const x1 = variant === "tight" ? 0.96 : 0.98;
+  const y0 = variant === "tight" ? 0.48 : 0.38;
+  const y1 = variant === "tight" ? 0.86 : 0.92;
+  return {
+    left: Math.floor(w * x0),
+    top: Math.floor(h * y0),
+    width: Math.max(1, Math.floor(w * (x1 - x0))),
+    height: Math.max(1, Math.floor(h * (y1 - y0))),
+  };
+}
+
+async function buildSharpVariants(input: Uint8Array, kind: string): Promise<Variant[]> {
+  const base = sharp(Buffer.from(input)).rotate(); // respeita EXIF
+
+  const meta = await base.metadata();
+  const w = meta.width || 0;
+  const h = meta.height || 0;
+
+  // fallback se não tiver meta
+  const W = w || 2000;
+  const H = h || 1500;
+
+  const common = (s: sharp.Sharp) =>
+    s
+      .grayscale()
+      .normalize()
+      .sharpen({ sigma: 1.1, m1: 1, m2: 2 })
+      .resize({ width: 1800, withoutEnlargement: false });
+
+  const variants: Variant[] = [];
+
+  // 1) full melhorado
+  {
+    const bytes = await common(base.clone()).jpeg({ quality: 92 }).toBuffer();
+    variants.push({ name: "full-gray", bytes, meta: { w: W, h: H } });
+  }
+
+  // 2) crop main
+  {
+    const r = rectByKind(kind, W, H, "main");
+    const bytes = await common(base.clone().extract(r)).jpeg({ quality: 92 }).toBuffer();
+    variants.push({ name: "crop-main-gray", bytes, meta: { rect: r } });
+  }
+
+  // 3) crop tight + threshold (bom para LCD)
+  {
+    const r = rectByKind(kind, W, H, "tight");
+    const bytes = await base
+      .clone()
+      .extract(r)
+      .grayscale()
+      .normalize()
+      .resize({ width: 2000, withoutEnlargement: false })
+      .sharpen({ sigma: 1.3, m1: 1, m2: 2 })
+      .threshold(165)
+      .jpeg({ quality: 92 })
+      .toBuffer();
+    variants.push({ name: "crop-tight-thresh", bytes, meta: { rect: r } });
+  }
+
+  return variants;
+}
+
+/* ===========================
+   VISION
+=========================== */
+
+async function visionTextDetection(imageBytes: Uint8Array) {
   const base64 = Buffer.from(imageBytes).toString("base64");
   const payload = {
     requests: [
@@ -617,388 +717,125 @@ async function visionTextDetection(imageBytes: Uint8Array | Buffer) {
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {
-    throw new Error(`Vision API falhou: HTTP ${res.status} - ${JSON.stringify(data)?.slice(0, 500)}`);
+    throw new Error(
+      `Vision API falhou: HTTP ${res.status} - ${JSON.stringify(data)?.slice(0, 500)}`,
+    );
   }
   return data;
 }
 
-async function preprocessBaseImage(input: Uint8Array) {
-  // aplica orientação EXIF e limita tamanho (performance/custo)
-  const img = sharp(Buffer.from(input)).rotate();
-  const meta = await img.metadata();
-
-  let w = meta.width || 0;
-  let h = meta.height || 0;
-
-  const MAX = 2200;
-  let pipeline = img;
-
-  if (w && h && (w > MAX || h > MAX)) {
-    const scale = Math.min(MAX / w, MAX / h);
-    const nw = Math.max(1, Math.floor(w * scale));
-    const nh = Math.max(1, Math.floor(h * scale));
-    pipeline = pipeline.resize(nw, nh, { fit: "inside" });
-    w = nw;
-    h = nh;
-  }
-
-  const buf = await pipeline.toBuffer();
-  const meta2 = await sharp(buf).metadata();
-  return { buf, width: meta2.width || w || 1, height: meta2.height || h || 1 };
-}
-
-async function runVision(buf: Buffer) {
-  const vision = await visionTextDetection(buf);
-  const resp0 = vision?.responses?.[0] || {};
-  const textAnnotations: VisionAnnot[] = resp0?.textAnnotations || [];
-  const rawFull = (textAnnotations?.[0]?.description || "").trim();
-
-  const tokens: TokenBox[] = (textAnnotations || [])
-    .slice(1)
-    .map(polyToBox)
-    .filter(Boolean) as TokenBox[];
-
-  const digitTokens = tokens.filter((t) => t.digitLen > 0);
-
-  return { rawFull, tokens, digitTokens };
-}
-
-type CropBox = { left: number; top: number; width: number; height: number };
-
-function pickCropBoxAbastecimento(digitTokens: TokenBox[], imgW: number, imgH: number) {
-  const dbg: any = {};
-  const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { box: null as CropBox | null, dbg: { method: "no-clean" } };
-
-  const bounds = docBounds(clean);
-
-  const pool = clean.filter((t) => t.digitLen <= 6);
-  const maxH = Math.max(...(pool.length ? pool : clean).map((t) => t.h));
-  const minBigH = maxH * 0.70;
-
-  const big = clean.filter((t) => t.digitLen <= 6 && t.h >= minBigH);
-  if (!big.length) {
-    // fallback: pega faixa central superior onde normalmente está o visor grande
-    const box: CropBox = {
-      left: Math.floor(imgW * 0.05),
-      top: Math.floor(imgH * 0.22),
-      width: Math.floor(imgW * 0.90),
-      height: Math.floor(imgH * 0.55),
-    };
-    return { box, dbg: { method: "fallback-band", maxH, minBigH, bigCount: 0 } };
-  }
-
-  const rows = clusterRows(big);
-
-  const rowCands = rows
-    .map((r) => {
-      const strong = r.items.filter((t) => t.h >= r.avgH * 0.85);
-      const digitsRaw = strong.map((t) => t.digits).join("");
-      const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-
-      // evita parte inferior (contador pequeno)
-      if (yNorm > 0.78) return null;
-
-      // litros reais raramente vira 7+ dígitos
-      if (digitsRaw.length < 3 || digitsRaw.length > 6) return null;
-
-      return { r, strong, digitsRaw, yNorm };
-    })
-    .filter(Boolean) as { r: Row; strong: TokenBox[]; digitsRaw: string; yNorm: number }[];
-
-  if (!rowCands.length) {
-    const box: CropBox = {
-      left: Math.floor(imgW * 0.05),
-      top: Math.floor(imgH * 0.22),
-      width: Math.floor(imgW * 0.90),
-      height: Math.floor(imgH * 0.55),
-    };
-    return { box, dbg: { method: "fallback-band-2", maxH, minBigH, bigCount: big.length } };
-  }
-
-  // escolhe a linha mais “forte” e mais alta
-  const picked = rowCands
-    .map((c) => ({
-      ...c,
-      score: c.r.avgH * (1 + c.digitsRaw.length) * (1 + (1 - c.yNorm) * 0.25),
-    }))
-    .sort((a, b) => b.score - a.score)[0];
-
-  const xs1 = picked.strong.map((t) => t.minX);
-  const xs2 = picked.strong.map((t) => t.maxX);
-  const ys1 = picked.strong.map((t) => t.minY);
-  const ys2 = picked.strong.map((t) => t.maxY);
-
-  const minX = Math.min(...xs1);
-  const maxX = Math.max(...xs2);
-  const minY = Math.min(...ys1);
-  const maxY = Math.max(...ys2);
-
-  const spanX = Math.max(1, maxX - minX);
-  const avgH = picked.r.avgH;
-
-  const marginL = Math.max(24, Math.floor(spanX * 0.30));
-  const marginR = Math.max(34, Math.floor(spanX * 0.40) + Math.floor(avgH * 1.2));
-  const marginT = Math.max(28, Math.floor(avgH * 1.6));
-  const marginB = Math.max(28, Math.floor(avgH * 2.0));
-
-  const left = clamp(Math.floor(minX - marginL), 0, imgW - 2);
-  const top = clamp(Math.floor(minY - marginT), 0, imgH - 2);
-  const right = clamp(Math.floor(maxX + marginR), left + 2, imgW);
-  const bottom = clamp(Math.floor(maxY + marginB), top + 2, imgH);
-
-  const box: CropBox = {
-    left,
-    top,
-    width: Math.max(2, right - left),
-    height: Math.max(2, bottom - top),
-  };
-
-  dbg.method = "row-strong";
-  dbg.maxH = maxH;
-  dbg.minBigH = minBigH;
-  dbg.picked = { digitsRaw: picked.digitsRaw, yNorm: picked.yNorm, avgH: picked.r.avgH };
-  dbg.box = box;
-
-  return { box, dbg };
-}
-
-function pickCropBoxGenericMeter(digitTokens: TokenBox[], imgW: number, imgH: number) {
-  const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { box: null as CropBox | null, dbg: { method: "no-clean" } };
-
-  const bounds = docBounds(clean);
-  const maxH = Math.max(...clean.map((t) => t.h));
-  const minBigH = maxH * 0.65;
-
-  const cands = clean
-    .filter((t) => t.h >= minBigH)
-    .filter((t) => t.digitLen >= 4 && t.digitLen <= 9)
-    .map((t) => {
-      const yNorm = clamp((t.cy - bounds.minY) / bounds.h, 0, 1);
-      // evita pegar números da escala (muito no topo)
-      const yOk = yNorm >= 0.20 && yNorm <= 0.92;
-      return { t, yNorm, score: t.h * (1 + t.digitLen) * (yOk ? 1.15 : 0.9) };
-    })
-    .sort((a, b) => b.score - a.score);
-
-  if (!cands.length) return { box: null as CropBox | null, dbg: { method: "no-cands", maxH, minBigH } };
-
-  const main = cands[0].t;
-
-  const spanX = main.w;
-  const spanY = main.h;
-
-  const marginL = Math.max(30, Math.floor(spanX * 0.45));
-  const marginR = Math.max(40, Math.floor(spanX * 0.55));
-  const marginT = Math.max(35, Math.floor(spanY * 2.2));
-  const marginB = Math.max(35, Math.floor(spanY * 2.5));
-
-  const left = clamp(Math.floor(main.minX - marginL), 0, imgW - 2);
-  const top = clamp(Math.floor(main.minY - marginT), 0, imgH - 2);
-  const right = clamp(Math.floor(main.maxX + marginR), left + 2, imgW);
-  const bottom = clamp(Math.floor(main.maxY + marginB), top + 2, imgH);
-
-  const box: CropBox = {
-    left,
-    top,
-    width: Math.max(2, right - left),
-    height: Math.max(2, bottom - top),
-  };
-
-  return {
-    box,
-    dbg: {
-      method: "token",
-      maxH,
-      minBigH,
-      picked: { text: main.text, digits: main.digits, h: main.h },
-      box,
-    },
-  };
-}
-
-async function enhanceForDigits(buf: Buffer, targetMaxW = 1600) {
-  const meta = await sharp(buf).metadata();
-  const w = meta.width || 1;
-  const h = meta.height || 1;
-
-  // upscale 2x (limitado)
-  const desiredW = Math.min(targetMaxW, Math.max(1, Math.floor(w * 2)));
-  const desiredH = Math.max(1, Math.floor((desiredW * h) / w));
-
-  return await sharp(buf)
-    .rotate()
-    .resize(desiredW, desiredH, { fit: "inside" })
-    .grayscale()
-    .normalize() // aumenta contraste global
-    .sharpen(1.0)
-    .toBuffer();
-}
+type ParsedAttempt = {
+  variant: string;
+  ok: boolean;
+  best: number | null;
+  best_input: string;
+  picked_digits: string;
+  picked_meta: any;
+  used_tokens: Array<{ text: string; digits: string; h: number; x: [number, number]; y: [number, number] }>;
+  raw: string;
+};
 
 export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
 
-    const kind = (searchParams.get("kind") || "").toLowerCase().trim(); // horimetro | odometro | abastecimento
+    const kind = (searchParams.get("kind") || "").toLowerCase().trim(); // horimetro | abastecimento | odometro
     const equip = (searchParams.get("equip") || "").trim();
     const url = (searchParams.get("url") || "").trim();
 
-    if (!kind) return jsonError("Informe ?kind=horimetro|odometro|abastecimento", 400);
+    if (!kind) return jsonError("Informe ?kind=horimetro|abastecimento|odometro", 400);
     if (!url) return jsonError("Informe ?url=<signed_url>", 400);
 
-    // baixa imagem
+    // baixa imagem (Supabase signed url)
     const imgRes = await fetch(url, { cache: "no-store" });
     if (!imgRes.ok) {
       return jsonError("Falha ao baixar imagem (signed url).", 400, { status: imgRes.status });
     }
-    const rawBytes = new Uint8Array(await imgRes.arrayBuffer());
+    const original = new Uint8Array(await imgRes.arrayBuffer());
 
-    // === base (orientada + resize) ===
-    const base = await preprocessBaseImage(rawBytes);
+    // tenta 2-3 variantes com sharp
+    const variants = await buildSharpVariants(original, kind);
 
-    // === PASS 1 (full) ===
-    const pass1 = await runVision(base.buf);
+    const attempts: ParsedAttempt[] = [];
 
-    // sempre fazemos crop + PASS 2 para abastecimento
-    // e fazemos crop para horimetro/odometro quando for útil (aqui: sempre também, porque melhora muito)
-    let pass2: Awaited<ReturnType<typeof runVision>> | null = null;
-    let cropInfo: any = null;
+    for (const v of variants) {
+      const vision = await visionTextDetection(v.bytes);
 
-    if (kind === "abastecimento" || kind === "horimetro" || kind === "odometro") {
-      let cropPick:
-        | { box: CropBox | null; dbg: any }
-        | { box: CropBox | null; dbg: any };
+      const resp0 = vision?.responses?.[0] || {};
+      const textAnnotations: VisionAnnot[] = resp0?.textAnnotations || [];
+      const rawFull = (textAnnotations?.[0]?.description || "").trim();
 
-      if (kind === "abastecimento") {
-        cropPick = pickCropBoxAbastecimento(pass1.digitTokens, base.width, base.height);
-      } else {
-        cropPick = pickCropBoxGenericMeter(pass1.digitTokens, base.width, base.height);
+      const tokens: TokenBox[] = (textAnnotations || [])
+        .slice(1)
+        .map(polyToBox)
+        .filter(Boolean) as TokenBox[];
+
+      const digitTokens = tokens.filter((t) => t.digitLen > 0);
+
+      let best: number | null = null;
+      let best_input = "";
+      let pickedDigits = "";
+      let usedTokens: TokenBox[] = [];
+      let pickedDebug: any = {};
+
+      if (!digitTokens.length) {
+        attempts.push({
+          variant: v.name,
+          ok: false,
+          best: null,
+          best_input: "",
+          picked_digits: "",
+          picked_meta: { note: "sem tokens com dígitos", sharp_meta: v.meta },
+          used_tokens: [],
+          raw: rawFull,
+        });
+        continue;
       }
 
-      if (cropPick.box) {
-        const cropped = await sharp(base.buf)
-          .extract(cropPick.box)
-          .toBuffer();
+      if (kind === "horimetro") {
+        const picked = pickHorimetroDigits(digitTokens);
+        pickedDigits = picked.digits;
+        usedTokens = picked.used;
+        pickedDebug = { ...picked.dbg, sharp_meta: v.meta };
 
-        const enhanced = await enhanceForDigits(cropped, 1600);
-        pass2 = await runVision(enhanced);
+        const parsed = parseHorimetro(pickedDigits);
+        if (parsed) {
+          best = parsed.value;
+          best_input = parsed.best_input;
+        }
+      } else if (kind === "abastecimento") {
+        const picked = pickAbastecimentoDigits(digitTokens);
+        pickedDigits = picked.digits;
+        usedTokens = picked.used;
+        pickedDebug = { ...picked.dbg, sharp_meta: v.meta };
 
-        cropInfo = {
-          kind,
-          crop_pick: cropPick.dbg,
-          crop_box: cropPick.box,
-          base_size: { w: base.width, h: base.height },
-        };
+        const parsed = parseAbastecimento(pickedDigits);
+        if (parsed) {
+          best = parsed.value;
+          best_input = parsed.best_input;
+        }
+      } else if (kind === "odometro") {
+        const picked = pickOdometroDigits(digitTokens, rawFull);
+        pickedDigits = picked.digits;
+        usedTokens = picked.used;
+        pickedDebug = { ...picked.dbg, hadSep: picked.hadSep, sharp_meta: v.meta };
+
+        const parsed = parseOdometro(pickedDigits, picked.hadSep);
+        if (parsed) {
+          best = parsed.value;
+          best_input = parsed.best_input; // SEM vírgula
+        }
       } else {
-        cropInfo = { kind, crop_pick: cropPick.dbg, crop_box: null, base_size: { w: base.width, h: base.height } };
+        return jsonError("kind inválido. Use horimetro, abastecimento ou odometro.", 400);
       }
-    }
 
-    // usa PASS 2 se existir (mais limpo), senão PASS 1
-    const final = pass2 || pass1;
-
-    const rawFull = final.rawFull;
-    const digitTokens = final.digitTokens;
-
-    if (!digitTokens.length) {
-      return NextResponse.json({
-        ok: true,
-        kind,
-        equip: equip || null,
-        best: null,
-        best_input: "",
-        candidates: [],
-        candidates_input: [],
-        raw: rawFull,
-        debug: {
-          token_count: 0,
-          note: "sem tokens com dígitos",
-          crop: cropInfo,
-          pass1_raw: pass1.rawFull?.slice(0, 220),
-          pass2_raw: pass2?.rawFull?.slice(0, 220) || null,
-        },
-      });
-    }
-
-    let best: number | null = null;
-    let best_input = "";
-    let candidates: (number | null)[] = [];
-    let candidates_input: string[] = [];
-
-    let pickedDigits = "";
-    let usedTokens: TokenBox[] = [];
-    let pickedDebug: any = {};
-    let extraMeta: any = {};
-
-    if (kind === "horimetro") {
-      const picked = pickHorimetroDigits(digitTokens);
-      pickedDigits = picked.digits;
-      usedTokens = picked.used;
-      pickedDebug = picked.dbg;
-
-      const parsed = parseHorimetro(pickedDigits);
-      if (parsed) {
-        best = parsed.value;
-        best_input = parsed.best_input;
-        candidates = [best];
-        candidates_input = [best_input];
-      } else {
-        best = null;
-      }
-    } else if (kind === "abastecimento") {
-      const picked = pickAbastecimentoDigits(digitTokens);
-      pickedDigits = picked.digits;
-      usedTokens = picked.used;
-      pickedDebug = picked.dbg;
-
-      const parsed = parseAbastecimento(pickedDigits);
-      if (parsed) {
-        best = parsed.value;
-        best_input = parsed.best_input;
-        candidates = [best];
-        candidates_input = [best_input];
-      } else {
-        best = null;
-      }
-    } else if (kind === "odometro") {
-      const picked = pickOdometroDigits(digitTokens);
-      pickedDigits = picked.digits;
-      usedTokens = picked.used;
-      pickedDebug = picked.dbg;
-
-      const parsed = parseOdometro(pickedDigits, usedTokens);
-      if (parsed) {
-        best = parsed.value;
-        best_input = parsed.best_input;
-        candidates = [best];
-        candidates_input = [best_input];
-        extraMeta.hasDecMark = parsed.hasDecMark;
-      } else {
-        best = null;
-      }
-    } else {
-      return jsonError("kind inválido. Use horimetro, odometro ou abastecimento.", 400);
-    }
-
-    return NextResponse.json({
-      ok: true,
-      kind,
-      equip: equip || null,
-      best,
-      best_input,
-      candidates,
-      candidates_input,
-      raw: rawFull,
-      debug: {
-        token_count: digitTokens.length,
+      const att: ParsedAttempt = {
+        variant: v.name,
+        ok: best !== null,
+        best,
+        best_input,
         picked_digits: pickedDigits,
-        picked_strategy: pickedDebug?.method || null,
-        picked_meta: pickedDebug || null,
-        extra_meta: extraMeta,
-        crop: cropInfo,
-        pass1_raw: pass1.rawFull?.slice(0, 220),
-        pass2_raw: pass2?.rawFull?.slice(0, 220) || null,
+        picked_meta: pickedDebug,
         used_tokens: usedTokens.map((t) => ({
           text: t.text,
           digits: t.digits,
@@ -1006,6 +843,51 @@ export async function GET(req: NextRequest) {
           x: [t.minX, t.maxX],
           y: [t.minY, t.maxY],
         })),
+        raw: rawFull,
+      };
+
+      attempts.push(att);
+
+      // early exit: primeira que deu certo
+      if (best !== null) {
+        return NextResponse.json({
+          ok: true,
+          kind,
+          equip: equip || null,
+          best,
+          best_input,
+          candidates: [best],
+          candidates_input: [best_input],
+          raw: rawFull,
+          debug: {
+            variant: v.name,
+            tries: attempts,
+            token_count: digitTokens.length,
+            picked_digits: pickedDigits,
+            picked_strategy: pickedDebug?.method || pickedDebug?.strategy || null,
+            picked_meta: pickedDebug || null,
+            used_tokens: att.used_tokens,
+          },
+        });
+      }
+    }
+
+    // nenhuma variante deu parse
+    const last = attempts[attempts.length - 1];
+
+    return NextResponse.json({
+      ok: true,
+      kind,
+      equip: equip || null,
+      best: null,
+      best_input: "",
+      candidates: [],
+      candidates_input: [],
+      raw: last?.raw || "",
+      debug: {
+        variant: last?.variant || null,
+        tries: attempts,
+        note: "nenhuma variante gerou valor válido",
       },
     });
   } catch (e: any) {
