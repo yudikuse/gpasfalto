@@ -118,7 +118,7 @@ async function buildComprovantePNG(args: {
   horimetroLabel: string;
   odometroLabel: string;
   litrosLabel: string;
-  fotos: Array<{ label: string; file: File }>;
+  fotos: Array<{ label: string; file: File | null }>;
 }): Promise<Blob> {
   const W = 1400;
   const H = 1050;
@@ -206,6 +206,39 @@ async function buildComprovantePNG(args: {
     ctx.fillText(text, x, y);
   }
 
+  function loadImage(src: string) {
+    return new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.decoding = "async";
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error(`Falha ao carregar imagem: ${src}`));
+      img.src = src;
+    });
+  }
+
+  function drawPlaceholder(x: number, y: number, w: number, h: number) {
+    ctx.save();
+    ctx.fillStyle = "#f8fafc";
+    roundRectPath(x, y, w, h, 14);
+    ctx.fill();
+
+    ctx.strokeStyle = "#e5e7eb";
+    ctx.setLineDash([8, 8]);
+    ctx.lineWidth = 2;
+    roundRectPath(x, y, w, h, 14);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = "#94a3b8";
+    ctx.font =
+      "800 18px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial";
+    const text = "Sem foto";
+    const tw = ctx.measureText(text).width;
+    ctx.fillText(text, x + (w - tw) / 2, y + h / 2 + 6);
+
+    ctx.restore();
+  }
+
   // Fundo
   ctx.fillStyle = "#f3f4f6";
   ctx.fillRect(0, 0, W, H);
@@ -226,6 +259,21 @@ async function buildComprovantePNG(args: {
   const dateY = titleY + 46;
   const equipY = dateY + 60;
   const solicitY = equipY + 44;
+
+  // Logo no comprovante (vai junto pro WhatsApp)
+  try {
+    const logo = await loadImage("/gpasfalto-logo.png");
+    const logoSize = 78;
+    ctx.drawImage(
+      logo,
+      mainX + mainW - 36 - logoSize,
+      mainY + 36,
+      logoSize,
+      logoSize
+    );
+  } catch {
+    // se falhar, segue sem logo
+  }
 
   ctx.fillStyle = "#0b1220";
   ctx.font =
@@ -324,6 +372,18 @@ async function buildComprovantePNG(args: {
 
     drawPill(s.label, s.x + 18, s.y + 18);
 
+    const innerPad = 18;
+    const usableX = s.x + innerPad;
+    const usableY = s.y + 58;
+    const usableW = cellW - innerPad * 2;
+    const usableH = cellH - 58 - innerPad;
+
+    // Se não tiver arquivo (odômetro opcional), desenha placeholder e segue
+    if (!s.file) {
+      drawPlaceholder(usableX, usableY, usableW, usableH);
+      continue;
+    }
+
     const objectUrl = URL.createObjectURL(s.file);
     urlsToRevoke.push(objectUrl);
 
@@ -338,12 +398,6 @@ async function buildComprovantePNG(args: {
 
     const iw = img.naturalWidth || img.width;
     const ih = img.naturalHeight || img.height;
-
-    const innerPad = 18;
-    const usableX = s.x + innerPad;
-    const usableY = s.y + 58;
-    const usableW = cellW - innerPad * 2;
-    const usableH = cellH - 58 - innerPad;
 
     const scale = Math.min(usableW / iw, usableH / ih);
     const dw = Math.max(1, Math.floor(iw * scale));
@@ -396,7 +450,7 @@ export default function DieselNovoPage() {
 
   const [fotoEquip, setFotoEquip] = useState<File | null>(null);
   const [fotoHor, setFotoHor] = useState<File | null>(null);
-  const [fotoOdo, setFotoOdo] = useState<File | null>(null);
+  const [fotoOdo, setFotoOdo] = useState<File | null>(null); // opcional
   const [fotoAbast, setFotoAbast] = useState<File | null>(null);
 
   // signed urls temporárias para OCR
@@ -591,13 +645,15 @@ export default function DieselNovoPage() {
 
     if (!solicit) return setError("Informe o solicitante.");
     if (!equip) return setError("Selecione/Informe o equipamento.");
-    if (litrosN === null || litrosN <= 0) return setError("Informe os litros (valor > 0).");
+    if (litrosN === null || litrosN <= 0)
+      return setError("Informe os litros (valor > 0).");
     if (horN === null) return setError("Informe o horímetro.");
 
     if (!fotoEquip) return setError("Envie a foto do código/placa do equipamento.");
     if (!fotoHor) return setError("Envie a foto do horímetro.");
-    if (!fotoOdo) return setError("Envie a foto do odômetro/painel.");
-    if (!fotoAbast) return setError("Envie a foto do abastecimento (onde aparece os litros).");
+    // Odômetro é opcional: sem bloqueio
+    if (!fotoAbast)
+      return setError("Envie a foto do abastecimento (onde aparece os litros).");
 
     setSaving(true);
     try {
@@ -609,7 +665,9 @@ export default function DieselNovoPage() {
 
       const foto_equip_path = await uploadToDieselBucket(fotoEquip, `${base}/01_equip.jpg`);
       const foto_horimetro_path = await uploadToDieselBucket(fotoHor, `${base}/02_horimetro.jpg`);
-      const foto_odometro_path = await uploadToDieselBucket(fotoOdo, `${base}/03_odometro.jpg`);
+      const foto_odometro_path = fotoOdo
+        ? await uploadToDieselBucket(fotoOdo, `${base}/03_odometro.jpg`)
+        : null;
       const foto_extra_path = await uploadToDieselBucket(fotoAbast, `${base}/04_abastecimento.jpg`);
 
       const { data: ins, error: insErr } = await supabase
@@ -625,7 +683,7 @@ export default function DieselNovoPage() {
           observacao: obs.trim() || null,
           foto_equip_path,
           foto_horimetro_path,
-          foto_odometro_path,
+          foto_odometro_path, // pode ser null
           foto_extra_path,
         })
         .select("id")
@@ -648,7 +706,7 @@ export default function DieselNovoPage() {
         fotos: [
           { label: "Código / Placa", file: fotoEquip },
           { label: "Horímetro", file: fotoHor },
-          { label: "Odômetro", file: fotoOdo },
+          { label: "Odômetro", file: fotoOdo }, // opcional
           { label: "Abastecimento (Litros)", file: fotoAbast },
         ],
       });
@@ -659,7 +717,10 @@ export default function DieselNovoPage() {
         type: "image/png",
       });
 
-      const comprovante_path = await uploadToDieselBucket(comprovanteFile, `${base}/comprovante.png`);
+      const comprovante_path = await uploadToDieselBucket(
+        comprovanteFile,
+        `${base}/comprovante.png`
+      );
 
       const { error: upErr } = await supabase
         .from("diesel_logs")
@@ -723,7 +784,9 @@ export default function DieselNovoPage() {
     if (!savedId) return;
 
     const blob = comprovanteBlobRef.current;
-    const file = blob ? new File([blob], "abastecimento.png", { type: "image/png" }) : null;
+    const file = blob
+      ? new File([blob], "abastecimento.png", { type: "image/png" })
+      : null;
 
     const txt = buildResumoTexto({
       dateLabel: formatDateBR(today),
@@ -823,7 +886,11 @@ export default function DieselNovoPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 14 }}>
             <div style={{ gridColumn: "span 4" }}>
               <label style={styles.label}>Data</label>
-              <input style={{ ...styles.input, background: "#f9fafb" }} value={formatDateBR(today)} disabled />
+              <input
+                style={{ ...styles.input, background: "#f9fafb" }}
+                value={formatDateBR(today)}
+                disabled
+              />
             </div>
 
             <div style={{ gridColumn: "span 8" }}>
@@ -928,17 +995,29 @@ export default function DieselNovoPage() {
               <FileField label="Foto do horímetro *" file={fotoHor} onFile={setFotoHor} />
             </div>
             <div style={{ gridColumn: "span 6" }}>
-              <FileField label="Foto do odômetro/painel *" file={fotoOdo} onFile={setFotoOdo} />
+              <FileField
+                label="Foto do odômetro/painel"
+                file={fotoOdo}
+                onFile={setFotoOdo}
+              />
             </div>
             <div style={{ gridColumn: "span 6" }}>
-              <FileField label="Foto do abastecimento (Litros) *" file={fotoAbast} onFile={setFotoAbast} />
+              <FileField
+                label="Foto do abastecimento (Litros) *"
+                file={fotoAbast}
+                onFile={setFotoAbast}
+              />
             </div>
           </div>
 
           <div style={{ height: 18 }} />
 
           <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "space-between" }}>
-            <button onClick={handleSave} disabled={saving} style={{ ...styles.btnPrimary, opacity: saving ? 0.7 : 1 }}>
+            <button
+              onClick={handleSave}
+              disabled={saving}
+              style={{ ...styles.btnPrimary, opacity: saving ? 0.7 : 1 }}
+            >
               {saving ? "Salvando..." : "Salvar abastecimento"}
             </button>
 
