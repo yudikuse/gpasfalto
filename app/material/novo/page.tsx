@@ -2,6 +2,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { supabase } from "@/lib/supabaseClient";
 
 type TicketTipo = "ENTRADA" | "SAIDA";
 
@@ -31,33 +32,17 @@ function maskTimeInput(raw: string) {
 }
 
 /**
- * Peso: aceita "2.720" (ponto), "2,720" (vírgula) e casos com milhar.
+ * Máscara do peso em toneladas com 3 casas (padrão "2.720").
+ * - digite "2720" -> "2.720"
+ * - digite "28"   -> "0.028"
+ * - cola "2,720" ou "2.720" -> vira "2.720"
  */
-function parsePesoFlexible(raw: string): number | null {
-  const s0 = (raw || "").trim();
-  if (!s0) return null;
-
-  const s = s0.replace(/[^\d.,-]/g, "");
-  if (!s) return null;
-
-  if (s.includes(",")) {
-    const normalized = s.replace(/\./g, "").replace(",", ".");
-    const n = Number.parseFloat(normalized);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  const dotCount = (s.match(/\./g) || []).length;
-  if (dotCount <= 1) {
-    const n = Number.parseFloat(s);
-    return Number.isFinite(n) ? n : null;
-  }
-
-  const last = s.lastIndexOf(".");
-  const head = s.slice(0, last).replace(/\./g, "");
-  const tail = s.slice(last + 1);
-  const normalized = `${head}.${tail}`;
-  const n = Number.parseFloat(normalized);
-  return Number.isFinite(n) ? n : null;
+function maskPesoTon3(raw: string) {
+  const digits = (raw || "").replace(/\D+/g, "").slice(0, 15);
+  if (!digits) return "";
+  const n = Number(digits) / 1000;
+  if (!Number.isFinite(n)) return "";
+  return n.toFixed(3); // usa ponto como separador (igual ao ticket)
 }
 
 function parseDateBR(raw: string): Date | null {
@@ -98,11 +83,37 @@ function parseTime(raw: string): { hh: number; mm: number; ss: number } | null {
   return { hh, mm, ss };
 }
 
+function parsePesoMasked(raw: string): number | null {
+  const v = (raw || "").trim();
+  if (!v) return null;
+  // como a máscara usa ponto decimal, parseFloat direto
+  const n = Number.parseFloat(v.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
 function formatDateBR(d: Date) {
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const yy = d.getFullYear();
   return `${dd}/${mm}/${yy}`;
+}
+
+function safePathPart(s: string) {
+  return (s || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9._-]+/g, "")
+    .slice(0, 40);
+}
+
+function uuid() {
+  // crypto.randomUUID é suportado nos browsers modernos
+  // fallback simples:
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const c: any = globalThis.crypto;
+  if (c?.randomUUID) return c.randomUUID();
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
 export default function MaterialTicketNovoPage() {
@@ -117,9 +128,12 @@ export default function MaterialTicketNovoPage() {
   const [material, setMaterial] = useState("");
   const [dataBr, setDataBr] = useState(""); // dd/mm/aa ou dd/mm/aaaa (mascarado)
   const [hora, setHora] = useState(""); // hh:mm ou hh:mm:ss (mascarado)
-  const [peso, setPeso] = useState(""); // ex: 2.720
+  const [peso, setPeso] = useState(""); // "2.720" (mascarado)
 
   const [error, setError] = useState<string | null>(null);
+  constconst [saving, setSaving] = useState(false);
+  const [savedId, setSavedId] = useState<number | null>(null);
+  const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -134,7 +148,7 @@ export default function MaterialTicketNovoPage() {
   const parsed = useMemo(() => {
     const d = parseDateBR(dataBr);
     const t = parseTime(hora);
-    const p = parsePesoFlexible(peso);
+    const p = parsePesoMasked(peso);
 
     return {
       dataOk: Boolean(d),
@@ -157,6 +171,8 @@ export default function MaterialTicketNovoPage() {
 
   function validateBasic() {
     setError(null);
+    setSavedMsg(null);
+    setSavedId(null);
 
     if (!file) return setError("Envie a foto (ou PDF) do ticket.");
     if (!veiculo.trim()) return setError("Preencha o veículo.");
@@ -165,30 +181,79 @@ export default function MaterialTicketNovoPage() {
     if (!material.trim()) return setError("Preencha o material.");
     if (!parsed.dataOk) return setError("Data inválida. Use dd/mm/aa ou dd/mm/aaaa.");
     if (!parsed.horaOk) return setError("Horário inválido. Use hh:mm ou hh:mm:ss.");
-    if (!parsed.pesoOk) return setError("Peso inválido. Ex.: 2.720 ou 2,720.");
+    if (!parsed.pesoOk) return setError("Peso inválido. Digite só números (ex.: 2720 -> 2.720).");
 
     return true;
   }
 
-  function handleTestPreview() {
+  async function handleSave() {
     const ok = validateBasic();
     if (ok !== true) return;
 
-    const payload = {
-      tipo,
-      veiculo: veiculo.trim(),
-      origem: origem.trim(),
-      destino: destino.trim(),
-      material: material.trim(),
-      data: parsed.dataISO,
-      horario: parsed.timeISO,
-      peso_t: parsed.pesoNum,
-      arquivo_ext: file ? extFromFile(file) : null,
-      arquivo_nome: file ? file.name : null,
-    };
+    setSaving(true);
+    setError(null);
 
-    console.log("[ticket-material payload]", payload);
-    alert("OK! Payload montado. (Veja o console). Próximo passo: salvar no Supabase.");
+    try {
+      const dateISO = parsed.dataISO!;
+      const timeISO = parsed.timeISO!;
+      const pesoNum = parsed.pesoNum!;
+
+      const ext = extFromFile(file!);
+      const veic = safePathPart(veiculo);
+      const baseName = safePathPart(file!.name.replace(/\.[^.]+$/, "")) || "ticket";
+      const id = uuid();
+
+      // path no storage
+      const storagePath = `material/${dateISO}/${veic}-${baseName}-${id}.${ext}`;
+
+      // 1) upload do arquivo
+      const up = await supabase.storage.from("tickets").upload(storagePath, file!, {
+        upsert: false,
+        cacheControl: "3600",
+        contentType: file!.type || "application/octet-stream",
+      });
+
+      if (up.error) throw new Error(`Storage upload falhou: ${up.error.message}`);
+
+      // 2) insert na tabela
+      const ins = await supabase
+        .from("material_tickets")
+        .insert({
+          tipo,
+          veiculo: veiculo.trim(),
+          origem: origem.trim(),
+          destino: destino.trim(),
+          material: material.trim(),
+          data: dateISO,
+          horario: timeISO,
+          peso_t: pesoNum,
+          arquivo_path: storagePath,
+          arquivo_nome: file!.name,
+          arquivo_mime: file!.type || null,
+          arquivo_size: file!.size,
+        })
+        .select("id")
+        .single();
+
+      if (ins.error) throw new Error(`Insert falhou: ${ins.error.message}`);
+
+      setSavedId(ins.data?.id ?? null);
+      setSavedMsg("Salvo com sucesso!");
+
+      // limpa campos
+      setFile(null);
+      setVeiculo("");
+      setOrigem("");
+      setDestino("");
+      setMaterial("");
+      setDataBr("");
+      setHora("");
+      setPeso("");
+    } catch (e: any) {
+      setError(e?.message || "Erro ao salvar.");
+    } finally {
+      setSaving(false);
+    }
   }
 
   const styles: Record<string, CSSProperties> = {
@@ -224,13 +289,16 @@ export default function MaterialTicketNovoPage() {
     btn: {
       borderRadius: 14,
       border: "1px solid #fb7185",
-      background: "linear-gradient(180deg, #ff4b2b, #fb7185)",
+      background: saving
+        ? "linear-gradient(180deg, #94a3b8, #64748b)"
+        : "linear-gradient(180deg, #ff4b2b, #fb7185)",
       color: "#fff",
       fontWeight: 900,
       padding: "12px 14px",
-      cursor: "pointer",
+      cursor: saving ? "not-allowed" : "pointer",
       fontSize: 14,
-      boxShadow: "0 14px 26px rgba(255, 75, 43, 0.20)",
+      boxShadow: saving ? "none" : "0 14px 26px rgba(255, 75, 43, 0.20)",
+      opacity: saving ? 0.8 : 1,
     },
     hint: { fontSize: 12, color: "var(--gp-muted-soft)", marginTop: 6 },
   };
@@ -257,9 +325,7 @@ export default function MaterialTicketNovoPage() {
 
           <div style={{ textAlign: "center" }}>
             <div className="brand-text-main">Materiais • Ticket</div>
-            <div className="brand-text-sub">
-              Upload + campos (no próximo passo: salvar no Supabase)
-            </div>
+            <div className="brand-text-sub">Upload + salvar no Supabase</div>
           </div>
         </header>
 
@@ -268,7 +334,7 @@ export default function MaterialTicketNovoPage() {
             <div>
               <div className="section-title">Novo ticket</div>
               <div className="section-subtitle">
-                Envie o ticket e preencha os campos. (Ex.: data correta 15/01/26)
+                Envie o ticket e preencha os campos. (Ex.: 15/01/26)
               </div>
             </div>
           </div>
@@ -286,6 +352,22 @@ export default function MaterialTicketNovoPage() {
               }}
             >
               {error}
+            </div>
+          ) : null}
+
+          {savedMsg ? (
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #bbf7d0",
+                background: "#f0fdf4",
+                color: "#166534",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
+              {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
             </div>
           ) : null}
 
@@ -310,7 +392,7 @@ export default function MaterialTicketNovoPage() {
                 accept="image/*,application/pdf"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
               />
-              <div style={styles.hint}>PNG/JPG/WebP/PDF (por enquanto só preview; OCR vem depois).</div>
+              <div style={styles.hint}>Bucket: <b>tickets</b> (privado com policy SELECT/INSERT).</div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
@@ -326,7 +408,7 @@ export default function MaterialTicketNovoPage() {
                       color: "#334155",
                     }}
                   >
-                    PDF selecionado: <b>{file.name}</b> (preview visual do PDF vamos fazer depois)
+                    PDF selecionado: <b>{file.name}</b>
                   </div>
                 ) : (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -418,18 +500,19 @@ export default function MaterialTicketNovoPage() {
               <label style={styles.label}>Peso (t) *</label>
               <input
                 style={styles.input}
+                inputMode="numeric"
                 value={peso}
-                onChange={(e) => setPeso(e.target.value)}
-                placeholder="Ex.: 2.720"
+                onChange={(e) => setPeso(maskPesoTon3(e.target.value))}
+                placeholder="2.720"
               />
               <div style={styles.hint}>
-                {parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Aceita 2.720 ou 2,720"}
+                {parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (ex.: 2720 → 2.720)"}
               </div>
             </div>
 
             <div style={{ gridColumn: "span 12", display: "flex", justifyContent: "flex-end" }}>
-              <button type="button" style={styles.btn} onClick={handleTestPreview}>
-                Testar (montar payload)
+              <button type="button" style={styles.btn} onClick={handleSave} disabled={saving}>
+                {saving ? "Salvando..." : "Salvar no Supabase"}
               </button>
             </div>
           </div>
@@ -439,7 +522,7 @@ export default function MaterialTicketNovoPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Prévia do que vai ser salvo</div>
-              <div className="section-subtitle">No próximo passo: Storage + tabela no Supabase.</div>
+              <div className="section-subtitle">Tabela: material_tickets • Bucket: tickets</div>
             </div>
           </div>
 
