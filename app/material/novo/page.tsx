@@ -13,38 +13,45 @@ function extFromFile(file: File) {
   return "jpg";
 }
 
+/** Máscara: digita 150126 -> 15/01/26 | digita 15012026 -> 15/01/2026 */
+function maskDateBRInput(raw: string) {
+  const d = (raw || "").replace(/\D+/g, "").slice(0, 8); // ddmmyyyy
+  if (d.length <= 2) return d;
+  if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`;
+  if (d.length <= 6) return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`; // dd/mm/yy
+  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4, 8)}`; // dd/mm/yyyy
+}
+
+/** Máscara: digita 0753 -> 07:53 | digita 075307 -> 07:53:07 */
+function maskTimeInput(raw: string) {
+  const d = (raw || "").replace(/\D+/g, "").slice(0, 6); // hhmmss
+  if (d.length <= 2) return d;
+  if (d.length <= 4) return `${d.slice(0, 2)}:${d.slice(2)}`; // hh:mm
+  return `${d.slice(0, 2)}:${d.slice(2, 4)}:${d.slice(4, 6)}`; // hh:mm:ss
+}
+
 /**
  * Peso: aceita "2.720" (ponto), "2,720" (vírgula) e casos com milhar.
- * Regras:
- * - Se tiver vírgula: assume vírgula decimal e remove pontos de milhar.
- * - Se só tiver ponto:
- *    - se tiver mais de um ponto: remove todos menos o último (último é decimal)
- *    - se tiver 1 ponto: trata como decimal.
  */
 function parsePesoFlexible(raw: string): number | null {
   const s0 = (raw || "").trim();
   if (!s0) return null;
 
-  // mantém só dígitos, ponto, vírgula
   const s = s0.replace(/[^\d.,-]/g, "");
-
   if (!s) return null;
 
   if (s.includes(",")) {
-    // vírgula decimal (pt-BR)
     const normalized = s.replace(/\./g, "").replace(",", ".");
     const n = Number.parseFloat(normalized);
     return Number.isFinite(n) ? n : null;
   }
 
-  // só ponto (ou nenhum)
   const dotCount = (s.match(/\./g) || []).length;
   if (dotCount <= 1) {
     const n = Number.parseFloat(s);
     return Number.isFinite(n) ? n : null;
   }
 
-  // vários pontos: remove todos, menos o último
   const last = s.lastIndexOf(".");
   const head = s.slice(0, last).replace(/\./g, "");
   const tail = s.slice(last + 1);
@@ -57,7 +64,6 @@ function parseDateBR(raw: string): Date | null {
   const v = (raw || "").trim();
   if (!v) return null;
 
-  // aceita dd/mm/yy ou dd/mm/yyyy
   const m = v.match(/^(\d{2})\/(\d{2})\/(\d{2}|\d{4})$/);
   if (!m) return null;
 
@@ -66,18 +72,17 @@ function parseDateBR(raw: string): Date | null {
   let yy = Number(m[3]);
 
   if (m[3].length === 2) {
-    // 00-69 => 2000-2069, 70-99 => 1970-1999 (ajuste simples)
     yy = yy <= 69 ? 2000 + yy : 1900 + yy;
   }
 
   const d = new Date(yy, mm - 1, dd);
-  // valida se não estourou (ex.: 32/01/2026)
   if (d.getFullYear() !== yy || d.getMonth() !== mm - 1 || d.getDate() !== dd)
     return null;
 
   return d;
 }
 
+/** Aceita hh:mm ou hh:mm:ss */
 function parseTime(raw: string): { hh: number; mm: number; ss: number } | null {
   const v = (raw || "").trim();
   if (!v) return null;
@@ -110,13 +115,12 @@ export default function MaterialTicketNovoPage() {
   const [origem, setOrigem] = useState("");
   const [destino, setDestino] = useState("");
   const [material, setMaterial] = useState("");
-  const [dataBr, setDataBr] = useState(""); // dd/mm/aa ou dd/mm/aaaa
-  const [hora, setHora] = useState(""); // hh:mm:ss
+  const [dataBr, setDataBr] = useState(""); // dd/mm/aa ou dd/mm/aaaa (mascarado)
+  const [hora, setHora] = useState(""); // hh:mm ou hh:mm:ss (mascarado)
   const [peso, setPeso] = useState(""); // ex: 2.720
 
   const [error, setError] = useState<string | null>(null);
 
-  // preview da imagem
   useEffect(() => {
     if (!file) {
       setPreviewUrl(null);
@@ -136,8 +140,17 @@ export default function MaterialTicketNovoPage() {
       dataOk: Boolean(d),
       horaOk: Boolean(t),
       pesoOk: p !== null,
-      dataISO: d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}` : null,
-      timeISO: t ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(2, "0")}:${String(t.ss).padStart(2, "0")}` : null,
+      dataISO: d
+        ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+            d.getDate()
+          ).padStart(2, "0")}`
+        : null,
+      timeISO: t
+        ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(
+            2,
+            "0"
+          )}:${String(t.ss).padStart(2, "0")}`
+        : null,
       pesoNum: p,
     };
   }, [dataBr, hora, peso]);
@@ -151,7 +164,7 @@ export default function MaterialTicketNovoPage() {
     if (!destino.trim()) return setError("Preencha o destino.");
     if (!material.trim()) return setError("Preencha o material.");
     if (!parsed.dataOk) return setError("Data inválida. Use dd/mm/aa ou dd/mm/aaaa.");
-    if (!parsed.horaOk) return setError("Horário inválido. Use hh:mm:ss.");
+    if (!parsed.horaOk) return setError("Horário inválido. Use hh:mm ou hh:mm:ss.");
     if (!parsed.pesoOk) return setError("Peso inválido. Ex.: 2.720 ou 2,720.");
 
     return true;
@@ -161,7 +174,6 @@ export default function MaterialTicketNovoPage() {
     const ok = validateBasic();
     if (ok !== true) return;
 
-    // por enquanto só mostramos no console; no próximo passo vamos salvar no Supabase
     const payload = {
       tipo,
       veiculo: veiculo.trim(),
@@ -280,7 +292,11 @@ export default function MaterialTicketNovoPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 14 }}>
             <div style={{ gridColumn: "span 4" }}>
               <label style={styles.label}>Tipo</label>
-              <select style={styles.select} value={tipo} onChange={(e) => setTipo(e.target.value as TicketTipo)}>
+              <select
+                style={styles.select}
+                value={tipo}
+                onChange={(e) => setTipo(e.target.value as TicketTipo)}
+              >
                 <option value="ENTRADA">ENTRADA</option>
                 <option value="SAIDA">SAÍDA</option>
               </select>
@@ -344,12 +360,13 @@ export default function MaterialTicketNovoPage() {
               <label style={styles.label}>Data *</label>
               <input
                 style={styles.input}
+                inputMode="numeric"
                 value={dataBr}
-                onChange={(e) => setDataBr(e.target.value)}
-                placeholder="Ex.: 15/01/26"
+                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
+                placeholder="15/01/26"
               />
               <div style={styles.hint}>
-                {parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Use dd/mm/aa"}
+                {parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (ex.: 150126)"}
               </div>
             </div>
 
@@ -357,11 +374,14 @@ export default function MaterialTicketNovoPage() {
               <label style={styles.label}>Horário *</label>
               <input
                 style={styles.input}
+                inputMode="numeric"
                 value={hora}
-                onChange={(e) => setHora(e.target.value)}
-                placeholder="Ex.: 07:53:07"
+                onChange={(e) => setHora(maskTimeInput(e.target.value))}
+                placeholder="07:53:07"
               />
-              <div style={styles.hint}>{parsed.horaOk ? "OK" : "Use hh:mm:ss"}</div>
+              <div style={styles.hint}>
+                {parsed.horaOk ? "OK" : "Digite só números (ex.: 0753 ou 075307)"}
+              </div>
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
