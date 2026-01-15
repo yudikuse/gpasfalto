@@ -42,7 +42,7 @@ function maskPesoTon3(raw: string) {
   if (!digits) return "";
   const n = Number(digits) / 1000;
   if (!Number.isFinite(n)) return "";
-  return n.toFixed(3); // usa ponto como separador (igual ao ticket)
+  return n.toFixed(3); // ponto decimal (igual ao ticket)
 }
 
 function parseDateBR(raw: string): Date | null {
@@ -86,7 +86,6 @@ function parseTime(raw: string): { hh: number; mm: number; ss: number } | null {
 function parsePesoMasked(raw: string): number | null {
   const v = (raw || "").trim();
   if (!v) return null;
-  // como a máscara usa ponto decimal, parseFloat direto
   const n = Number.parseFloat(v.replace(",", "."));
   return Number.isFinite(n) ? n : null;
 }
@@ -108,9 +107,6 @@ function safePathPart(s: string) {
 }
 
 function uuid() {
-  // crypto.randomUUID é suportado nos browsers modernos
-  // fallback simples:
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const c: any = globalThis.crypto;
   if (c?.randomUUID) return c.randomUUID();
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -126,12 +122,12 @@ export default function MaterialTicketNovoPage() {
   const [origem, setOrigem] = useState("");
   const [destino, setDestino] = useState("");
   const [material, setMaterial] = useState("");
-  const [dataBr, setDataBr] = useState(""); // dd/mm/aa ou dd/mm/aaaa (mascarado)
-  const [hora, setHora] = useState(""); // hh:mm ou hh:mm:ss (mascarado)
-  const [peso, setPeso] = useState(""); // "2.720" (mascarado)
+  const [dataBr, setDataBr] = useState(""); // dd/mm/aa ou dd/mm/aaaa
+  const [hora, setHora] = useState(""); // hh:mm ou hh:mm:ss
+  const [peso, setPeso] = useState(""); // "2.720"
 
   const [error, setError] = useState<string | null>(null);
-  constconst [saving, setSaving] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState<number | null>(null);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
@@ -150,45 +146,72 @@ export default function MaterialTicketNovoPage() {
     const t = parseTime(hora);
     const p = parsePesoMasked(peso);
 
+    const dataISO = d
+      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
+          d.getDate()
+        ).padStart(2, "0")}`
+      : null;
+
+    const timeISO = t
+      ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(
+          2,
+          "0"
+        )}:${String(t.ss).padStart(2, "0")}`
+      : null;
+
     return {
       dataOk: Boolean(d),
       horaOk: Boolean(t),
       pesoOk: p !== null,
-      dataISO: d
-        ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-            d.getDate()
-          ).padStart(2, "0")}`
-        : null,
-      timeISO: t
-        ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(
-            2,
-            "0"
-          )}:${String(t.ss).padStart(2, "0")}`
-        : null,
+      dataISO,
+      timeISO,
       pesoNum: p,
     };
   }, [dataBr, hora, peso]);
 
-  function validateBasic() {
+  function validateBasic(): boolean {
     setError(null);
     setSavedMsg(null);
     setSavedId(null);
 
-    if (!file) return setError("Envie a foto (ou PDF) do ticket.");
-    if (!veiculo.trim()) return setError("Preencha o veículo.");
-    if (!origem.trim()) return setError("Preencha a origem.");
-    if (!destino.trim()) return setError("Preencha o destino.");
-    if (!material.trim()) return setError("Preencha o material.");
-    if (!parsed.dataOk) return setError("Data inválida. Use dd/mm/aa ou dd/mm/aaaa.");
-    if (!parsed.horaOk) return setError("Horário inválido. Use hh:mm ou hh:mm:ss.");
-    if (!parsed.pesoOk) return setError("Peso inválido. Digite só números (ex.: 2720 -> 2.720).");
+    if (!file) {
+      setError("Envie a foto (ou PDF) do ticket.");
+      return false;
+    }
+    if (!veiculo.trim()) {
+      setError("Preencha o veículo.");
+      return false;
+    }
+    if (!origem.trim()) {
+      setError("Preencha a origem.");
+      return false;
+    }
+    if (!destino.trim()) {
+      setError("Preencha o destino.");
+      return false;
+    }
+    if (!material.trim()) {
+      setError("Preencha o material.");
+      return false;
+    }
+    if (!parsed.dataOk) {
+      setError("Data inválida. Use dd/mm/aa ou dd/mm/aaaa.");
+      return false;
+    }
+    if (!parsed.horaOk) {
+      setError("Horário inválido. Use hh:mm ou hh:mm:ss.");
+      return false;
+    }
+    if (!parsed.pesoOk) {
+      setError("Peso inválido. Digite só números (ex.: 2720 → 2.720).");
+      return false;
+    }
 
     return true;
   }
 
   async function handleSave() {
-    const ok = validateBasic();
-    if (ok !== true) return;
+    if (!validateBasic()) return;
 
     setSaving(true);
     setError(null);
@@ -199,19 +222,21 @@ export default function MaterialTicketNovoPage() {
       const pesoNum = parsed.pesoNum!;
 
       const ext = extFromFile(file!);
-      const veic = safePathPart(veiculo);
-      const baseName = safePathPart(file!.name.replace(/\.[^.]+$/, "")) || "ticket";
+      const veic = safePathPart(veiculo) || "veiculo";
+      const baseName =
+        safePathPart(file!.name.replace(/\.[^.]+$/, "")) || "ticket";
       const id = uuid();
 
-      // path no storage
       const storagePath = `material/${dateISO}/${veic}-${baseName}-${id}.${ext}`;
 
       // 1) upload do arquivo
-      const up = await supabase.storage.from("tickets").upload(storagePath, file!, {
-        upsert: false,
-        cacheControl: "3600",
-        contentType: file!.type || "application/octet-stream",
-      });
+      const up = await supabase.storage
+        .from("tickets")
+        .upload(storagePath, file!, {
+          upsert: false,
+          cacheControl: "3600",
+          contentType: file!.type || "application/octet-stream",
+        });
 
       if (up.error) throw new Error(`Storage upload falhou: ${up.error.message}`);
 
@@ -367,11 +392,22 @@ export default function MaterialTicketNovoPage() {
                 marginBottom: 12,
               }}
             >
-              {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
+              {savedMsg}{" "}
+              {savedId ? (
+                <>
+                  ID: <b>{savedId}</b>
+                </>
+              ) : null}
             </div>
           ) : null}
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 14 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(12, 1fr)",
+              gap: 14,
+            }}
+          >
             <div style={{ gridColumn: "span 4" }}>
               <label style={styles.label}>Tipo</label>
               <select
@@ -392,7 +428,9 @@ export default function MaterialTicketNovoPage() {
                 accept="image/*,application/pdf"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
               />
-              <div style={styles.hint}>Bucket: <b>tickets</b> (privado com policy SELECT/INSERT).</div>
+              <div style={styles.hint}>
+                Bucket: <b>tickets</b> (privado com policy SELECT/INSERT).
+              </div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
@@ -448,7 +486,9 @@ export default function MaterialTicketNovoPage() {
                 placeholder="15/01/26"
               />
               <div style={styles.hint}>
-                {parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (ex.: 150126)"}
+                {parsed.dataOk
+                  ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` 
+                  : "Digite só números (ex.: 150126)"}
               </div>
             </div>
 
@@ -462,7 +502,9 @@ export default function MaterialTicketNovoPage() {
                 placeholder="07:53:07"
               />
               <div style={styles.hint}>
-                {parsed.horaOk ? "OK" : "Digite só números (ex.: 0753 ou 075307)"}
+                {parsed.horaOk
+                  ? "OK"
+                  : "Digite só números (ex.: 0753 ou 075307)"}
               </div>
             </div>
 
@@ -506,12 +548,25 @@ export default function MaterialTicketNovoPage() {
                 placeholder="2.720"
               />
               <div style={styles.hint}>
-                {parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (ex.: 2720 → 2.720)"}
+                {parsed.pesoOk
+                  ? `OK → ${parsed.pesoNum} t`
+                  : "Digite só números (ex.: 2720 → 2.720)"}
               </div>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", justifyContent: "flex-end" }}>
-              <button type="button" style={styles.btn} onClick={handleSave} disabled={saving}>
+            <div
+              style={{
+                gridColumn: "span 12",
+                display: "flex",
+                justifyContent: "flex-end",
+              }}
+            >
+              <button
+                type="button"
+                style={styles.btn}
+                onClick={handleSave}
+                disabled={saving}
+              >
                 {saving ? "Salvando..." : "Salvar no Supabase"}
               </button>
             </div>
@@ -522,7 +577,9 @@ export default function MaterialTicketNovoPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Prévia do que vai ser salvo</div>
-              <div className="section-subtitle">Tabela: material_tickets • Bucket: tickets</div>
+              <div className="section-subtitle">
+                Tabela: material_tickets • Bucket: tickets
+              </div>
             </div>
           </div>
 
