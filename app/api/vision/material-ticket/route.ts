@@ -64,9 +64,7 @@ async function visionTextDetection(imageBytes: Buffer) {
   const endpoint =
     auth.mode === "apikey" ? `${endpointBase}?key=${auth.apiKey}` : endpointBase;
 
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (auth.mode === "bearer") headers.Authorization = `Bearer ${auth.token}`;
 
   const body = {
@@ -124,10 +122,11 @@ function parseTicketFields(rawFull: string) {
   }
 
   // HORÁRIO: hh:mm[:ss]
-  const timeMatches = rawFull.match(/\b([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b/g);
-  const horario = timeMatches?.[0] || null;
+  const timeMatches =
+    rawFull.match(/\b([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b/g) || [];
+  const horario = timeMatches[0] || null;
 
-  // PESO (t): escolher o menor valor com 3 casas (ex.: 2.720) -> geralmente é o líquido
+  // PESO: pegar o menor valor com 3 casas (geralmente o líquido no ticket)
   const pesoMatches = rawFull.match(/\b\d{1,3}[.,]\d{3}\b/g) || [];
   const pesoNums = pesoMatches
     .map((s) => Number.parseFloat(s.replace(",", ".")))
@@ -136,8 +135,7 @@ function parseTicketFields(rawFull: string) {
   const peso_t = pesoNums.length ? Math.min(...pesoNums) : null;
   const peso_mask = peso_t !== null ? Number(peso_t).toFixed(3) : null;
 
-  // ORIGEM / DESTINO / MATERIAL:
-  // Heurística 1: linhas do tipo "95 CARGILL", "23 RR-1C DILUIDO"
+  // ORIGEM / DESTINO / MATERIAL (heurística por linhas com "código + texto")
   const coded: string[] = [];
   for (const l of upper) {
     const m = l.match(/^\s*\d+\s+(.+)$/);
@@ -164,7 +162,6 @@ function parseTicketFields(rawFull: string) {
     destino = coded[1];
     material = coded[2];
   } else {
-    // Heurística 2: pegar “GPA ...” e outra empresa em caps (fallback)
     const gpaLine =
       upper.find((l) => l.includes("GPA ENGENHARIA") && !l.includes("CONSTRU")) ||
       upper.find((l) => l === "GPA ENGENHARIA") ||
@@ -193,9 +190,7 @@ function parseTicketFields(rawFull: string) {
     material = matLine || null;
   }
 
-  // limpar possíveis restos
-  const clean = (s: string | null) =>
-    s ? s.replace(/\s+/g, " ").trim() : null;
+  const clean = (s: string | null) => (s ? s.replace(/\s+/g, " ").trim() : null);
 
   return {
     veiculo: clean(veiculo),
@@ -203,9 +198,9 @@ function parseTicketFields(rawFull: string) {
     destino: clean(destino),
     material: clean(material),
     data_br: dataBr,
-    horario: horario,
-    peso_t: peso_t,
-    peso_mask: peso_mask,
+    horario,
+    peso_t,
+    peso_mask,
     debug: {
       coded_lines: coded.slice(0, 10),
       lines_sample: lines.slice(0, 20),
@@ -227,18 +222,19 @@ export async function POST(req: NextRequest) {
       ? imageBase64.split("base64,")[1]
       : imageBase64;
 
-    let buf = Buffer.from(b64, "base64");
-    if (!buf?.length) return jsonError("Base64 inválido.", 400);
+    const input = Buffer.from(b64, "base64") as Buffer; // <- tipagem compatível
+
+    if (!input?.length) return jsonError("Base64 inválido.", 400);
 
     // pré-processar para melhorar OCR (rotate auto + resize + sharpen)
-    buf = await sharp(buf)
+    const processed = (await sharp(input)
       .rotate()
       .resize({ width: 1800, withoutEnlargement: true })
       .jpeg({ quality: 85 })
       .sharpen()
-      .toBuffer();
+      .toBuffer()) as Buffer;
 
-    const vision = await visionTextDetection(buf);
+    const vision = await visionTextDetection(processed);
     const resp0 = vision?.responses?.[0] || {};
     const textAnnotations = resp0?.textAnnotations || [];
     const rawFull = (textAnnotations?.[0]?.description || "").trim();
