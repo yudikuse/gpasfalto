@@ -14,28 +14,21 @@ function extFromFile(file: File) {
   return "jpg";
 }
 
-/** Máscara: digita 150126 -> 15/01/26 | digita 15012026 -> 15/01/2026 */
 function maskDateBRInput(raw: string) {
-  const d = (raw || "").replace(/\D+/g, "").slice(0, 8); // ddmmyyyy
+  const d = (raw || "").replace(/\D+/g, "").slice(0, 8);
   if (d.length <= 2) return d;
   if (d.length <= 4) return `${d.slice(0, 2)}/${d.slice(2)}`;
-  if (d.length <= 6) return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`; // dd/mm/yy
-  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4, 8)}`; // dd/mm/yyyy
+  if (d.length <= 6) return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4)}`;
+  return `${d.slice(0, 2)}/${d.slice(2, 4)}/${d.slice(4, 8)}`;
 }
 
-/** Máscara: digita 0753 -> 07:53 | digita 075307 -> 07:53:07 */
 function maskTimeInput(raw: string) {
-  const d = (raw || "").replace(/\D+/g, "").slice(0, 6); // hhmmss
+  const d = (raw || "").replace(/\D+/g, "").slice(0, 6);
   if (d.length <= 2) return d;
-  if (d.length <= 4) return `${d.slice(0, 2)}:${d.slice(2)}`; // hh:mm
-  return `${d.slice(0, 2)}:${d.slice(2, 4)}:${d.slice(4, 6)}`; // hh:mm:ss
+  if (d.length <= 4) return `${d.slice(0, 2)}:${d.slice(2)}`;
+  return `${d.slice(0, 2)}:${d.slice(2, 4)}:${d.slice(4, 6)}`;
 }
 
-/**
- * Máscara do peso em toneladas com 3 casas (padrão "2.720").
- * - digite "2720" -> "2.720"
- * - digite "28"   -> "0.028"
- */
 function maskPesoTon3(raw: string) {
   const digits = (raw || "").replace(/\D+/g, "").slice(0, 15);
   if (!digits) return "";
@@ -47,24 +40,20 @@ function maskPesoTon3(raw: string) {
 function parseDateBR(raw: string): Date | null {
   const v = (raw || "").trim();
   if (!v) return null;
-
   const m = v.match(/^(\d{2})\/(\d{2})\/(\d{2}|\d{4})$/);
   if (!m) return null;
 
   const dd = Number(m[1]);
   const mm = Number(m[2]);
   let yy = Number(m[3]);
-
   if (m[3].length === 2) yy = yy <= 69 ? 2000 + yy : 1900 + yy;
 
   const d = new Date(yy, mm - 1, dd);
   if (d.getFullYear() !== yy || d.getMonth() !== mm - 1 || d.getDate() !== dd)
     return null;
-
   return d;
 }
 
-/** Aceita hh:mm ou hh:mm:ss */
 function parseTime(raw: string): { hh: number; mm: number; ss: number } | null {
   const v = (raw || "").trim();
   if (!v) return null;
@@ -123,25 +112,15 @@ function normalizeVehicle(v: string | null) {
   if (!s) return "";
   return s.toUpperCase();
 }
-
 function normalizeText(v: string | null) {
   return (v || "").trim();
 }
-
-function normalizeDateFromOcrToMasked(ddmmaaOrDdmmYyyy: string | null) {
-  // o endpoint retorna data_br em dd/mm/yy
-  const v = (ddmmaaOrDdmmYyyy || "").trim();
-  if (!v) return "";
-  return v;
+function normalizeDateFromOcrToMasked(v: string | null) {
+  return (v || "").trim();
 }
-
 function normalizeTimeFromOcrToMasked(v: string | null) {
-  const s = (v || "").trim();
-  if (!s) return "";
-  // aceita "07:53" ou "07:53:07"
-  return s;
+  return (v || "").trim();
 }
-
 function normalizePesoFromOcrToMasked(v: any) {
   if (v === null || v === undefined) return "";
   const n = typeof v === "number" ? v : Number.parseFloat(String(v).replace(",", "."));
@@ -149,8 +128,41 @@ function normalizePesoFromOcrToMasked(v: any) {
   return Number(n).toFixed(3);
 }
 
+function buildWhatsappMessage(p: {
+  tipo: TicketTipo;
+  veiculo: string;
+  origem: string;
+  destino: string;
+  material: string;
+  dataISO: string;
+  horarioISO: string;
+  pesoNum: number;
+  fileUrl?: string | null;
+  savedId?: number | null;
+}) {
+  const { tipo, veiculo, origem, destino, material, dataISO, horarioISO, pesoNum, fileUrl, savedId } = p;
+  const dateBR = (() => {
+    const [y, m, d] = dataISO.split("-");
+    return `${d}/${m}/${y}`;
+  })();
+
+  const base =
+    `✅ Ticket de ${tipo}\n` +
+    `ID: ${savedId ?? "-"}\n` +
+    `Veículo: ${veiculo}\n` +
+    `Data/Hora: ${dateBR} ${horarioISO}\n` +
+    `Origem: ${origem}\n` +
+    `Destino: ${destino}\n` +
+    `Material: ${material}\n` +
+    `Peso (t): ${pesoNum.toFixed(3)}\n`;
+
+  if (fileUrl) return base + `\n📎 Foto: ${fileUrl}`;
+  return base + `\n📎 Foto: (link indisponível)`;
+}
+
 export default function MaterialTicketNovoPage() {
-  const [tipo, setTipo] = useState<TicketTipo>("ENTRADA");
+  // ✅ padrão "SAÍDA"
+  const [tipo, setTipo] = useState<TicketTipo>("SAIDA");
 
   const [file, setFile] = useState<File | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
@@ -171,6 +183,20 @@ export default function MaterialTicketNovoPage() {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   const [ocrRaw, setOcrRaw] = useState<string | null>(null);
+
+  // ✅ depois de salvar: opção de abrir WhatsApp
+  const [lastFileUrl, setLastFileUrl] = useState<string | null>(null);
+  const [lastPayload, setLastPayload] = useState<{
+    tipo: TicketTipo;
+    veiculo: string;
+    origem: string;
+    destino: string;
+    material: string;
+    dataISO: string;
+    horarioISO: string;
+    pesoNum: number;
+    id: number;
+  } | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -215,7 +241,7 @@ export default function MaterialTicketNovoPage() {
     setSavedMsg(null);
     setSavedId(null);
 
-    if (!file) return setError("Envie a foto (ou PDF) do ticket."), false;
+    if (!file) return setError("Envie a foto do ticket."), false;
     if (file.type?.includes("pdf"))
       return setError("OCR ainda não suporta PDF. Envie imagem (jpg/png/webp)."), false;
 
@@ -270,7 +296,6 @@ export default function MaterialTicketNovoPage() {
       const hr = normalizeTimeFromOcrToMasked(f.horario || null);
       const p = normalizePesoFromOcrToMasked(f.peso_mask ?? f.peso_t ?? null);
 
-      // preencher apenas se vier algo; senão mantém o que o usuário digitou
       if (v) setVeiculo(v);
       if (o) setOrigem(o);
       if (d) setDestino(d);
@@ -333,23 +358,59 @@ export default function MaterialTicketNovoPage() {
 
       if (ins.error) throw new Error(`Insert falhou: ${ins.error.message}`);
 
-      setSavedId(ins.data?.id ?? null);
+      const newId = ins.data?.id ?? null;
+      setSavedId(newId);
       setSavedMsg("Salvo com sucesso!");
 
+      // ✅ gerar URL assinada por 7 dias para compartilhar
+      const signed = await supabase.storage.from("tickets").createSignedUrl(storagePath, 60 * 60 * 24 * 7);
+      const signedUrl = signed.data?.signedUrl ?? null;
+      setLastFileUrl(signedUrl);
+
+      if (newId) {
+        setLastPayload({
+          tipo,
+          veiculo: veiculo.trim(),
+          origem: origem.trim(),
+          destino: destino.trim(),
+          material: material.trim(),
+          dataISO: dateISO,
+          horarioISO: timeISO,
+          pesoNum,
+          id: newId,
+        });
+      } else {
+        setLastPayload(null);
+      }
+
+      // mantém os campos (pra pessoa não perder) — mas limpa o arquivo para próximo ticket
       setFile(null);
-      setVeiculo("");
-      setOrigem("");
-      setDestino("");
-      setMaterial("");
-      setDataBr("");
-      setHora("");
-      setPeso("");
+      setPreviewUrl(null);
       setOcrRaw(null);
     } catch (e: any) {
       setError(e?.message || "Erro ao salvar.");
     } finally {
       setSaving(false);
     }
+  }
+
+  function handleShareWhatsApp() {
+    if (!lastPayload) return;
+    const msg = buildWhatsappMessage({
+      tipo: lastPayload.tipo,
+      veiculo: lastPayload.veiculo,
+      origem: lastPayload.origem,
+      destino: lastPayload.destino,
+      material: lastPayload.material,
+      dataISO: lastPayload.dataISO,
+      horarioISO: lastPayload.horarioISO,
+      pesoNum: lastPayload.pesoNum,
+      fileUrl: lastFileUrl,
+      savedId: lastPayload.id,
+    });
+
+    const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
+    window.open(url, "_blank");
   }
 
   const styles: Record<string, CSSProperties> = {
@@ -367,7 +428,7 @@ export default function MaterialTicketNovoPage() {
       borderRadius: 14,
       border: "1px solid #e5e7eb",
       padding: "12px 12px",
-      fontSize: 14,
+      fontSize: 16, // ✅ melhor no mobile (evita zoom do iOS)
       outline: "none",
       background: "#ffffff",
       color: "var(--gp-text)",
@@ -377,7 +438,7 @@ export default function MaterialTicketNovoPage() {
       borderRadius: 14,
       border: "1px solid #e5e7eb",
       padding: "12px 12px",
-      fontSize: 14,
+      fontSize: 16, // ✅ mobile
       outline: "none",
       background: "#ffffff",
       color: "var(--gp-text)",
@@ -392,9 +453,10 @@ export default function MaterialTicketNovoPage() {
       fontWeight: 900,
       padding: "12px 14px",
       cursor: saving ? "not-allowed" : "pointer",
-      fontSize: 14,
+      fontSize: 15,
       boxShadow: saving ? "none" : "0 14px 26px rgba(255, 75, 43, 0.20)",
       opacity: saving ? 0.8 : 1,
+      width: "100%",
     },
     btnGhost: {
       borderRadius: 14,
@@ -404,7 +466,19 @@ export default function MaterialTicketNovoPage() {
       fontWeight: 900,
       padding: "12px 14px",
       cursor: ocrLoading ? "not-allowed" : "pointer",
-      fontSize: 14,
+      fontSize: 15,
+      width: "100%",
+    },
+    btnShare: {
+      borderRadius: 14,
+      border: "1px solid #bbf7d0",
+      background: "#22c55e",
+      color: "#fff",
+      fontWeight: 900,
+      padding: "12px 14px",
+      cursor: "pointer",
+      fontSize: 15,
+      width: "100%",
     },
     hint: { fontSize: 12, color: "var(--gp-muted-soft)", marginTop: 6 },
   };
@@ -412,16 +486,25 @@ export default function MaterialTicketNovoPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        <header className="page-header" style={{ flexDirection: "column", alignItems: "center", gap: 8 }}>
+        <header
+          className="page-header"
+          style={{ flexDirection: "column", alignItems: "center", gap: 8 }}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/gpasfalto-logo.png"
             alt="GP Asfalto"
-            style={{ width: 120, height: 120, objectFit: "contain", border: "none", background: "transparent" }}
+            style={{
+              width: 110,
+              height: 110,
+              objectFit: "contain",
+              border: "none",
+              background: "transparent",
+            }}
           />
           <div style={{ textAlign: "center" }}>
             <div className="brand-text-main">Materiais • Ticket</div>
-            <div className="brand-text-sub">Upload + OCR + salvar no Supabase</div>
+            <div className="brand-text-sub">Tirar foto • OCR • Salvar • WhatsApp</div>
           </div>
         </header>
 
@@ -429,113 +512,214 @@ export default function MaterialTicketNovoPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Novo ticket</div>
-              <div className="section-subtitle">Envie o ticket, clique em OCR, ajuste e salve.</div>
+              <div className="section-subtitle">
+                Tire a foto pelo celular, rode o OCR, ajuste e salve.
+              </div>
             </div>
           </div>
 
           {error ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #fecaca",
+                background: "#fef2f2",
+                color: "#991b1b",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {error}
             </div>
           ) : null}
 
           {savedMsg ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #bbf7d0",
+                background: "#f0fdf4",
+                color: "#166534",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
             </div>
           ) : null}
 
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 14 }}>
-            <div style={{ gridColumn: "span 4" }}>
-              <label style={styles.label}>Tipo</label>
-              <select style={styles.select} value={tipo} onChange={(e) => setTipo(e.target.value as TicketTipo)}>
-                <option value="ENTRADA">ENTRADA</option>
+          {/* ✅ layout mobile-first */}
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(12, 1fr)",
+              gap: 12,
+            }}
+          >
+            <div style={{ gridColumn: "span 12" }}>
+              <label style={styles.label}>Tipo (padrão: SAÍDA)</label>
+              <select
+                style={styles.select}
+                value={tipo}
+                onChange={(e) => setTipo(e.target.value as TicketTipo)}
+              >
                 <option value="SAIDA">SAÍDA</option>
+                <option value="ENTRADA">ENTRADA</option>
               </select>
             </div>
 
-            <div style={{ gridColumn: "span 8" }}>
-              <label style={styles.label}>Arquivo do ticket *</label>
+            <div style={{ gridColumn: "span 12" }}>
+              <label style={styles.label}>Foto do ticket *</label>
+
+              {/* ✅ no celular, abre a câmera com capture */}
               <input
                 style={styles.input}
                 type="file"
-                accept="image/*,application/pdf"
+                accept="image/*"
+                capture="environment"
                 onChange={(e) => {
                   setFile(e.target.files?.[0] || null);
                   setOcrRaw(null);
+                  setLastPayload(null);
+                  setLastFileUrl(null);
                 }}
               />
-              <div style={styles.hint}>OCR: somente imagens (jpg/png/webp). PDF: só upload por enquanto.</div>
+
+              <div style={styles.hint}>
+                No celular, isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
+              </div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               {previewUrl ? (
-                file?.type?.includes("pdf") ? (
-                  <div style={{ border: "1px solid #e5e7eb", borderRadius: 16, padding: 12, background: "#f9fafb", fontSize: 14, color: "#334155" }}>
-                    PDF selecionado: <b>{file.name}</b> (OCR para PDF vem depois)
-                  </div>
-                ) : (
-                  // eslint-disable-next-line @next/next/no-img-element
-                  <img
-                    src={previewUrl}
-                    alt="Preview do ticket"
-                    style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}
-                  />
-                )
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={previewUrl}
+                  alt="Preview do ticket"
+                  style={{
+                    width: "100%",
+                    maxHeight: 420,
+                    objectFit: "contain",
+                    borderRadius: 16,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                  }}
+                />
               ) : null}
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            {/* ✅ botões grandes lado a lado no mobile */}
+            <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <button type="button" style={styles.btnGhost} onClick={handleOcr} disabled={ocrLoading}>
-                {ocrLoading ? "Lendo OCR..." : "Ler via OCR"}
+                {ocrLoading ? "Lendo..." : "Ler via OCR"}
               </button>
 
               <button type="button" style={styles.btnPrimary} onClick={handleSave} disabled={saving}>
-                {saving ? "Salvando..." : "Salvar no Supabase"}
+                {saving ? "Salvando..." : "Salvar"}
               </button>
             </div>
 
-            <div style={{ gridColumn: "span 3" }}>
+            {/* ✅ botão compartilhar só aparece quando tiver salvo */}
+            {lastPayload ? (
+              <div style={{ gridColumn: "span 12" }}>
+                <button type="button" style={styles.btnShare} onClick={handleShareWhatsApp}>
+                  Compartilhar no WhatsApp
+                </button>
+                <div style={styles.hint}>
+                  Abre o WhatsApp com uma mensagem pronta. Você escolhe o grupo e envia.
+                </div>
+              </div>
+            ) : null}
+
+            <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Veículo *</label>
-              <input style={styles.input} value={veiculo} onChange={(e) => setVeiculo(e.target.value)} placeholder="Ex.: CE-02" />
+              <input
+                style={styles.input}
+                value={veiculo}
+                onChange={(e) => setVeiculo(e.target.value)}
+                placeholder="Ex.: GWI-3J50"
+              />
             </div>
 
-            <div style={{ gridColumn: "span 4" }}>
+            <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data *</label>
-              <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
-              <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (ex.: 150126)"}</div>
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={dataBr}
+                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
+                placeholder="15/01/26"
+              />
+              <div style={styles.hint}>
+                {parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}
+              </div>
             </div>
 
-            <div style={{ gridColumn: "span 5" }}>
+            <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Horário *</label>
-              <input style={styles.input} inputMode="numeric" value={hora} onChange={(e) => setHora(maskTimeInput(e.target.value))} placeholder="07:53:07" />
-              <div style={styles.hint}>{parsed.horaOk ? "OK" : "Digite só números (ex.: 0753 ou 075307)"}</div>
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={hora}
+                onChange={(e) => setHora(maskTimeInput(e.target.value))}
+                placeholder="08:46:45"
+              />
+              <div style={styles.hint}>
+                {parsed.horaOk ? "OK" : "Digite só números (084645)"}
+              </div>
             </div>
 
-            <div style={{ gridColumn: "span 6" }}>
+            <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Origem *</label>
-              <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: GPA Engenharia" />
+              <input
+                style={styles.input}
+                value={origem}
+                onChange={(e) => setOrigem(e.target.value)}
+                placeholder="Ex.: GPA ENGENHARIA"
+              />
             </div>
 
-            <div style={{ gridColumn: "span 6" }}>
+            <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Destino *</label>
-              <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: Cargill" />
+              <input
+                style={styles.input}
+                value={destino}
+                onChange={(e) => setDestino(e.target.value)}
+                placeholder="Ex.: CARGILL"
+              />
             </div>
 
-            <div style={{ gridColumn: "span 8" }}>
+            <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Material *</label>
-              <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: RR-1C Diluído" />
+              <input
+                style={styles.input}
+                value={material}
+                onChange={(e) => setMaterial(e.target.value)}
+                placeholder="Ex.: MASSA USINADA (CBUQ)"
+              />
             </div>
 
-            <div style={{ gridColumn: "span 4" }}>
+            <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Peso (t) *</label>
-              <input style={styles.input} inputMode="numeric" value={peso} onChange={(e) => setPeso(maskPesoTon3(e.target.value))} placeholder="2.720" />
-              <div style={styles.hint}>{parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (ex.: 2720 → 2.720)"}</div>
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={peso}
+                onChange={(e) => setPeso(maskPesoTon3(e.target.value))}
+                placeholder="14.210"
+              />
+              <div style={styles.hint}>
+                {parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}
+              </div>
             </div>
 
             {ocrRaw ? (
               <div style={{ gridColumn: "span 12" }}>
-                <div style={{ ...styles.hint, marginTop: 0, marginBottom: 6 }}>OCR bruto (debug)</div>
+                <div style={{ ...styles.hint, marginTop: 0, marginBottom: 6 }}>
+                  OCR bruto (debug)
+                </div>
                 <pre
                   style={{
                     margin: 0,
