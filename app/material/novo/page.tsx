@@ -107,6 +107,80 @@ async function fileToDataURL(file: File): Promise<string> {
   });
 }
 
+async function blobToDataURL(blob: Blob): Promise<string> {
+  return await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("Falha ao converter imagem."));
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.readAsDataURL(blob);
+  });
+}
+
+/**
+ * ✅ FIX DO 413:
+ * Comprime/redimensiona a imagem antes de mandar pro OCR (base64).
+ * Mantém o upload original para o Supabase (se você quiser, podemos otimizar o upload depois).
+ */
+async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; note: string | null }> {
+  // Só imagens
+  if (!file.type.startsWith("image/")) {
+    return { dataUrl: await fileToDataURL(file), note: null };
+  }
+
+  // Se já for pequena, manda como está
+  if (file.size <= 900_000) {
+    return { dataUrl: await fileToDataURL(file), note: null };
+  }
+
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const i = new Image();
+      i.onload = () => resolve(i);
+      i.onerror = () => reject(new Error("Falha ao carregar a imagem para compressão."));
+      i.src = url;
+    });
+
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+
+    // alvo seguro para não estourar payload
+    const maxW = 1600;
+    const maxH = 1600;
+    const scale = Math.min(1, maxW / w, maxH / h);
+
+    const cw = Math.max(1, Math.round(w * scale));
+    const ch = Math.max(1, Math.round(h * scale));
+
+    const canvas = document.createElement("canvas");
+    canvas.width = cw;
+    canvas.height = ch;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      // fallback
+      return { dataUrl: await fileToDataURL(file), note: null };
+    }
+
+    ctx.drawImage(img, 0, 0, cw, ch);
+
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (b) => (b ? resolve(b) : reject(new Error("Falha ao comprimir a imagem."))),
+        "image/jpeg",
+        0.82
+      );
+    });
+
+    const dataUrl = await blobToDataURL(blob);
+    return {
+      dataUrl,
+      note: `Foto otimizada para OCR (${Math.round(file.size / 1024)}KB → ${Math.round(blob.size / 1024)}KB).`,
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
 function normalizeVehicle(v: string | null) {
   const s = (v || "").trim();
   if (!s) return "";
@@ -156,12 +230,12 @@ function buildWhatsappMessage(p: {
     `Material: ${material}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
-  if (fileUrl) return base + `\n📎 Foto: ${fileUrl}`;
-  return base + `\n📎 Foto: (link indisponível)`;
+  if (fileUrl) return base + `\n📎 Link da foto: ${fileUrl}`;
+  return base;
 }
 
 export default function MaterialTicketNovoPage() {
-  // ✅ padrão "SAÍDA"
+  // ✅ padrão SAÍDA
   const [tipo, setTipo] = useState<TicketTipo>("SAIDA");
 
   const [file, setFile] = useState<File | null>(null);
@@ -183,9 +257,11 @@ export default function MaterialTicketNovoPage() {
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
 
   const [ocrRaw, setOcrRaw] = useState<string | null>(null);
+  const [ocrNote, setOcrNote] = useState<string | null>(null);
 
-  // ✅ depois de salvar: opção de abrir WhatsApp
+  // ✅ compartilhar pós-salvar
   const [lastFileUrl, setLastFileUrl] = useState<string | null>(null);
+  const [lastShareFile, setLastShareFile] = useState<File | null>(null);
   const [lastPayload, setLastPayload] = useState<{
     tipo: TicketTipo;
     veiculo: string;
@@ -220,10 +296,7 @@ export default function MaterialTicketNovoPage() {
       : null;
 
     const timeISO = t
-      ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(
-          2,
-          "0"
-        )}:${String(t.ss).padStart(2, "0")}`
+      ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(2, "0")}:${String(t.ss).padStart(2, "0")}`
       : null;
 
     return {
@@ -241,7 +314,7 @@ export default function MaterialTicketNovoPage() {
     setSavedMsg(null);
     setSavedId(null);
 
-    if (!file) return setError("Envie a foto do ticket."), false;
+    if (!file) return setError("Tire/Envie a foto do ticket."), false;
     if (file.type?.includes("pdf"))
       return setError("OCR ainda não suporta PDF. Envie imagem (jpg/png/webp)."), false;
 
@@ -260,9 +333,10 @@ export default function MaterialTicketNovoPage() {
     setError(null);
     setSavedMsg(null);
     setSavedId(null);
+    setOcrNote(null);
 
     if (!file) {
-      setError("Envie a foto do ticket para ler via OCR.");
+      setError("Tire/Envie a foto do ticket para ler via OCR.");
       return;
     }
     if (file.type?.includes("pdf")) {
@@ -272,12 +346,20 @@ export default function MaterialTicketNovoPage() {
 
     setOcrLoading(true);
     try {
-      const dataUrl = await fileToDataURL(file);
+      // ✅ aqui está o fix do 413
+      const { dataUrl, note } = await makeOcrDataUrlFromImage(file);
+      setOcrNote(note);
+
       const res = await fetch("/api/vision/material-ticket", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ imageBase64: dataUrl }),
       });
+
+      // erro explícito pra 413 (caso ainda aconteça)
+      if (res.status === 413) {
+        throw new Error("Foto muito grande para OCR. O app tentou otimizar, mas ainda excedeu o limite. Tire a foto mais de longe (menos resolução) e tente novamente.");
+      }
 
       const js = await res.json().catch(() => null);
       if (!res.ok || !js?.ok) {
@@ -287,7 +369,6 @@ export default function MaterialTicketNovoPage() {
       setOcrRaw(js?.raw || null);
 
       const f = js?.fields || {};
-
       const v = normalizeVehicle(f.veiculo || null);
       const o = normalizeText(f.origem || null);
       const d = normalizeText(f.destino || null);
@@ -362,11 +443,12 @@ export default function MaterialTicketNovoPage() {
       setSavedId(newId);
       setSavedMsg("Salvo com sucesso!");
 
-      // ✅ gerar URL assinada por 7 dias para compartilhar
+      // ✅ link assinado (fallback do WhatsApp)
       const signed = await supabase.storage.from("tickets").createSignedUrl(storagePath, 60 * 60 * 24 * 7);
       const signedUrl = signed.data?.signedUrl ?? null;
       setLastFileUrl(signedUrl);
 
+      // ✅ guarda payload pra compartilhar
       if (newId) {
         setLastPayload({
           tipo,
@@ -383,10 +465,14 @@ export default function MaterialTicketNovoPage() {
         setLastPayload(null);
       }
 
-      // mantém os campos (pra pessoa não perder) — mas limpa o arquivo para próximo ticket
+      // ✅ guarda o arquivo para compartilhar via Web Share (foto no WhatsApp)
+      setLastShareFile(file!);
+
+      // limpa só a foto atual
       setFile(null);
       setPreviewUrl(null);
       setOcrRaw(null);
+      setOcrNote(null);
     } catch (e: any) {
       setError(e?.message || "Erro ao salvar.");
     } finally {
@@ -394,8 +480,9 @@ export default function MaterialTicketNovoPage() {
     }
   }
 
-  function handleShareWhatsApp() {
+  async function handleShareWhatsApp() {
     if (!lastPayload) return;
+
     const msg = buildWhatsappMessage({
       tipo: lastPayload.tipo,
       veiculo: lastPayload.veiculo,
@@ -409,6 +496,27 @@ export default function MaterialTicketNovoPage() {
       savedId: lastPayload.id,
     });
 
+    // ✅ Melhor opção no celular: compartilhar A FOTO + texto (abre lista e você escolhe WhatsApp/grupo)
+    try {
+      const navAny: any = navigator as any;
+
+      if (navAny?.share && lastShareFile) {
+        const withFile = { files: [lastShareFile] };
+
+        if (!navAny.canShare || navAny.canShare(withFile)) {
+          await navAny.share({
+            title: "Ticket de material",
+            text: msg,
+            files: [lastShareFile],
+          });
+          return;
+        }
+      }
+    } catch {
+      // se cancelar ou falhar, cai no fallback
+    }
+
+    // fallback: WhatsApp com texto + link assinado
     const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
     window.open(url, "_blank");
   }
@@ -428,7 +536,7 @@ export default function MaterialTicketNovoPage() {
       borderRadius: 14,
       border: "1px solid #e5e7eb",
       padding: "12px 12px",
-      fontSize: 16, // ✅ melhor no mobile (evita zoom do iOS)
+      fontSize: 16, // ✅ evita zoom do iOS
       outline: "none",
       background: "#ffffff",
       color: "var(--gp-text)",
@@ -438,7 +546,7 @@ export default function MaterialTicketNovoPage() {
       borderRadius: 14,
       border: "1px solid #e5e7eb",
       padding: "12px 12px",
-      fontSize: 16, // ✅ mobile
+      fontSize: 16,
       outline: "none",
       background: "#ffffff",
       color: "var(--gp-text)",
@@ -486,21 +594,12 @@ export default function MaterialTicketNovoPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        <header
-          className="page-header"
-          style={{ flexDirection: "column", alignItems: "center", gap: 8 }}
-        >
+        <header className="page-header" style={{ flexDirection: "column", alignItems: "center", gap: 8 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/gpasfalto-logo.png"
             alt="GP Asfalto"
-            style={{
-              width: 110,
-              height: 110,
-              objectFit: "contain",
-              border: "none",
-              background: "transparent",
-            }}
+            style={{ width: 110, height: 110, objectFit: "contain", border: "none", background: "transparent" }}
           />
           <div style={{ textAlign: "center" }}>
             <div className="brand-text-main">Materiais • Ticket</div>
@@ -512,59 +611,26 @@ export default function MaterialTicketNovoPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Novo ticket</div>
-              <div className="section-subtitle">
-                Tire a foto pelo celular, rode o OCR, ajuste e salve.
-              </div>
+              <div className="section-subtitle">Tire a foto pelo celular, rode o OCR, ajuste e salve.</div>
             </div>
           </div>
 
           {error ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #fecaca",
-                background: "#fef2f2",
-                color: "#991b1b",
-                fontSize: 14,
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
               {error}
             </div>
           ) : null}
 
           {savedMsg ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #bbf7d0",
-                background: "#f0fdf4",
-                color: "#166534",
-                fontSize: 14,
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
             </div>
           ) : null}
 
-          {/* ✅ layout mobile-first */}
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: "repeat(12, 1fr)",
-              gap: 12,
-            }}
-          >
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Tipo (padrão: SAÍDA)</label>
-              <select
-                style={styles.select}
-                value={tipo}
-                onChange={(e) => setTipo(e.target.value as TicketTipo)}
-              >
+              <select style={styles.select} value={tipo} onChange={(e) => setTipo(e.target.value as TicketTipo)}>
                 <option value="SAIDA">SAÍDA</option>
                 <option value="ENTRADA">ENTRADA</option>
               </select>
@@ -573,7 +639,7 @@ export default function MaterialTicketNovoPage() {
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Foto do ticket *</label>
 
-              {/* ✅ no celular, abre a câmera com capture */}
+              {/* ✅ abre câmera no celular */}
               <input
                 style={styles.input}
                 type="file"
@@ -582,14 +648,17 @@ export default function MaterialTicketNovoPage() {
                 onChange={(e) => {
                   setFile(e.target.files?.[0] || null);
                   setOcrRaw(null);
+                  setOcrNote(null);
                   setLastPayload(null);
                   setLastFileUrl(null);
+                  setLastShareFile(null);
                 }}
               />
 
               <div style={styles.hint}>
-                No celular, isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
+                No celular isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
               </div>
+              {ocrNote ? <div style={styles.hint}><b>{ocrNote}</b></div> : null}
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
@@ -598,19 +667,11 @@ export default function MaterialTicketNovoPage() {
                 <img
                   src={previewUrl}
                   alt="Preview do ticket"
-                  style={{
-                    width: "100%",
-                    maxHeight: 420,
-                    objectFit: "contain",
-                    borderRadius: 16,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                  }}
+                  style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}
                 />
               ) : null}
             </div>
 
-            {/* ✅ botões grandes lado a lado no mobile */}
             <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <button type="button" style={styles.btnGhost} onClick={handleOcr} disabled={ocrLoading}>
                 {ocrLoading ? "Lendo..." : "Ler via OCR"}
@@ -621,105 +682,58 @@ export default function MaterialTicketNovoPage() {
               </button>
             </div>
 
-            {/* ✅ botão compartilhar só aparece quando tiver salvo */}
             {lastPayload ? (
               <div style={{ gridColumn: "span 12" }}>
                 <button type="button" style={styles.btnShare} onClick={handleShareWhatsApp}>
                   Compartilhar no WhatsApp
                 </button>
                 <div style={styles.hint}>
-                  Abre o WhatsApp com uma mensagem pronta. Você escolhe o grupo e envia.
+                  No celular, abre o compartilhamento com a <b>foto</b> + texto (quando suportado). Se não suportar, abre WhatsApp com texto+link.
                 </div>
               </div>
             ) : null}
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Veículo *</label>
-              <input
-                style={styles.input}
-                value={veiculo}
-                onChange={(e) => setVeiculo(e.target.value)}
-                placeholder="Ex.: GWI-3J50"
-              />
+              <input style={styles.input} value={veiculo} onChange={(e) => setVeiculo(e.target.value)} placeholder="Ex.: GWI-3J50" />
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={dataBr}
-                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
-                placeholder="15/01/26"
-              />
-              <div style={styles.hint}>
-                {parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}
-              </div>
+              <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
+              <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Horário *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={hora}
-                onChange={(e) => setHora(maskTimeInput(e.target.value))}
-                placeholder="08:46:45"
-              />
-              <div style={styles.hint}>
-                {parsed.horaOk ? "OK" : "Digite só números (084645)"}
-              </div>
+              <input style={styles.input} inputMode="numeric" value={hora} onChange={(e) => setHora(maskTimeInput(e.target.value))} placeholder="08:46:45" />
+              <div style={styles.hint}>{parsed.horaOk ? "OK" : "Digite só números (084645)"}</div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Origem *</label>
-              <input
-                style={styles.input}
-                value={origem}
-                onChange={(e) => setOrigem(e.target.value)}
-                placeholder="Ex.: GPA ENGENHARIA"
-              />
+              <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: GPA ENGENHARIA" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Destino *</label>
-              <input
-                style={styles.input}
-                value={destino}
-                onChange={(e) => setDestino(e.target.value)}
-                placeholder="Ex.: CARGILL"
-              />
+              <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: CARGILL" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Material *</label>
-              <input
-                style={styles.input}
-                value={material}
-                onChange={(e) => setMaterial(e.target.value)}
-                placeholder="Ex.: MASSA USINADA (CBUQ)"
-              />
+              <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: MASSA USINADA (CBUQ)" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Peso (t) *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={peso}
-                onChange={(e) => setPeso(maskPesoTon3(e.target.value))}
-                placeholder="14.210"
-              />
-              <div style={styles.hint}>
-                {parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}
-              </div>
+              <input style={styles.input} inputMode="numeric" value={peso} onChange={(e) => setPeso(maskPesoTon3(e.target.value))} placeholder="14.210" />
+              <div style={styles.hint}>{parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}</div>
             </div>
 
             {ocrRaw ? (
               <div style={{ gridColumn: "span 12" }}>
-                <div style={{ ...styles.hint, marginTop: 0, marginBottom: 6 }}>
-                  OCR bruto (debug)
-                </div>
+                <div style={{ ...styles.hint, marginTop: 0, marginBottom: 6 }}>OCR bruto (debug)</div>
                 <pre
                   style={{
                     margin: 0,
