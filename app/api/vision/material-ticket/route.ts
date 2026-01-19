@@ -102,7 +102,10 @@ function toUpperLines(raw: string) {
 }
 
 const PLATE_RE = /\b[A-Z]{3}-[A-Z0-9]{4}\b/g; // GWI-3J50, KGX-6I47
-const EQUIP_RE = /\b[A-Z]{1,3}-\d{2}\b/g; // CE-02, EH-02, PC-04
+
+// ✅ CRÍTICO: UA-01/UA-03 NÃO é veículo, então exclui UA- do regex
+const EQUIP_RE = /\b(?!UA-)[A-Z]{1,3}-\d{2}\b/g; // CE-02, EH-02, PC-04 etc (mas NÃO UA-03)
+
 const DATE_RE = /\b(\d{2})\/(\d{2})\/(\d{2}|\d{4})\b/g;
 const TIME_RE = /\b([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b/g;
 
@@ -112,7 +115,14 @@ const WEIGHT_TOKEN_RE = /\b\d{1,3}[.,\/]\d{3}\b/g;
 function looksLikeVehicle(s: string) {
   const v = (s || "").toUpperCase().trim();
   if (!v) return false;
-  return /\b[A-Z]{3}-[A-Z0-9]{4}\b/.test(v) || /\b[A-Z]{1,3}-\d{2}\b/.test(v);
+
+  // placa
+  if (/\b[A-Z]{3}-[A-Z0-9]{4}\b/.test(v)) return true;
+
+  // equipamento (excluindo UA-xx)
+  if (/\b(?!UA-)[A-Z]{1,3}-\d{2}\b/.test(v)) return true;
+
+  return false;
 }
 
 function pickVehicleFromContext(rawFull: string, upperLines: string[]) {
@@ -164,7 +174,6 @@ function pickBestDate(rawFull: string, upperLines: string[]) {
 
   if (!matches.length) return { dataBr: null as string | null, debug: matches };
 
-  // preferir uma data válida perto da seção REAL "PESAGEM FINAL" (não o "OK.")
   const idxFinal = upperLines.findIndex(
     (l) => l.includes("PESAGEM FINAL") && !l.includes("OK")
   );
@@ -191,7 +200,6 @@ function pickBestDate(rawFull: string, upperLines: string[]) {
     }
   }
 
-  // fallback: primeira data válida do documento
   for (const m of matches) {
     const dd = Number(m.dd);
     const mm = Number(m.mm);
@@ -205,7 +213,6 @@ function pickBestDate(rawFull: string, upperLines: string[]) {
     }
   }
 
-  // se todas inválidas, devolve a primeira mesmo (só pra debug)
   const first = matches[0];
   return {
     dataBr: normalizeDateToBRShort(first.dd, first.mm, first.yy),
@@ -218,7 +225,6 @@ function round3(n: number) {
 }
 
 function parseWeightToken(tok: string): number | null {
-  // 10/200 -> 10.200
   const s = (tok || "").trim().replace("/", ".").replace(",", ".");
   const n = Number.parseFloat(s);
   return Number.isFinite(n) ? n : null;
@@ -226,7 +232,6 @@ function parseWeightToken(tok: string): number | null {
 
 function extractWeightsByLine(lines: string[]) {
   const all: { value: number; lineIdx: number; token: string }[] = [];
-
   lines.forEach((line, idx) => {
     const toks = line.match(WEIGHT_TOKEN_RE) || [];
     for (const t of toks) {
@@ -234,7 +239,6 @@ function extractWeightsByLine(lines: string[]) {
       if (v !== null && v > 0) all.push({ value: round3(v), lineIdx: idx, token: t });
     }
   });
-
   return all;
 }
 
@@ -244,12 +248,13 @@ function pickWeightFromSection(
   window = 10
 ) {
   if (fromIdx < 0) return null;
-  const w = weights.find((x) => x.lineIdx >= fromIdx && x.lineIdx <= fromIdx + window);
+  const w = weights.find(
+    (x) => x.lineIdx >= fromIdx && x.lineIdx <= fromIdx + window
+  );
   return w?.value ?? null;
 }
 
 function pickStandaloneWeight(linesUpper: string[], weights: { value: number; lineIdx: number }[]) {
-  // linha só com o número (ex.: "2.880")
   for (const w of weights) {
     const l = (linesUpper[w.lineIdx] || "").trim();
     if (l.match(/^\d{1,3}[.,\/]\d{3}$/)) return w.value;
@@ -269,10 +274,8 @@ function pickNetWeightSmart(rawFull: string) {
   const wInicial = pickWeightFromSection(weights, idxInicial + 1, 12);
   const wFinal = pickWeightFromSection(weights, idxFinal + 1, 14);
 
-  // quando o líquido aparece impresso sozinho (normal)
   const standalone = pickStandaloneWeight(upper, weights);
 
-  // se temos inicial+final, líquido = final - inicial
   if (wInicial !== null && wFinal !== null) {
     const diff = round3(Math.abs(wFinal - wInicial));
     return {
@@ -290,7 +293,6 @@ function pickNetWeightSmart(rawFull: string) {
     };
   }
 
-  // se não achou seções, mas existe líquido standalone
   if (standalone !== null) {
     const v = round3(standalone);
     return {
@@ -308,7 +310,6 @@ function pickNetWeightSmart(rawFull: string) {
     };
   }
 
-  // fallback por combinação (13.080 - 10.200 = 2.880)
   const nums = Array.from(new Set(weights.map((x) => x.value))).sort((a, b) => a - b);
   if (!nums.length) {
     return { peso_t: null, peso_mask: null, debug: { modo: "none", pesos: [] } };
@@ -330,7 +331,6 @@ function pickNetWeightSmart(rawFull: string) {
     }
   }
 
-  // última: max-min
   const diff = round3(nums[nums.length - 1] - nums[0]);
   return {
     peso_t: diff > 0 ? diff : null,
@@ -342,7 +342,6 @@ function pickNetWeightSmart(rawFull: string) {
 function fixCommonOCR(s: string, rawUpperFull: string) {
   let out = (s || "").trim().replace(/\s+/g, " ");
 
-  // PATIO GRA -> PATIO GPA (quando o ticket contém GPA)
   if (/\bPATIO\b/.test(out) && /\bGRA\b/.test(out) && rawUpperFull.includes("GPA")) {
     out = out.replace(/\bGRA\b/g, "GPA");
   }
@@ -354,7 +353,6 @@ function isNoiseLine(l: string) {
   if (!l) return true;
   const x = l.toUpperCase().trim();
 
-  // ruídos / cabeçalhos
   const banned = [
     "TICKET",
     "TICKET DE PESAGEM",
@@ -373,23 +371,20 @@ function isNoiseLine(l: string) {
     "OBS",
     "P. GERAL",
     "P. OBRA",
-    "DATA", // <- CRÍTICO: não deixa virar "material"
+    "DATA",
     "EAM",
   ];
   if (banned.some((b) => x === b || x.includes(b))) return true;
 
-  // topo institucional
   if (x.includes("CONSTRU") || x.includes("LTDA")) return true;
 
-  // datas/horas/pesos isolados
   if (x.match(DATE_RE)) return true;
   if (x.match(TIME_RE)) return true;
   if (x.match(WEIGHT_TOKEN_RE)) return true;
 
-  // caixas soltas
+  // UA-01 / UA-03 isolado é ruído, mas "USINA UA-03" NÃO é
   if (x === "UA-01" || x === "UA-03" || x === "X") return true;
 
-  // só número
   if (/^\d+$/.test(x)) return true;
 
   return false;
@@ -411,7 +406,6 @@ function assignTriplet(cands: string[]) {
     "BRITA",
   ];
 
-  // ORIGEM: preferir GPA ENGENHARIA, senão USINA..., senão primeiro
   let oi = cands.findIndex((c) => c.includes("GPA ENGENHARIA"));
   if (oi < 0) oi = cands.findIndex((c) => c.startsWith("USINA"));
   if (oi < 0) oi = 0;
@@ -419,7 +413,6 @@ function assignTriplet(cands: string[]) {
   const origem = cands[oi] || null;
   const rest1 = cands.filter((_, i) => i !== oi);
 
-  // DESTINO: preferir CARGILL, senão PATIO, senão primeiro
   let di = rest1.findIndex((c) => c.includes("CARGILL"));
   if (di < 0) di = rest1.findIndex((c) => c.includes("PATIO"));
   if (di < 0) di = 0;
@@ -427,7 +420,6 @@ function assignTriplet(cands: string[]) {
   const destino = rest1[di] || null;
   const rest2 = rest1.filter((_, i) => i !== di);
 
-  // MATERIAL: preferir por palavras-chave
   let mi = rest2.findIndex((c) => materialHints.some((h) => c.includes(h)));
   if (mi < 0) mi = 0;
 
@@ -452,31 +444,28 @@ function parseTicketFields(rawFull: string) {
   const peso_t = pesoPick.peso_t;
   const peso_mask = pesoPick.peso_mask;
 
-  // candidatos textuais (origem/destino/material)
   const candidatesRaw: string[] = [];
   for (const l of upper) {
     const v = l.trim();
     if (!v) continue;
     if (isNoiseLine(v)) continue;
+
+    // ✅ AGORA: "USINA UA-03" não será descartado, porque UA-03 não é mais veículo
     if (looksLikeVehicle(v)) continue;
 
-    // evita igual ao veículo
     if (veiculo) {
       const a = v.replace(/[^A-Z0-9]/g, "");
       const b = veiculo.replace(/[^A-Z0-9]/g, "");
       if (a && b && (a === b || a.includes(b) || b.includes(a))) continue;
     }
 
-    // precisa ter letra
     if (!/[A-Z]/.test(v)) continue;
 
     candidatesRaw.push(v);
   }
 
-  // normaliza + corrige
   const normalized = candidatesRaw.map((s) => fixCommonOCR(s, rawUpperFull));
 
-  // remove duplicatas mantendo ordem
   const seen = new Set<string>();
   const cands: string[] = [];
   for (const p of normalized) {
