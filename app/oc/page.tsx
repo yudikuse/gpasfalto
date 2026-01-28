@@ -1,3 +1,4 @@
+// FILE: app/oc/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -376,8 +377,8 @@ export default function OCPage() {
         operador: operador || null,
         horimetro: horimetro || null,
         local_entrega: localEntrega || null,
-        observacoes: observacoes || null,
 
+        // ✅ observações ficam no texto_original (whatsappPreview)
         texto_original: whatsappPreview,
 
         // fornecedores
