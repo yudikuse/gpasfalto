@@ -71,9 +71,7 @@ function resolveServiceAccount() {
 
 async function getVisionAuth() {
   const apiKey =
-    process.env.GCP_VISION_API_KEY ||
-    process.env.GOOGLE_VISION_API_KEY ||
-    "";
+    process.env.GCP_VISION_API_KEY || process.env.GOOGLE_VISION_API_KEY || "";
 
   if (apiKey) return { mode: "apikey" as const, apiKey };
 
@@ -218,10 +216,12 @@ function findOneDigitRight(main: TokenBox, allDigits: TokenBox[]) {
 
 function pickHorimetroDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
-  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
+  if (!digitTokens.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
 
   const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
+  if (!clean.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
 
   const bounds = docBounds(clean);
   const maxH = Math.max(...clean.map((t) => t.h));
@@ -344,7 +344,6 @@ function parseAbastecimentoFromRaw(rawFull: string) {
   const matches = [...raw.matchAll(/(\d{1,3})\s*[.,]\s*(\d)\b/g)];
   if (!matches.length) return null;
 
-  // pega o maior inteiro (em geral é o litros)
   const best = matches
     .map((m) => ({
       i: parseInt(m[1], 10),
@@ -361,17 +360,18 @@ function parseAbastecimentoFromRaw(rawFull: string) {
 }
 
 /**
- * ABASTECIMENTO (fix principal):
- * - NUNCA padStart(4,"0") em "026" (isso vira 2,6)
- * - Se faltar decimal: "026" => "0260" (26,0)
- * - Tenta achar 1 dígito à direita antes de assumir ,0
+ * ABASTECIMENTO (corrigido):
+ * - Quando achar decimal separado, NÃO pode “matar” o decimal.
+ * - Mantém 3 dígitos de inteiro + 1 decimal.
  */
 function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
-  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
+  if (!digitTokens.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
 
   const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
+  if (!clean.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
 
   const bounds = docBounds(clean);
 
@@ -402,7 +402,7 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   for (const r of rows) {
     const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
 
-    // litros: dígitos grandes ficam acima do contador pequeno (evita rodapé)
+    // evita rodapé
     if (yNorm > 0.82) continue;
 
     const strong = r.items.filter((t) => t.h >= r.avgH * 0.72);
@@ -446,35 +446,43 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
     yNorm: c.yNorm,
   }));
 
-  if (!candidates.length) return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
+  if (!candidates.length)
+    return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
 
   for (const c of candidates) {
-    let d = digitsOf(c.digitsRaw);
+    let rawDigits = digitsOf(c.digitsRaw);
     const used = [...c.used];
+
+    if (!rawDigits) continue;
+
     let decFound = false;
+    let decDigit: string | null = null;
 
-    // tenta achar decimal separado à direita
-    if ((d.length === 2 || d.length === 3) && c.mainBox) {
-      const dec = findOneDigitRight(c.mainBox, clean);
-      if (dec) {
-        d = d + dec.digits; // "026" + "5" => "0265"
-        used.push(dec);
-        decFound = true;
+    // Se vierem 4+ dígitos, assume (XXXd) com os últimos 4
+    if (rawDigits.length >= 4) {
+      const last4 = rawDigits.slice(-4);
+      rawDigits = last4.slice(0, 3);
+      decDigit = last4.slice(3);
+    } else {
+      // tenta achar 1 dígito à direita como decimal
+      if (c.mainBox) {
+        const dec = findOneDigitRight(c.mainBox, clean);
+        // regra extra: decimal costuma ser menor que os dígitos “grandes”
+        if (dec && dec.digitLen === 1 && dec.h <= c.avgH * 0.9) {
+          decDigit = dec.digits;
+          used.push(dec);
+          decFound = true;
+        }
       }
+
+      if (!decDigit) decDigit = "0";
+
+      // inteiro: 3 dígitos
+      if (rawDigits.length > 3) rawDigits = rawDigits.slice(-3);
+      rawDigits = rawDigits.padStart(3, "0");
     }
 
-    // normalização correta:
-    // - garante 3 dígitos de inteiro (à esquerda)
-    // - garante 1 dígito decimal (à direita)
-    if (d.length <= 3) {
-      d = d.padStart(3, "0") + "0"; // "26" => "0260" | "026" => "0260"
-    } else if (d.length === 4) {
-      // ok
-    } else if (d.length > 4) {
-      // mantém os últimos 4 (normalmente contém a casa decimal)
-      d = d.slice(-4);
-    }
-
+    const d = `${rawDigits}${decDigit}`;
     if (d.length !== 4) continue;
 
     dbg.method = `picked-${c.src}`;
@@ -509,10 +517,17 @@ function parseAbastecimento(digits: string) {
 
 function pickOdometroDigits(digitTokens: TokenBox[], rawFull: string) {
   const dbg: any = {};
-  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none" } };
+  if (!digitTokens.length)
+    return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none" } };
 
   const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none-clean" } };
+  if (!clean.length)
+    return {
+      digits: "",
+      used: [] as TokenBox[],
+      hadSep: false,
+      dbg: { method: "none-clean" },
+    };
 
   const bounds = docBounds(clean);
   const rows = clusterRows(clean);
@@ -552,7 +567,8 @@ function pickOdometroDigits(digitTokens: TokenBox[], rawFull: string) {
   }));
 
   const picked = rowCands.find((c) => digitsOf(c.digitsRaw).length >= 4) || rowCands[0];
-  if (!picked) return { digits: "", used: [], hadSep: false, dbg: { ...dbg, method: "no-row" } };
+  if (!picked)
+    return { digits: "", used: [], hadSep: false, dbg: { ...dbg, method: "no-row" } };
 
   dbg.method = "row";
   dbg.picked = { digitsRaw: picked.digitsRaw, hadSep: picked.hadSep };
@@ -588,7 +604,6 @@ type Variant = { name: string; bytes: Buffer; meta: any };
 
 function rectByKind(kind: string, w: number, h: number, variant: "main" | "tight") {
   if (kind === "abastecimento") {
-    // MAIS largo à direita (pegar o dígito decimal) e um pouco mais alto/baixo
     const x0 = variant === "tight" ? 0.02 : 0.01;
     const x1 = variant === "tight" ? 0.995 : 0.995;
     const y0 = variant === "tight" ? 0.14 : 0.10;
@@ -663,7 +678,7 @@ async function buildSharpVariants(input: Uint8Array, kind: string): Promise<Vari
     variants.push({ name: "crop-tight-gray", bytes, meta: { rect: r } });
   }
 
-  // 4) crop main thresh (bom pra LCD/contador)
+  // 4) crop main thresh
   {
     const r = rectByKind(kind, W, H, "main");
     const bytes = await base
@@ -758,19 +773,15 @@ function scoreAttempt(kind: string, att: ParsedAttempt) {
   if (kind === "abastecimento") {
     const v = att.best;
 
-    // preferir valores “normais” de abastecimento
     if (v >= 5 && v <= 600) s += 60;
     if (v >= 10 && v <= 350) s += 20;
     if (v < 3) s -= 80;
 
-    // se achou decimal separado, é MUITO mais confiável (caso 026 + 5)
     if (att.picked_meta?.decFound) s += 80;
 
-    // preferir crops vs full
     if (String(att.variant).includes("crop")) s += 10;
     if (String(att.variant).includes("tight")) s += 5;
 
-    // penaliza se ficou com “00” no inteiro (sinal de deslocamento ruim)
     if (String(att.picked_digits || "").startsWith("00")) s -= 30;
   }
 
@@ -832,7 +843,6 @@ export async function GET(req: NextRequest) {
       let pickedDebug: any = {};
 
       if (kind === "abastecimento") {
-        // primeiro tenta pelo rawFull (às vezes vem "26,5" bonito)
         const rawParsed = parseAbastecimentoFromRaw(rawFull);
         if (rawParsed) {
           best = rawParsed.value;
@@ -938,7 +948,8 @@ export async function GET(req: NextRequest) {
         selected_score: bestPick.score,
         tries: attempts,
         picked_digits: bestPick.picked_digits,
-        picked_strategy: bestPick.picked_meta?.method || bestPick.picked_meta?.strategy || null,
+        picked_strategy:
+          bestPick.picked_meta?.method || bestPick.picked_meta?.strategy || null,
         picked_meta: bestPick.picked_meta || null,
         used_tokens: bestPick.used_tokens,
       },
