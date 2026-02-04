@@ -1,3 +1,4 @@
+// FILE: app/api/ocr/route.ts
 import { NextRequest, NextResponse } from "next/server";
 import { GoogleAuth } from "google-auth-library";
 import sharp from "sharp";
@@ -50,6 +51,10 @@ function hasLetters(s: string) {
   return /[a-zA-Z]/.test(s || "");
 }
 
+/* ===========================
+   AUTH
+=========================== */
+
 function resolveServiceAccount() {
   const b64 =
     process.env.GCP_KEY_BASE64 ||
@@ -71,7 +76,9 @@ function resolveServiceAccount() {
 
 async function getVisionAuth() {
   const apiKey =
-    process.env.GCP_VISION_API_KEY || process.env.GOOGLE_VISION_API_KEY || "";
+    process.env.GCP_VISION_API_KEY ||
+    process.env.GOOGLE_VISION_API_KEY ||
+    "";
 
   if (apiKey) return { mode: "apikey" as const, apiKey };
 
@@ -92,6 +99,10 @@ async function getVisionAuth() {
 
   return { mode: "bearer" as const, token };
 }
+
+/* ===========================
+   BOXES / ROWS
+=========================== */
 
 function polyToBox(annot: VisionAnnot): TokenBox | null {
   const text = (annot.description || "").trim();
@@ -188,14 +199,14 @@ function groupBox(tokens: TokenBox[]): TokenBox | null {
   };
 }
 
-/** 1 dígito à direita (mesma linha visual) — tolerância maior */
+/** 1 dígito à direita (mesma linha visual) */
 function findOneDigitRight(main: TokenBox, allDigits: TokenBox[]) {
   const mainCy = main.cy;
   const mainH = main.h;
 
   const vTol = Math.max(14, mainH * 1.35);
   const allowOverlap = Math.max(6, mainH * 0.35);
-  const maxGap = Math.max(180, mainH * 7);
+  const maxGap = Math.max(200, mainH * 7);
 
   const candidates = allDigits
     .filter((t) => t !== main)
@@ -338,31 +349,67 @@ function parseHorimetro(digits: string) {
   return { value: i, best_input: `${i},0` };
 }
 
-/** tenta extrair algo tipo 26,5 do rawFull */
+/** tenta extrair litros do rawFull (aceita "100,6" e "100\n6" e também "1006") */
 function parseAbastecimentoFromRaw(rawFull: string) {
-  const raw = (rawFull || "").replace(/\s+/g, " ");
-  const matches = [...raw.matchAll(/(\d{1,3})\s*[.,]\s*(\d)\b/g)];
-  if (!matches.length) return null;
+  const raw0 = (rawFull || "").replace(/\r/g, "").trim();
+  if (!raw0) return null;
 
-  const best = matches
-    .map((m) => ({
-      i: parseInt(m[1], 10),
-      dc: parseInt(m[2], 10),
-      txt: `${m[1]},${m[2]}`,
-    }))
-    .filter((x) => Number.isFinite(x.i) && Number.isFinite(x.dc))
-    .sort((a, b) => b.i - a.i)[0];
+  // normaliza múltiplos espaços, mas mantém \n (porque às vezes vem "100\n6")
+  const rawKeepNL = raw0.replace(/[ \t]+/g, " ");
+  const rawFlat = raw0.replace(/\s+/g, " ");
 
-  if (!best) return null;
-  const value = best.i + best.dc / 10;
-  if (value < 0 || value > 1200) return null;
-  return { value, best_input: best.txt };
+  type Cand = { value: number; best_input: string; score: number };
+
+  const cands: Cand[] = [];
+
+  const push = (i: number, dc: number, txt: string, bonus = 0) => {
+    if (!Number.isFinite(i) || !Number.isFinite(dc)) return;
+    const value = i + dc / 10;
+    if (value < 0 || value > 1200) return;
+
+    // score interno: preferir faixa típica
+    let s = 0;
+    if (value >= 5 && value <= 600) s += 50;
+    if (value >= 20 && value <= 450) s += 25;
+    if (value >= 80 && value <= 350) s += 25;
+    if (value < 3) s -= 60;
+
+    // preferir maior inteiro (mas sem estourar)
+    s += Math.min(40, i / 10);
+
+    s += bonus;
+
+    cands.push({ value, best_input: txt, score: s });
+  };
+
+  // 1) separador explícito por . ou , (ex: 100,6)
+  for (const m of rawFlat.matchAll(/(\d{1,3})\s*[.,]\s*(\d)\b/g)) {
+    push(parseInt(m[1], 10), parseInt(m[2], 10), `${m[1]},${m[2]}`, 20);
+  }
+
+  // 2) quebra de linha como separador (ex: "100\n6")
+  for (const m of rawKeepNL.matchAll(/(\d{1,3})\s*\n\s*(\d)\b/g)) {
+    push(parseInt(m[1], 10), parseInt(m[2], 10), `${m[1]},${m[2]}`, 18);
+  }
+
+  // 3) 4 dígitos juntos (ex: 1006 => 100,6) — útil quando o OCR “gruda”
+  for (const m of rawFlat.matchAll(/\b(\d{4})\b/g)) {
+    const s = m[1];
+    const i = parseInt(s.slice(0, 3), 10);
+    const dc = parseInt(s.slice(3), 10);
+    push(i, dc, `${i},${dc}`, 10);
+  }
+
+  if (!cands.length) return null;
+
+  cands.sort((a, b) => b.score - a.score);
+  return { value: cands[0].value, best_input: cands[0].best_input };
 }
 
 /**
- * ABASTECIMENTO (corrigido):
- * - Quando achar decimal separado, NÃO pode “matar” o decimal.
- * - Mantém 3 dígitos de inteiro + 1 decimal.
+ * ABASTECIMENTO:
+ * - Monta SEMPRE como 3 dígitos de inteiro + 1 decimal: "1006" => 100,6
+ * - Tenta achar 1 dígito à direita (decimal)
  */
 function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
@@ -401,9 +448,7 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
 
   for (const r of rows) {
     const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-
-    // evita rodapé
-    if (yNorm > 0.82) continue;
+    if (yNorm > 0.82) continue; // evita rodapé/serial
 
     const strong = r.items.filter((t) => t.h >= r.avgH * 0.72);
     if (!strong.length) continue;
@@ -450,40 +495,30 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
     return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
 
   for (const c of candidates) {
-    let rawDigits = digitsOf(c.digitsRaw);
     const used = [...c.used];
 
-    if (!rawDigits) continue;
+    // pega os dígitos “inteiros” do candidato
+    let intDigits = digitsOf(c.digitsRaw);
+    if (!intDigits) continue;
+
+    // limita para no máximo 3 (inteiro do litros)
+    if (intDigits.length > 3) intDigits = intDigits.slice(-3);
 
     let decFound = false;
-    let decDigit: string | null = null;
+    let decDigit = "0";
 
-    // Se vierem 4+ dígitos, assume (XXXd) com os últimos 4
-    if (rawDigits.length >= 4) {
-      const last4 = rawDigits.slice(-4);
-      rawDigits = last4.slice(0, 3);
-      decDigit = last4.slice(3);
-    } else {
-      // tenta achar 1 dígito à direita como decimal
-      if (c.mainBox) {
-        const dec = findOneDigitRight(c.mainBox, clean);
-        // regra extra: decimal costuma ser menor que os dígitos “grandes”
-        if (dec && dec.digitLen === 1 && dec.h <= c.avgH * 0.9) {
-          decDigit = dec.digits;
-          used.push(dec);
-          decFound = true;
-        }
+    // tenta achar decimal separado à direita (1 dígito)
+    if ((intDigits.length === 2 || intDigits.length === 3) && c.mainBox) {
+      const dec = findOneDigitRight(c.mainBox, clean);
+      if (dec) {
+        decDigit = dec.digits; // 1 dígito
+        used.push(dec);
+        decFound = true;
       }
-
-      if (!decDigit) decDigit = "0";
-
-      // inteiro: 3 dígitos
-      if (rawDigits.length > 3) rawDigits = rawDigits.slice(-3);
-      rawDigits = rawDigits.padStart(3, "0");
     }
 
-    const d = `${rawDigits}${decDigit}`;
-    if (d.length !== 4) continue;
+    // monta 4 dígitos: 3 inteiro + 1 decimal
+    const d = intDigits.padStart(3, "0") + decDigit;
 
     dbg.method = `picked-${c.src}`;
     dbg.decFound = decFound;
@@ -492,7 +527,7 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
     return { digits: d, used, dbg };
   }
 
-  return { digits: "", used: [], dbg: { ...dbg, method: "no-4digits" } };
+  return { digits: "", used: [], dbg: { ...dbg, method: "no-pick" } };
 }
 
 function parseAbastecimento(digits: string) {
@@ -522,12 +557,7 @@ function pickOdometroDigits(digitTokens: TokenBox[], rawFull: string) {
 
   const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
   if (!clean.length)
-    return {
-      digits: "",
-      used: [] as TokenBox[],
-      hadSep: false,
-      dbg: { method: "none-clean" },
-    };
+    return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none-clean" } };
 
   const bounds = docBounds(clean);
   const rows = clusterRows(clean);
@@ -605,7 +635,7 @@ type Variant = { name: string; bytes: Buffer; meta: any };
 function rectByKind(kind: string, w: number, h: number, variant: "main" | "tight") {
   if (kind === "abastecimento") {
     const x0 = variant === "tight" ? 0.02 : 0.01;
-    const x1 = variant === "tight" ? 0.995 : 0.995;
+    const x1 = 0.995;
     const y0 = variant === "tight" ? 0.14 : 0.10;
     const y1 = variant === "tight" ? 0.76 : 0.82;
 
@@ -649,65 +679,67 @@ async function buildSharpVariants(input: Uint8Array, kind: string): Promise<Vari
   const W = meta.width || 2000;
   const H = meta.height || 1500;
 
-  const common = (s: sharp.Sharp) =>
+  const commonGray = (s: sharp.Sharp) =>
     s
       .grayscale()
       .normalize()
       .sharpen({ sigma: 1.1, m1: 1, m2: 2 })
       .resize({ width: 2000, withoutEnlargement: false });
 
+  const makeThresh = async (
+    name: string,
+    rect: { left: number; top: number; width: number; height: number },
+    thresholdValue: number,
+    resizeW: number,
+    invert = false
+  ) => {
+    let p = base.clone().extract(rect).grayscale().normalize().resize({ width: resizeW, withoutEnlargement: false });
+    p = p.sharpen({ sigma: 1.35, m1: 1, m2: 2 });
+    if (invert) p = p.negate();
+    const bytes = await p.threshold(thresholdValue).jpeg({ quality: 92 }).toBuffer();
+    return { name, bytes, meta: { rect, threshold: thresholdValue, invert } } as Variant;
+  };
+
   const variants: Variant[] = [];
 
   // 1) full gray
   {
-    const bytes = await common(base.clone()).jpeg({ quality: 92 }).toBuffer();
+    const bytes = await commonGray(base.clone()).jpeg({ quality: 92 }).toBuffer();
     variants.push({ name: "full-gray", bytes, meta: { w: W, h: H } });
   }
 
   // 2) crop main gray
   {
     const r = rectByKind(kind, W, H, "main");
-    const bytes = await common(base.clone().extract(r)).jpeg({ quality: 92 }).toBuffer();
+    const bytes = await commonGray(base.clone().extract(r)).jpeg({ quality: 92 }).toBuffer();
     variants.push({ name: "crop-main-gray", bytes, meta: { rect: r } });
   }
 
-  // 3) crop tight gray (sem threshold)
+  // 3) crop tight gray
   {
     const r = rectByKind(kind, W, H, "tight");
-    const bytes = await common(base.clone().extract(r)).jpeg({ quality: 92 }).toBuffer();
+    const bytes = await commonGray(base.clone().extract(r)).jpeg({ quality: 92 }).toBuffer();
     variants.push({ name: "crop-tight-gray", bytes, meta: { rect: r } });
   }
 
-  // 4) crop main thresh
+  // 4) crop main thresh (padrão)
   {
     const r = rectByKind(kind, W, H, "main");
-    const bytes = await base
-      .clone()
-      .extract(r)
-      .grayscale()
-      .normalize()
-      .resize({ width: 2200, withoutEnlargement: false })
-      .sharpen({ sigma: 1.3, m1: 1, m2: 2 })
-      .threshold(155)
-      .jpeg({ quality: 92 })
-      .toBuffer();
-    variants.push({ name: "crop-main-thresh", bytes, meta: { rect: r } });
+    variants.push(await makeThresh("crop-main-thresh", r, 155, 2400, false));
   }
 
-  // 5) crop tight thresh
+  // 5) crop tight thresh (padrão)
   {
     const r = rectByKind(kind, W, H, "tight");
-    const bytes = await base
-      .clone()
-      .extract(r)
-      .grayscale()
-      .normalize()
-      .resize({ width: 2400, withoutEnlargement: false })
-      .sharpen({ sigma: 1.35, m1: 1, m2: 2 })
-      .threshold(155)
-      .jpeg({ quality: 92 })
-      .toBuffer();
-    variants.push({ name: "crop-tight-thresh", bytes, meta: { rect: r } });
+    variants.push(await makeThresh("crop-tight-thresh", r, 155, 2600, false));
+  }
+
+  // EXTRA (só abastecimento): thresholds alternativos + invert
+  if (kind === "abastecimento") {
+    const rMain = rectByKind(kind, W, H, "main");
+    variants.push(await makeThresh("crop-main-thresh-130", rMain, 130, 2600, false));
+    variants.push(await makeThresh("crop-main-thresh-180", rMain, 180, 2600, false));
+    variants.push(await makeThresh("crop-main-thresh-inv", rMain, 155, 2600, true));
   }
 
   return variants;
@@ -772,17 +804,33 @@ function scoreAttempt(kind: string, att: ParsedAttempt) {
 
   if (kind === "abastecimento") {
     const v = att.best;
+    const intPart = Math.floor(v);
+    const picked = String(att.picked_digits || "");
+    const starts0 = picked.startsWith("0");
 
-    if (v >= 5 && v <= 600) s += 60;
-    if (v >= 10 && v <= 350) s += 20;
-    if (v < 3) s -= 80;
+    // faixa típica
+    if (v >= 5 && v <= 600) s += 55;
+    if (v >= 20 && v <= 450) s += 25;
+    if (v >= 80 && v <= 350) s += 25;
 
-    if (att.picked_meta?.decFound) s += 80;
+    // muito baixo (especialmente quando veio "0xx?")
+    if (v < 3) s -= 90;
+    if (v < 30) s -= 35;
 
+    // decimal separado ajuda, MAS não pode mandar sozinho quando inteiro veio suspeito
+    if (att.picked_meta?.decFound) {
+      s += starts0 ? 20 : 60; // se começa com 0, é menos confiável
+    }
+
+    // preferir crops
     if (String(att.variant).includes("crop")) s += 10;
-    if (String(att.variant).includes("tight")) s += 5;
+    if (String(att.variant).includes("tight")) s += 4;
 
-    if (String(att.picked_digits || "").startsWith("00")) s -= 30;
+    // penaliza início "00"
+    if (picked.startsWith("00")) s -= 35;
+
+    // um “empurrão” extra pra inteiros 3 dígitos (ex: 100,6 / 166,0 etc)
+    if (intPart >= 100) s += 8;
   }
 
   if (kind === "horimetro") {
@@ -800,6 +848,10 @@ function scoreAttempt(kind: string, att: ParsedAttempt) {
 
   return s;
 }
+
+/* ===========================
+   ROUTE
+=========================== */
 
 export async function GET(req: NextRequest) {
   try {
@@ -843,12 +895,14 @@ export async function GET(req: NextRequest) {
       let pickedDebug: any = {};
 
       if (kind === "abastecimento") {
+        // 1) tenta pelo rawFull (agora aceita "100\n6" e "1006")
         const rawParsed = parseAbastecimentoFromRaw(rawFull);
         if (rawParsed) {
           best = rawParsed.value;
           best_input = rawParsed.best_input;
-          pickedDebug = { method: "rawFull-regex", sharp_meta: v.meta };
+          pickedDebug = { method: "rawFull-heur", sharp_meta: v.meta };
         } else if (digitTokens.length) {
+          // 2) tenta por tokens
           const picked = pickAbastecimentoDigits(digitTokens);
           pickedDigits = picked.digits;
           usedTokens = picked.used;
@@ -948,8 +1002,7 @@ export async function GET(req: NextRequest) {
         selected_score: bestPick.score,
         tries: attempts,
         picked_digits: bestPick.picked_digits,
-        picked_strategy:
-          bestPick.picked_meta?.method || bestPick.picked_meta?.strategy || null,
+        picked_strategy: bestPick.picked_meta?.method || bestPick.picked_meta?.strategy || null,
         picked_meta: bestPick.picked_meta || null,
         used_tokens: bestPick.used_tokens,
       },
