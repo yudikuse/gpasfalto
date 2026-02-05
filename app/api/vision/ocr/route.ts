@@ -43,22 +43,8 @@ function safeNum(n: any, fallback = 0) {
   return Number.isFinite(x) ? x : fallback;
 }
 
-/**
- * Normaliza caracteres “parecidos” antes de extrair dígitos.
- * (Vision às vezes traz □, O, etc)
- */
-function normalizeDigitLookalikes(s: string) {
-  return (s || "")
-    .replace(/[O〇○]/g, "0")
-    .replace(/[Il|]/g, "1")
-    .replace(/[S]/g, "5")
-    .replace(/[B]/g, "8")
-    .replace(/[□■]/g, "0");
-}
-
 function digitsOf(s: string) {
-  const x = normalizeDigitLookalikes(s || "");
-  return x.replace(/[^\d]/g, "");
+  return (s || "").replace(/[^\d]/g, "");
 }
 
 function hasLetters(s: string) {
@@ -231,6 +217,101 @@ function findOneDigitRight(main: TokenBox, allDigits: TokenBox[]) {
    PARSERS
 =========================== */
 
+function pickHorimetroDigits(digitTokens: TokenBox[]) {
+  const dbg: any = {};
+  if (!digitTokens.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
+
+  const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
+  if (!clean.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
+
+  const bounds = docBounds(clean);
+  const maxH = Math.max(...clean.map((t) => t.h));
+  const minBigH = maxH * 0.66;
+
+  const longTokens = clean
+    .filter((t) => t.h >= minBigH)
+    .filter((t) => t.digitLen >= 4 && t.digitLen <= 6)
+    .sort((a, b) => {
+      if (b.h !== a.h) return b.h - a.h;
+      return b.digitLen - a.digitLen;
+    });
+
+  if (longTokens.length) {
+    const main = longTokens[0];
+    let digits = main.digits;
+    const used: TokenBox[] = [main];
+
+    if (digits.length === 5 || digits.length === 4) {
+      const dec = findOneDigitRight(main, clean);
+      if (dec) {
+        digits = digits + dec.digits;
+        used.push(dec);
+        dbg.decFound = true;
+      } else {
+        dbg.decFound = false;
+      }
+    }
+
+    dbg.method = "long-token";
+    dbg.maxH = maxH;
+    dbg.minBigH = minBigH;
+    dbg.bounds = { w: bounds.w, h: bounds.h };
+    dbg.picked = { digitsRaw: main.digits, digitsFinal: digits };
+    return { digits, used, dbg };
+  }
+
+  const rows = clusterRows(clean);
+
+  const rowCands = rows
+    .map((r) => {
+      const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
+      const strong = r.items.filter((t) => t.h >= r.avgH * 0.75);
+      const digitsRaw = strong.map((t) => t.digits).join("");
+      return { r, strong, digitsRaw, yNorm };
+    })
+    .filter((c) => c.digitsRaw.length >= 4 && c.digitsRaw.length <= 7)
+    .map((c) => ({
+      ...c,
+      score: c.r.avgH * (1 + c.digitsRaw.length) * (1 + c.yNorm * 0.35),
+    }))
+    .sort((a, b) => b.score - a.score);
+
+  if (!rowCands.length) {
+    dbg.method = "none-row";
+    return { digits: "", used: [], dbg };
+  }
+
+  const picked = rowCands[0];
+  let digits = digitsOf(picked.digitsRaw);
+  const used = [...picked.strong];
+
+  const gb = groupBox(picked.strong);
+  if (gb && (digits.length === 4 || digits.length === 5)) {
+    const dec = findOneDigitRight(gb, clean);
+    if (dec) {
+      digits = digits + dec.digits;
+      used.push(dec);
+      dbg.decFound = true;
+    } else {
+      dbg.decFound = false;
+    }
+  }
+
+  dbg.method = "row";
+  dbg.maxH = maxH;
+  dbg.minBigH = minBigH;
+  dbg.top = rowCands.slice(0, 6).map((c) => ({
+    digits: c.digitsRaw,
+    score: c.score,
+    yNorm: c.yNorm,
+    avgH: c.r.avgH,
+  }));
+
+  return { digits, used, dbg };
+}
+
 function parseHorimetro(digits: string) {
   let d = digitsOf(digits);
   if (d.length < 4) return null;
@@ -260,33 +341,14 @@ function parseHorimetro(digits: string) {
   return { value: i, best_input: `${i},0` };
 }
 
-/** ABASTECIMENTO: espera 4 dígitos (3 inteiro + 1 decimal) */
-function parseAbastecimento(digits: string) {
-  let d = digitsOf(digits);
-  if (!d) return null;
-
-  if (d.length > 4) d = d.slice(-4);
-  if (d.length !== 4) return null;
-
-  const intPart = d.slice(0, 3);
-  const dec = d.slice(3);
-
-  const i = parseInt(intPart, 10);
-  const dc = parseInt(dec, 10);
-  if (!Number.isFinite(i) || !Number.isFinite(dc)) return null;
-
-  const value = i + dc / 10;
-  if (value < 0 || value > 1200) return null;
-
-  return { value, best_input: `${i},${dc}` };
-}
-
-/** tenta extrair algo tipo 26,5 do rawFull — SOMENTE com vírgula/ponto (NÃO usa quebra de linha como decimal) */
+/** tenta extrair algo tipo 100,6 mesmo se vier com quebra de linha (100\n6) */
 function parseAbastecimentoFromRaw(rawFull: string) {
-  const raw = (rawFull || "").replace(/\s+/g, " ");
-  const matches = [...raw.matchAll(/(\d{1,3})\s*[.,]\s*(\d)\b/g)];
+  const raw = (rawFull || "").trim();
+  // aceita separador vírgula, ponto ou quebra de linha entre inteiro e decimal
+  const matches = [...raw.matchAll(/(\d{1,3})\s*[.,\n]\s*(\d)\b/g)];
   if (!matches.length) return null;
 
+  // pega o maior inteiro (em geral é o litros)
   const best = matches
     .map((m) => ({
       i: parseInt(m[1], 10),
@@ -304,18 +366,17 @@ function parseAbastecimentoFromRaw(rawFull: string) {
 
 /**
  * ABASTECIMENTO:
- * - corta fora o contador pequeno (evita 3668434)
- * - tenta decimal à direita
- * - se OCR “sumir com zeros” do meio (caso 100,6 virando 16 + 6),
- *   aplica regra segura: quando o OCR duplicar o decimal dentro do token (ex: "16" e dec="6"),
- *   consideramos "1 00 6" => 100,6.
+ * - 3 dígitos inteiro + 1 decimal (ex: 0500 => 50,0 | 1006 => 100,6)
+ * - tenta achar 1 dígito à direita (decimal) antes de assumir ,0
  */
 function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
-  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
+  if (!digitTokens.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none" } };
 
   const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
+  if (!clean.length)
+    return { digits: "", used: [] as TokenBox[], dbg: { method: "none-clean" } };
 
   const bounds = docBounds(clean);
 
@@ -345,8 +406,6 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
 
   for (const r of rows) {
     const yNorm = clamp((r.cy - bounds.minY) / bounds.h, 0, 1);
-    // ignora rodapé (contador pequeno / serial)
-    if (yNorm > 0.75) continue;
 
     const strong = r.items.filter((t) => t.h >= r.avgH * 0.72);
     if (!strong.length) continue;
@@ -365,7 +424,6 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
 
   for (const t of bigish) {
     const yNorm = clamp((t.cy - bounds.minY) / bounds.h, 0, 1);
-    if (yNorm > 0.75) continue;
     candidates.push({
       digitsRaw: t.digits,
       used: [t],
@@ -392,92 +450,71 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   if (!candidates.length) return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
 
   for (const c of candidates) {
-    const mainDigits = digitsOf(c.digitsRaw);
+    let d = digitsOf(c.digitsRaw);
     const used = [...c.used];
-
-    if (!mainDigits) continue;
-
-    let decToken: TokenBox | null = null;
     let decFound = false;
 
-    if ((mainDigits.length === 2 || mainDigits.length === 3) && c.mainBox) {
+    // tenta achar decimal separado à direita
+    if ((d.length === 2 || d.length === 3) && c.mainBox) {
       const dec = findOneDigitRight(c.mainBox, clean);
-      // decimal costuma ser menor que o número principal
-      if (dec && dec.h <= c.avgH * 0.75) {
-        decToken = dec;
-        decFound = true;
+      if (dec) {
+        d = d + dec.digits; // "100" + "6" => "1006"
         used.push(dec);
+        decFound = true;
       }
     }
 
-    let d4 = "";
-
-    if (decToken) {
-      const decDigit = decToken.digits; // 1 dígito
-      if (mainDigits.length >= 3) {
-        // 3 inteiros + 1 decimal
-        d4 = mainDigits.slice(-3) + decDigit;
-      } else if (mainDigits.length === 2) {
-        // caso normal: 2 inteiros + decimal => 0XXd
-        const normal = "0" + mainDigits + decDigit; // ex: 16 + 6 => 0166 (16,6)
-
-        // caso “zeros perdidos”: quando OCR duplica o decimal dentro do token (ex: "16" e dec="6")
-        // interpretamos como: X 00 d  => 100,6 ao invés de 16,6
-        let chosen = normal;
-        if (mainDigits[0] !== "0" && mainDigits[1] === decDigit) {
-          const alt = `${mainDigits[0]}00${decDigit}`; // ex: "1" + "00" + "6" => 1006
-          const vNormal = parseAbastecimento(normal)?.value ?? null;
-          const vAlt = parseAbastecimento(alt)?.value ?? null;
-
-          // escolhe alt quando normal fica “pequeno demais” e alt fica plausível
-          if (
-            vAlt !== null &&
-            vAlt >= 50 &&
-            vAlt <= 600 &&
-            (vNormal === null || vNormal < 40)
-          ) {
-            chosen = alt;
-            dbg.zeroFill = true;
-          }
-        }
-
-        d4 = chosen;
-      } else if (mainDigits.length === 1) {
-        d4 = "00" + mainDigits + decDigit;
-      }
-    } else {
-      // sem decimal separado: assume ,0
-      if (mainDigits.length === 3) d4 = mainDigits + "0";
-      else if (mainDigits.length === 2) d4 = "0" + mainDigits + "0";
-      else if (mainDigits.length === 1) d4 = "00" + mainDigits + "0";
-      else if (mainDigits.length > 3) d4 = mainDigits.slice(-3) + "0";
+    // normalização:
+    // - 3 dígitos inteiro (à esquerda)
+    // - 1 decimal (à direita)
+    if (d.length <= 3) {
+      d = d.padStart(3, "0") + "0"; // "50" => "0500" | "100" => "1000"
+    } else if (d.length === 4) {
+      // ok
+    } else if (d.length > 4) {
+      d = d.slice(-4);
     }
 
-    if (d4.length !== 4) continue;
-
-    const parsed = parseAbastecimento(d4);
-    if (!parsed) continue;
+    if (d.length !== 4) continue;
 
     dbg.method = `picked-${c.src}`;
     dbg.decFound = decFound;
-    dbg.picked = { digitsRaw: c.digitsRaw, digits: d4, avgH: c.avgH, yNorm: c.yNorm };
+    dbg.picked = { digitsRaw: c.digitsRaw, digits: d, avgH: c.avgH, yNorm: c.yNorm };
 
-    return { digits: d4, used, dbg };
+    return { digits: d, used, dbg };
   }
 
   return { digits: "", used: [], dbg: { ...dbg, method: "no-4digits" } };
 }
 
-/* ===========================
-   ODOMETRO (mantido)
-=========================== */
+function parseAbastecimento(digits: string) {
+  let d = digitsOf(digits);
+  if (!d) return null;
+
+  if (d.length > 4) d = d.slice(-4);
+  if (d.length !== 4) return null;
+
+  const intPart = d.slice(0, 3);
+  const dec = d.slice(3);
+
+  const i = parseInt(intPart, 10);
+  const dc = parseInt(dec, 10);
+  if (!Number.isFinite(i) || !Number.isFinite(dc)) return null;
+
+  const value = i + dc / 10;
+  if (value < 0 || value > 1200) return null;
+
+  return { value, best_input: `${i},${dc}` };
+}
 
 function pickOdometroDigits(digitTokens: TokenBox[], rawFull: string) {
   const dbg: any = {};
-  if (!digitTokens.length) return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none" } };
+  if (!digitTokens.length)
+    return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none" } };
 
   const clean = digitTokens.filter((t) => t.digitLen > 0 && !hasLetters(t.text));
-  if (!clean.length) return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none-clean" } };
+  if (!clean.length)
+    return { digits: "", used: [] as TokenBox[], hadSep: false, dbg: { method: "none-clean" } };
 
   const bounds = docBounds(clean);
   const rows = clusterRows(clean);
@@ -551,18 +588,18 @@ function parseOdometro(digits: string, hadSep: boolean) {
 
 type Variant = { name: string; bytes: Buffer; meta: any };
 
+/**
+ * IMPORTANTE:
+ * Para ABASTECIMENTO, recorta SÓ a faixa de cima (discos grandes),
+ * ignorando a linha de baixo (contador/ruído) que estava gerando "61", "3668434", etc.
+ */
 function rectByKind(kind: string, w: number, h: number, variant: "main" | "tight") {
   if (kind === "abastecimento") {
-    /**
-     * AJUSTE IMPORTANTE:
-     * cortar mais “alto” pra remover o contador pequeno/serial do rodapé
-     * (ele gerava "3668434" e confundia com o valor)
-     */
-    const x0 = variant === "tight" ? 0.02 : 0.01;
+    // calibrado para imagens 720x1280 (seu padrão), funciona bem em outras escalas também
+    const x0 = variant === "tight" ? 0.045 : 0.04;
     const x1 = 0.995;
-
-    const y0 = variant === "tight" ? 0.14 : 0.10;
-    const y1 = variant === "tight" ? 0.62 : 0.66; // <<< era 0.76/0.82
+    const y0 = variant === "tight" ? 0.335 : 0.325;
+    const y1 = variant === "tight" ? 0.57 : 0.585;
 
     return {
       left: Math.floor(w * x0),
@@ -575,7 +612,7 @@ function rectByKind(kind: string, w: number, h: number, variant: "main" | "tight
   if (kind === "horimetro") {
     const x0 = variant === "tight" ? 0.18 : 0.12;
     const x1 = variant === "tight" ? 0.88 : 0.92;
-    const y0 = variant === "tight" ? 0.50 : 0.42;
+    const y0 = variant === "tight" ? 0.5 : 0.42;
     const y1 = variant === "tight" ? 0.92 : 0.95;
     return {
       left: Math.floor(w * x0),
@@ -613,27 +650,74 @@ async function buildSharpVariants(input: Uint8Array, kind: string): Promise<Vari
 
   const variants: Variant[] = [];
 
-  // 1) full gray
+  // ABASTECIMENTO: só crops focados na faixa dos dígitos grandes
+  if (kind === "abastecimento") {
+    const rMain = rectByKind(kind, W, H, "main");
+    const rTight = rectByKind(kind, W, H, "tight");
+
+    // 1) main gray
+    {
+      const bytes = await common(base.clone().extract(rMain)).jpeg({ quality: 92 }).toBuffer();
+      variants.push({ name: "fuel-main-gray", bytes, meta: { rect: rMain } });
+    }
+
+    // 2) tight gray
+    {
+      const bytes = await common(base.clone().extract(rTight)).jpeg({ quality: 92 }).toBuffer();
+      variants.push({ name: "fuel-tight-gray", bytes, meta: { rect: rTight } });
+    }
+
+    // 3) main thresh (mais leve)
+    {
+      const bytes = await base
+        .clone()
+        .extract(rMain)
+        .grayscale()
+        .normalize()
+        .resize({ width: 2200, withoutEnlargement: false })
+        .sharpen({ sigma: 1.25, m1: 1, m2: 2 })
+        .threshold(140)
+        .jpeg({ quality: 92 })
+        .toBuffer();
+      variants.push({ name: "fuel-main-thresh140", bytes, meta: { rect: rMain, thr: 140 } });
+    }
+
+    // 4) main thresh (mais forte)
+    {
+      const bytes = await base
+        .clone()
+        .extract(rMain)
+        .grayscale()
+        .normalize()
+        .resize({ width: 2400, withoutEnlargement: false })
+        .sharpen({ sigma: 1.35, m1: 1, m2: 2 })
+        .threshold(165)
+        .jpeg({ quality: 92 })
+        .toBuffer();
+      variants.push({ name: "fuel-main-thresh165", bytes, meta: { rect: rMain, thr: 165 } });
+    }
+
+    return variants;
+  }
+
+  // OUTROS (horímetro/odômetro): mantém o pipeline completo
   {
     const bytes = await common(base.clone()).jpeg({ quality: 92 }).toBuffer();
     variants.push({ name: "full-gray", bytes, meta: { w: W, h: H } });
   }
 
-  // 2) crop main gray
   {
     const r = rectByKind(kind, W, H, "main");
     const bytes = await common(base.clone().extract(r)).jpeg({ quality: 92 }).toBuffer();
     variants.push({ name: "crop-main-gray", bytes, meta: { rect: r } });
   }
 
-  // 3) crop tight gray (sem threshold)
   {
     const r = rectByKind(kind, W, H, "tight");
     const bytes = await common(base.clone().extract(r)).jpeg({ quality: 92 }).toBuffer();
     variants.push({ name: "crop-tight-gray", bytes, meta: { rect: r } });
   }
 
-  // 4) crop main thresh
   {
     const r = rectByKind(kind, W, H, "main");
     const bytes = await base
@@ -649,7 +733,6 @@ async function buildSharpVariants(input: Uint8Array, kind: string): Promise<Vari
     variants.push({ name: "crop-main-thresh", bytes, meta: { rect: r } });
   }
 
-  // 5) crop tight thresh
   {
     const r = rectByKind(kind, W, H, "tight");
     const bytes = await base
@@ -728,22 +811,23 @@ function scoreAttempt(kind: string, att: ParsedAttempt) {
   if (kind === "abastecimento") {
     const v = att.best;
 
+    // faixa típica
     if (v >= 5 && v <= 600) s += 60;
     if (v >= 10 && v <= 350) s += 20;
 
-    // valores muito baixos geralmente são erro (mas não zera)
+    // valor “muito pequeno” quase sempre é erro
     if (v < 3) s -= 80;
-    if (v > 0 && v < 20) s -= 25;
 
+    // decimal separado é um ótimo sinal
     if (att.picked_meta?.decFound) s += 80;
 
+    // preferir nossos crops focados
+    if (String(att.variant).includes("fuel-")) s += 25;
     if (String(att.variant).includes("crop")) s += 10;
     if (String(att.variant).includes("tight")) s += 5;
 
+    // penaliza zeros “com cara de deslocamento”
     if (String(att.picked_digits || "").startsWith("00")) s -= 30;
-
-    // bônus quando aplicamos “zeroFill” (muito comum no contador mecânico 100,6)
-    if (att.picked_meta?.zeroFill) s += 20;
   }
 
   if (kind === "horimetro") {
@@ -766,7 +850,7 @@ export async function GET(req: NextRequest) {
   try {
     const { searchParams } = new URL(req.url);
 
-    const kind = (searchParams.get("kind") || "").toLowerCase().trim();
+    const kind = (searchParams.get("kind") || "").toLowerCase().trim(); // horimetro | abastecimento | odometro
     const equip = (searchParams.get("equip") || "").trim();
     const url = (searchParams.get("url") || "").trim();
 
@@ -804,7 +888,7 @@ export async function GET(req: NextRequest) {
       let pickedDebug: any = {};
 
       if (kind === "abastecimento") {
-        // só usa regex quando vier com vírgula/ponto de verdade
+        // 1) tenta pelo rawFull (às vezes vem "100,6" ou "100\n6")
         const rawParsed = parseAbastecimentoFromRaw(rawFull);
         if (rawParsed) {
           best = rawParsed.value;
@@ -823,14 +907,12 @@ export async function GET(req: NextRequest) {
           }
         }
       } else if (kind === "horimetro") {
-        // (mantido simples no seu trecho — aqui você pode colar seu pickHorimetro se quiser)
-        // fallback: pega o maior token de 4-6 dígitos
-        const clean = digitTokens.filter((t) => t.digitLen >= 4 && t.digitLen <= 6);
-        if (clean.length) {
-          clean.sort((a, b) => b.h - a.h);
-          pickedDigits = clean[0].digits;
-          usedTokens = [clean[0]];
-          pickedDebug = { method: "simple-maxH", sharp_meta: v.meta };
+        if (digitTokens.length) {
+          const picked = pickHorimetroDigits(digitTokens);
+          pickedDigits = picked.digits;
+          usedTokens = picked.used;
+          pickedDebug = { ...picked.dbg, sharp_meta: v.meta };
+
           const parsed = parseHorimetro(pickedDigits);
           if (parsed) {
             best = parsed.value;
