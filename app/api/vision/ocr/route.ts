@@ -344,11 +344,9 @@ function parseHorimetro(digits: string) {
 /** tenta extrair algo tipo 100,6 mesmo se vier com quebra de linha (100\n6) */
 function parseAbastecimentoFromRaw(rawFull: string) {
   const raw = (rawFull || "").trim();
-  // aceita separador vírgula, ponto ou quebra de linha entre inteiro e decimal
   const matches = [...raw.matchAll(/(\d{1,3})\s*[.,\n]\s*(\d)\b/g)];
   if (!matches.length) return null;
 
-  // pega o maior inteiro (em geral é o litros)
   const best = matches
     .map((m) => ({
       i: parseInt(m[1], 10),
@@ -366,8 +364,9 @@ function parseAbastecimentoFromRaw(rawFull: string) {
 
 /**
  * ABASTECIMENTO:
- * - 3 dígitos inteiro + 1 decimal (ex: 0500 => 50,0 | 1006 => 100,6)
- * - tenta achar 1 dígito à direita (decimal) antes de assumir ,0
+ * - sempre interpreta como 3 dígitos (inteiro) + 1 dígito (decimal)
+ * - procura 1 dígito à direita (decimal) e, se não achar, assume 0
+ * - NÃO “desloca” quando o OCR vier só com 2 dígitos (ex: "50")
  */
 function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
   const dbg: any = {};
@@ -445,41 +444,65 @@ function pickAbastecimentoDigits(digitTokens: TokenBox[]) {
     digits: c.digitsRaw,
     avgH: c.avgH,
     yNorm: c.yNorm,
+    mainW: c.mainBox?.w,
   }));
 
-  if (!candidates.length) return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
+  if (!candidates.length)
+    return { digits: "", used: [], dbg: { ...dbg, method: "no-cands" } };
 
   for (const c of candidates) {
-    let d = digitsOf(c.digitsRaw);
+    const rawDigits = digitsOf(c.digitsRaw);
+    if (!rawDigits) continue;
+
     const used = [...c.used];
+    const mainBox = c.mainBox || null;
+
+    // se o box é estreito demais, geralmente é lixo (ex: pegou "61" ou um pedaço só)
+    if (mainBox && bounds.w > 0 && mainBox.w < bounds.w * 0.22) continue;
+
+    let intPart = "";
+    let decPart = "";
     let decFound = false;
 
-    // tenta achar decimal separado à direita
-    if ((d.length === 2 || d.length === 3) && c.mainBox) {
-      const dec = findOneDigitRight(c.mainBox, clean);
-      if (dec) {
-        d = d + dec.digits; // "100" + "6" => "1006"
-        used.push(dec);
-        decFound = true;
+    if (rawDigits.length === 4) {
+      // já veio no formato 3+1 (ex: 1006)
+      intPart = rawDigits.slice(0, 3);
+      decPart = rawDigits.slice(3, 4);
+      decFound = true;
+    } else if (rawDigits.length >= 5) {
+      // abastecimento não deveria ter 5+ dígitos nessa faixa (normalmente é serial/ruído)
+      continue;
+    } else {
+      // 1..3 dígitos = inteiro (possivelmente sem zero à esquerda)
+      intPart = rawDigits.slice(-3).padStart(3, "0");
+
+      // decimal separado à direita
+      if (mainBox) {
+        const decTok = findOneDigitRight(mainBox, clean);
+        if (decTok) {
+          decPart = decTok.digits;
+          used.push(decTok);
+          decFound = true;
+        }
       }
+
+      decPart = (decPart || "0").slice(0, 1);
     }
 
-    // normalização:
-    // - 3 dígitos inteiro (à esquerda)
-    // - 1 decimal (à direita)
-    if (d.length <= 3) {
-      d = d.padStart(3, "0") + "0"; // "50" => "0500" | "100" => "1000"
-    } else if (d.length === 4) {
-      // ok
-    } else if (d.length > 4) {
-      d = d.slice(-4);
-    }
-
+    const d = `${intPart}${decPart}`;
     if (d.length !== 4) continue;
 
     dbg.method = `picked-${c.src}`;
     dbg.decFound = decFound;
-    dbg.picked = { digitsRaw: c.digitsRaw, digits: d, avgH: c.avgH, yNorm: c.yNorm };
+    dbg.picked = {
+      digitsRaw: c.digitsRaw,
+      digits: d,
+      intPart,
+      decPart,
+      avgH: c.avgH,
+      yNorm: c.yNorm,
+      mainW: mainBox?.w,
+    };
 
     return { digits: d, used, dbg };
   }
@@ -591,15 +614,15 @@ type Variant = { name: string; bytes: Buffer; meta: any };
 /**
  * IMPORTANTE:
  * Para ABASTECIMENTO, recorta SÓ a faixa de cima (discos grandes),
- * ignorando a linha de baixo (contador/ruído) que estava gerando "61", "3668434", etc.
+ * ignorando a linha de baixo (contador/ruído).
  */
 function rectByKind(kind: string, w: number, h: number, variant: "main" | "tight") {
   if (kind === "abastecimento") {
-    // calibrado para imagens 720x1280 (seu padrão), funciona bem em outras escalas também
-    const x0 = variant === "tight" ? 0.045 : 0.04;
+    // Ajustado para NÃO incluir a linha inferior (serial/contador)
+    const x0 = variant === "tight" ? 0.035 : 0.03;
     const x1 = 0.995;
-    const y0 = variant === "tight" ? 0.335 : 0.325;
-    const y1 = variant === "tight" ? 0.57 : 0.585;
+    const y0 = variant === "tight" ? 0.30 : 0.295;
+    const y1 = variant === "tight" ? 0.535 : 0.54;
 
     return {
       left: Math.floor(w * x0),
@@ -811,22 +834,15 @@ function scoreAttempt(kind: string, att: ParsedAttempt) {
   if (kind === "abastecimento") {
     const v = att.best;
 
-    // faixa típica
     if (v >= 5 && v <= 600) s += 60;
     if (v >= 10 && v <= 350) s += 20;
-
-    // valor “muito pequeno” quase sempre é erro
     if (v < 3) s -= 80;
 
-    // decimal separado é um ótimo sinal
-    if (att.picked_meta?.decFound) s += 80;
+    if (att.picked_meta?.decFound) s += 60;
 
-    // preferir nossos crops focados
     if (String(att.variant).includes("fuel-")) s += 25;
-    if (String(att.variant).includes("crop")) s += 10;
     if (String(att.variant).includes("tight")) s += 5;
 
-    // penaliza zeros “com cara de deslocamento”
     if (String(att.picked_digits || "").startsWith("00")) s -= 30;
   }
 
@@ -888,12 +904,11 @@ export async function GET(req: NextRequest) {
       let pickedDebug: any = {};
 
       if (kind === "abastecimento") {
-        // 1) tenta pelo rawFull (às vezes vem "100,6" ou "100\n6")
         const rawParsed = parseAbastecimentoFromRaw(rawFull);
         if (rawParsed) {
           best = rawParsed.value;
           best_input = rawParsed.best_input;
-          pickedDebug = { method: "rawFull-regex", sharp_meta: v.meta };
+          pickedDebug = { method: "rawFull-regex", sharp_meta: v.meta, decFound: true };
         } else if (digitTokens.length) {
           const picked = pickAbastecimentoDigits(digitTokens);
           pickedDigits = picked.digits;
