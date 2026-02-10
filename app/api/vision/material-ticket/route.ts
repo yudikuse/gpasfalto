@@ -7,8 +7,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 30;
 
-type SharpBuf = Buffer<ArrayBuffer>;
-
 function jsonError(message: string, status = 400, extra?: any) {
   return NextResponse.json(
     { ok: false, error: message, ...(extra ? { extra } : {}) },
@@ -59,7 +57,7 @@ async function getVisionAuth() {
   return { mode: "bearer" as const, token };
 }
 
-async function visionTextDetection(imageBytes: SharpBuf) {
+async function visionTextDetection(imageBytes: Buffer) {
   const auth = await getVisionAuth();
 
   const endpointBase = "https://vision.googleapis.com/v1/images:annotate";
@@ -72,7 +70,7 @@ async function visionTextDetection(imageBytes: SharpBuf) {
   const body = {
     requests: [
       {
-        image: { content: Buffer.from(imageBytes).toString("base64") },
+        image: { content: imageBytes.toString("base64") },
         features: [{ type: "TEXT_DETECTION" }],
         imageContext: { languageHints: ["pt", "pt-BR"] },
       },
@@ -104,10 +102,7 @@ function toUpperLines(raw: string) {
 }
 
 const PLATE_RE = /\b[A-Z]{3}-[A-Z0-9]{4}\b/g; // GWI-3J50, KGX-6I47
-const EQUIP_RE = /\b[A-Z]{1,3}-\d{2}\b/g; // CE-02, EH-02, PC-04
-const WEIGHT_RE = /\b\d{1,3}[.,/]\d{3}\b/g; // 13.080, 9,590, 10/200 (OCR)
-const WEIGHT_SPACE_RE = /\b\d{1,3}\s\d{3}\b/g; // 10 200 (OCR)
-const TIME_RE = /\b([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b/g;
+const EQUIP_RE = /\b[A-Z]{1,3}-\d{2}\b/g; // CE-02, EH-02
 
 function looksLikeVehicle(s: string) {
   const v = (s || "").toUpperCase().trim();
@@ -116,12 +111,13 @@ function looksLikeVehicle(s: string) {
 }
 
 function pickVehicleFromContext(rawFull: string, upperLines: string[]) {
+  // 1) Tentar pegar logo após "VEIC" / "VEIC/CAVALO"
   const idx = upperLines.findIndex(
     (l) => l.includes("VEIC") || l.includes("VEIC/CAVALO") || l.includes("VEÍC")
   );
 
   const windowText =
-    idx >= 0 ? upperLines.slice(idx, idx + 6).join(" ") : "";
+    idx >= 0 ? upperLines.slice(idx, idx + 5).join(" ") : "";
 
   const m1 = windowText.match(PLATE_RE)?.[0] || null;
   if (m1) return m1;
@@ -129,9 +125,11 @@ function pickVehicleFromContext(rawFull: string, upperLines: string[]) {
   const m2 = windowText.match(EQUIP_RE)?.[0] || null;
   if (m2) return m2;
 
+  // 2) Fallback: primeira placa na página
   const allPlate = rawFull.toUpperCase().match(PLATE_RE)?.[0] || null;
   if (allPlate) return allPlate;
 
+  // 3) Fallback: primeiro código de equipamento
   const allEquip = rawFull.toUpperCase().match(EQUIP_RE)?.[0] || null;
   if (allEquip) return allEquip;
 
@@ -143,44 +141,8 @@ function normalizeDateToBRShort(dd: string, mm: string, yy: string) {
   return `${dd}/${mm}/${y}`;
 }
 
-function isValidDateParts(dd: number, mm: number, yy: number) {
-  if (!(dd >= 1 && dd <= 31)) return false;
-  if (!(mm >= 1 && mm <= 12)) return false;
-  if (!(yy >= 0 && yy <= 2099)) return false;
-  return true;
-}
-
-function pickBestDate(rawFull: string) {
-  const ms = [...rawFull.matchAll(/\b(\d{2})\/(\d{2})\/(\d{2}|\d{4})\b/g)];
-  if (!ms.length) return null;
-
-  // pega a ÚLTIMA data válida (no ticket, a válida costuma aparecer mais pro final)
-  for (let i = ms.length - 1; i >= 0; i--) {
-    const dd = Number(ms[i][1]);
-    const mm = Number(ms[i][2]);
-    const yyRaw = ms[i][3];
-    const yy = yyRaw.length === 2 ? Number(`20${yyRaw}`) : Number(yyRaw);
-    if (isValidDateParts(dd, mm, yy)) {
-      return normalizeDateToBRShort(ms[i][1], ms[i][2], yyRaw);
-    }
-  }
-
-  return null;
-}
-
 function round3(n: number) {
   return Math.round(n * 1000) / 1000;
-}
-
-function parseWeightToken(s: string) {
-  const t = s.trim();
-  // trata "10/200" e "9,590" e "13.080" e "10 200"
-  const normalized = t
-    .replace(/\s/g, "")
-    .replace("/", ".")
-    .replace(",", ".");
-  const n = Number.parseFloat(normalized);
-  return Number.isFinite(n) ? n : null;
 }
 
 function pickNetWeight(values: number[]) {
@@ -192,6 +154,8 @@ function pickNetWeight(values: number[]) {
   if (nums.length === 1) return nums[0];
   if (nums.length === 2) return round3(Math.abs(nums[1] - nums[0]));
 
+  // Se houver trio (inicial, final, líquido) usamos a relação:
+  // final - inicial = líquido (e o líquido geralmente aparece impresso também)
   const tol = 0.001;
   for (let i = 0; i < nums.length; i++) {
     for (let j = 0; j < nums.length; j++) {
@@ -202,32 +166,54 @@ function pickNetWeight(values: number[]) {
     }
   }
 
+  // Fallback: diferença entre maior e menor (quando só inicial/final existem)
   return round3(nums[nums.length - 1] - nums[0]);
 }
 
-function fixCommonOcr(s: string) {
-  let x = (s || "").replace(/\s+/g, " ").trim();
+function parseTicketFields(rawFull: string) {
+  const { lines, upper } = toUpperLines(rawFull);
 
-  // correção típica: PATIO GRA -> PATIO GPA (OCR confunde P com R)
-  x = x.replace(/\bPATIO\s+GRA\b/gi, "PATIO GPA");
+  // VEÍCULO (placa ou código)
+  const veiculo = pickVehicleFromContext(rawFull, upper);
 
-  return x;
-}
+  // DATA: dd/mm/yy ou dd/mm/yyyy
+  const dateMatches = [
+    ...rawFull.matchAll(/\b(\d{2})\/(\d{2})\/(\d{2}|\d{4})\b/g),
+  ];
+  let dataBr: string | null = null;
+  if (dateMatches.length) {
+    const m = dateMatches[0];
+    dataBr = normalizeDateToBRShort(m[1], m[2], m[3]);
+  }
 
-function extractCodedTriplet(upper: string[], veiculo: string | null) {
+  // HORÁRIO: hh:mm[:ss]
+  const timeMatches =
+    rawFull.match(/\b([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?\b/g) || [];
+  const horario = timeMatches[0] || null;
+
+  // PESOS (3 casas): inicial, líquido, final
+  const pesoMatches = rawFull.match(/\b\d{1,3}[.,]\d{3}\b/g) || [];
+  const pesoNums = pesoMatches
+    .map((s) => Number.parseFloat(s.replace(",", ".")))
+    .filter((n) => Number.isFinite(n) && n > 0);
+
+  const peso_t = pickNetWeight(pesoNums);
+  const peso_mask = peso_t !== null ? Number(peso_t).toFixed(3) : null;
+
+  // ORIGEM / DESTINO / MATERIAL:
+  // Regra principal: linhas do tipo "95 CARGILL", "1 MASSA USINADA (CBUQ)"
+  // Correção: ignorar linhas que "parecem veículo" (placa/código)
   const codedRaw: string[] = [];
-
   for (const l of upper) {
     const m = l.match(/^\s*\d+\s+(.+)$/);
     if (m?.[1]) {
-      const v = fixCommonOcr(m[1].trim());
+      const v = m[1].trim();
       if (
         v &&
         !v.includes("TICKET") &&
         !v.includes("PESAGEM") &&
         !v.includes("ASSINATURA") &&
         !v.includes("RECEBIMENTO") &&
-        !v.includes("INSPE") &&
         !v.includes("MOTORISTA") &&
         !v.includes("VEIC") &&
         !looksLikeVehicle(v)
@@ -237,191 +223,59 @@ function extractCodedTriplet(upper: string[], veiculo: string | null) {
     }
   }
 
+  // Também remove se coincidir com o veículo encontrado (mesmo que OCR troque 0/O/J)
   const coded = codedRaw.filter((x) => {
     if (!veiculo) return true;
     const a = x.replace(/[^A-Z0-9]/g, "");
     const b = veiculo.replace(/[^A-Z0-9]/g, "");
     if (!a || !b) return true;
+    // se for muito parecido com o veículo, descarta (evita DESTINO = placa)
     return !(a === b || a.includes(b) || b.includes(a));
   });
-
-  return { codedRaw, coded };
-}
-
-function extractPlainCandidates(upper: string[], veiculo: string | null) {
-  const bannedHas = [
-    "TICKET",
-    "PESAGEM",
-    "ASSINATURA",
-    "RECEBIMENTO",
-    "INSPE",
-    "MOTORISTA",
-    "VEC/CAVALO",
-    "VEIC",
-    "OBS",
-    "P. GERAL",
-    "P. OBRA",
-    "UA-01", // geralmente cabeçalho do quadrinho
-  ];
-
-  const out: string[] = [];
-  const seen = new Set<string>();
-
-  for (const l0 of upper) {
-    const l = fixCommonOcr(l0);
-
-    if (!l) continue;
-    if (l.length < 3) continue;
-
-    if (bannedHas.some((b) => l.includes(b))) continue;
-
-    // ignora cabeçalho da empresa
-    if (l.includes("CONSTRU") || l.includes("LTDA")) continue;
-
-    // ignora datas/horas/pesos isolados
-    if (/\b\d{2}\/\d{2}\/\d{2,4}\b/.test(l)) continue;
-    if (TIME_RE.test(l)) continue;
-    TIME_RE.lastIndex = 0;
-
-    if (WEIGHT_RE.test(l) || WEIGHT_SPACE_RE.test(l)) {
-      WEIGHT_RE.lastIndex = 0;
-      WEIGHT_SPACE_RE.lastIndex = 0;
-      // se a linha for só número, ignora
-      if (/^\d{1,3}[.,/]\d{3}$/.test(l) || /^\d{1,3}\s\d{3}$/.test(l)) continue;
-    }
-    WEIGHT_RE.lastIndex = 0;
-    WEIGHT_SPACE_RE.lastIndex = 0;
-
-    // ignora o próprio veículo repetido
-    if (veiculo) {
-      const a = l.replace(/[^A-Z0-9]/g, "");
-      const b = veiculo.toUpperCase().replace(/[^A-Z0-9]/g, "");
-      if (a && b && (a === b || a.includes(b) || b.includes(a))) continue;
-    }
-
-    // ignora linhas que “parecem veículo”
-    if (looksLikeVehicle(l)) continue;
-
-    const key = l;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(l);
-  }
-
-  return out;
-}
-
-function isMaterialCandidate(s: string) {
-  const x = (s || "").toUpperCase();
-  const keys = [
-    "MASSA",
-    "CBUQ",
-    "RR",
-    "DILUI",
-    "PO ",
-    "PÓ",
-    "BRITA",
-    "AREIA",
-    "FUNDO",
-    "REJEITO",
-    "ASFALTO",
-    "CAP",
-    "EMULS",
-    "CIMENTO",
-  ];
-  return keys.some((k) => x.includes(k));
-}
-
-function pickTriplet(cands: string[]) {
-  if (cands.length < 2) {
-    return { origem: cands[0] || null, destino: null, material: null };
-  }
-  if (cands.length === 2) {
-    // tenta achar material
-    const mIdx = cands.findIndex(isMaterialCandidate);
-    if (mIdx >= 0) {
-      const material = cands[mIdx];
-      const rest = cands.filter((_, i) => i !== mIdx);
-      return { origem: rest[0] || null, destino: rest[1] || null, material };
-    }
-    return { origem: cands[0], destino: cands[1], material: null };
-  }
-
-  // 3+ candidatos
-  const mIdx = cands.findIndex(isMaterialCandidate);
-  if (mIdx >= 0) {
-    const material = cands[mIdx];
-    const rest = cands.filter((_, i) => i !== mIdx);
-    return {
-      origem: rest[0] || null,
-      destino: rest[1] || null,
-      material,
-    };
-  }
-
-  // sem material “óbvio”: assume ordem natural
-  return { origem: cands[0], destino: cands[1], material: cands[2] };
-}
-
-function parseTicketFields(rawFull: string) {
-  const { lines, upper } = toUpperLines(rawFull);
-
-  const veiculo = pickVehicleFromContext(rawFull, upper);
-
-  // DATA (pega última válida; ignora tipo 16/91/2026)
-  const dataBr = pickBestDate(rawFull);
-
-  // HORÁRIO (primeiro válido)
-  const timeMatches = rawFull.match(TIME_RE) || [];
-  const horario = timeMatches[0] || null;
-
-  // PESOS (inclui OCR com "/" e espaço)
-  const tokens = [
-    ...(rawFull.match(WEIGHT_RE) || []),
-    ...(rawFull.match(WEIGHT_SPACE_RE) || []),
-  ];
-
-  const pesoNums = tokens
-    .map(parseWeightToken)
-    .filter((n): n is number => typeof n === "number" && Number.isFinite(n) && n > 0);
-
-  const peso_t = pickNetWeight(pesoNums);
-  const peso_mask = peso_t !== null ? Number(peso_t).toFixed(3) : null;
-
-  // ORIGEM / DESTINO / MATERIAL
-  const { codedRaw, coded } = extractCodedTriplet(upper, veiculo);
 
   let origem: string | null = null;
   let destino: string | null = null;
   let material: string | null = null;
 
   if (coded.length >= 3) {
-    // preferência 1: linhas numeradas (quando OCR pega a coluna do número)
     origem = coded[0];
     destino = coded[1];
     material = coded[2];
   } else {
-    // fallback robusto: usar candidatos “livres” preservando a ordem natural do OCR
-    const plain = extractPlainCandidates(upper, veiculo);
+    // fallback origem
+    origem =
+      upper.find((l) => l.includes("GPA ENGENHARIA") && !l.includes("CONSTRU")) ||
+      upper.find((l) => l === "GPA ENGENHARIA") ||
+      null;
 
-    // regra extra: se "GPA ENGENHARIA" aparecer isolado (sem CONSTRU), tende a ser origem
-    const gpaIdx = plain.findIndex(
-      (x) => x === "GPA ENGENHARIA" || x.includes("GPA ENGENHARIA")
-    );
-    if (gpaIdx > 0) {
-      // move GPA pro início (origem)
-      const gpa = plain[gpaIdx];
-      plain.splice(gpaIdx, 1);
-      plain.unshift(gpa);
-    }
+    // fallback destino: primeiro candidato "empresa/local" que não seja veículo nem termos do ticket
+    destino =
+      coded[0] ||
+      upper.find(
+        (l) =>
+          l.length >= 3 &&
+          !l.includes("GPA ENGENHARIA") &&
+          !l.includes("TICKET") &&
+          !l.includes("PESAGEM") &&
+          !l.includes("ASSINATURA") &&
+          !l.includes("RECEBIMENTO") &&
+          !l.includes("MOTORISTA") &&
+          !l.includes("VEIC") &&
+          !/\d{2}\/\d{2}\/\d{2,4}/.test(l) &&
+          !/\d{2}:\d{2}/.test(l) &&
+          !looksLikeVehicle(l)
+      ) ||
+      null;
 
-    const tri = pickTriplet(plain);
-    origem = tri.origem;
-    destino = tri.destino;
-    material = tri.material;
+    // fallback material: reforçar MASSA/CBUQ + RR/DILUID
+    material =
+      coded[1] ||
+      upper.find((l) => l.includes("MASSA") || l.includes("CBUQ")) ||
+      upper.find((l) => /RR-?\s?\d/.test(l) || l.includes("DILUID")) ||
+      null;
   }
 
-  const clean = (s: string | null) => (s ? fixCommonOcr(s).trim() : null);
+  const clean = (s: string | null) => (s ? s.replace(/\s+/g, " ").trim() : null);
 
   return {
     veiculo: clean(veiculo),
@@ -429,7 +283,74 @@ function parseTicketFields(rawFull: string) {
     destino: clean(destino),
     material: clean(material),
     data_br: dataBr,
-    horario: horario ? (horario.length === 5 ? `${horario}:00` : horario) : null,
+    horario,
     peso_t,
     peso_mask,
     debug: {
+      coded_raw: codedRaw.slice(0, 10),
+      coded_filtered: coded.slice(0, 10),
+      pesos_encontrados: pesoMatches,
+      pesos_nums: pesoNums,
+      peso_liquido_escolhido: peso_t,
+      lines_sample: lines.slice(0, 25),
+    },
+  };
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const body = await req.json().catch(() => null);
+    const imageBase64 = (body?.imageBase64 || "").trim();
+
+    if (!imageBase64) {
+      return jsonError("Envie { imageBase64 } (dataURL ou base64 puro).", 400);
+    }
+
+    const b64 = imageBase64.includes("base64,")
+      ? imageBase64.split("base64,")[1]
+      : imageBase64;
+
+    const input = Buffer.from(b64, "base64") as Buffer;
+    if (!input?.length) return jsonError("Base64 inválido.", 400);
+
+    const processed = (await sharp(input)
+      .rotate()
+      .resize({ width: 1900, withoutEnlargement: true })
+      .jpeg({ quality: 88 })
+      .sharpen()
+      .toBuffer()) as Buffer;
+
+    const vision = await visionTextDetection(processed);
+    const resp0 = vision?.responses?.[0] || {};
+    const textAnnotations = resp0?.textAnnotations || [];
+    const rawFull = (textAnnotations?.[0]?.description || "").trim();
+
+    if (!rawFull) {
+      return NextResponse.json({
+        ok: true,
+        raw: "",
+        fields: {
+          veiculo: null,
+          origem: null,
+          destino: null,
+          material: null,
+          data_br: null,
+          horario: null,
+          peso_t: null,
+          peso_mask: null,
+        },
+        debug: { note: "sem texto detectado" },
+      });
+    }
+
+    const fields = parseTicketFields(rawFull);
+
+    return NextResponse.json({
+      ok: true,
+      raw: rawFull,
+      fields,
+    });
+  } catch (e: any) {
+    return jsonError(e?.message || "Erro inesperado no OCR do ticket.", 500);
+  }
+}
