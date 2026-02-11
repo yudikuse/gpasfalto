@@ -15,7 +15,7 @@ type OrderType =
 type ItemRow = {
   qtd: string; // inteiro (mascarado)
   descricao: string;
-  valor: string; // BRL (mascarado)
+  valor: string; // BRL (mascarado) -> (NÃO salva em orders_2025_items porque a coluna não existe no seu schema atual)
 };
 
 function pad(n: number, size: number) {
@@ -99,14 +99,14 @@ export default function OCPage() {
   }, []);
 
   // cabeçalho
-  const [idGerado, setIdGerado] = useState<string>("-"); // agora mostra "próximo previsto"
+  const [idGerado, setIdGerado] = useState<string>("-"); // "próximo previsto"
   const [numeroOC, setNumeroOC] = useState<string>("");
 
   // campos base
   const [equipamento, setEquipamento] = useState<string>("");
   const [obra, setObra] = useState<string>("");
   const [operador, setOperador] = useState<string>("");
-  const [horimetro, setHorimetro] = useState<string>(""); // pt-BR decimal (mascarado)
+  const [horimetro, setHorimetro] = useState<string>("");
   const [localEntrega, setLocalEntrega] = useState<string>("");
   const [observacoes, setObservacoes] = useState<string>("");
 
@@ -208,6 +208,7 @@ export default function OCPage() {
       if (qtdFornecedores >= 2) fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
       if (qtdFornecedores >= 3) fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
 
+      // Só mostra menor preço se existir
       if (computed.valorMenor !== null) {
         fornLines.push("", `*💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)}`);
         if (computed.fornecedorVencedor) fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
@@ -243,7 +244,11 @@ export default function OCPage() {
     (async () => {
       // 0) Próximo ID previsto (último id + 1)
       try {
-        const { data } = await supabase.from("orders_2025_raw").select("id").order("id", { ascending: false }).limit(1);
+        const { data } = await supabase
+          .from("orders_2025_raw")
+          .select("id")
+          .order("id", { ascending: false })
+          .limit(1);
         const lastId = data?.[0]?.id ? Number(data[0].id) : null;
         setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
       } catch {
@@ -273,7 +278,7 @@ export default function OCPage() {
         setNumeroOC("OC20000");
       }
 
-      // 2) equipamentos (VIEW public.equipment_costs_2025 / coluna equipamento)
+      // 2) equipamentos (VIEW equipment_costs_2025 / coluna equipamento)
       try {
         const { data } = await supabase
           .from("equipment_costs_2025")
@@ -377,8 +382,8 @@ export default function OCPage() {
         operador: operador || null,
         horimetro: horimetro || null,
         local_entrega: localEntrega || null,
+        observacoes: observacoes || null,
 
-        // ✅ observações ficam no texto_original (whatsappPreview)
         texto_original: whatsappPreview,
 
         // fornecedores
@@ -406,20 +411,32 @@ export default function OCPage() {
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
+      // ✅ ITENS: corrigido para o schema real de orders_2025_items
+      // Colunas existentes: descricao, quantidade_texto, quantidade_num, data, hora, numero_oc, ordem_id
       if (items.length) {
-        const rows = items.map((it) => ({
-          ordem_id: orderId,
-          quantidade: it.qtd ? Number(onlyDigits(it.qtd)) : null,
-          descricao: it.descricao || null,
-          valor: parseBRLToNumber(it.valor),
-        }));
+        const rows = items.map((it) => {
+          const qtdDigits = onlyDigits(it.qtd);
+          const qtdNum = qtdDigits ? Number(qtdDigits) : null;
+
+          return {
+            ordem_id: orderId,
+            data: nowDateBr(),
+            hora: nowTime(),
+            numero_oc: numeroOC || null,
+            descricao: it.descricao || null,
+            quantidade_texto: it.qtd || null,
+            quantidade_num: qtdNum,
+          };
+        });
 
         const { error: err2 } = await supabase.from("orders_2025_items").insert(rows);
         if (err2) throw err2;
       }
 
       setSaved(true);
-      setIdGerado(String(orderId));
+
+      // Atualiza próximo previsto
+      setIdGerado(String(orderId + 1));
     } catch (e: any) {
       setSaved(false);
       setSavedOrderId(null);
@@ -445,375 +462,389 @@ export default function OCPage() {
       <style jsx global>{`
         @import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,300,0,0");
 
-        /* ===== Material Symbols ===== */
         .msi {
           font-family: "Material Symbols Outlined";
           font-weight: 300;
           font-style: normal;
+          font-size: 22px;
           line-height: 1;
           display: inline-block;
           -webkit-font-feature-settings: "liga";
           -webkit-font-smoothing: antialiased;
           color: var(--gp-muted);
         }
-        .msi-18 { font-size: 18px; }
-        .msi-20 { font-size: 20px; }
-        .msi-22 { font-size: 22px; }
 
-        /* ===== Layout igual dashboard ===== */
-        .oc-page .section-title { font-size: 0.95rem; font-weight: 600; }
-        .oc-page .section-subtitle { font-size: 0.75rem; color: var(--gp-muted-soft); }
+        .msi-sm {
+          font-size: 18px;
+          color: var(--gp-muted);
+        }
 
-        .oc-page .section-header {
+        .oc-root {
+          min-height: 100vh;
+          background: radial-gradient(circle at top, #f9fafb 0, #f3f4f6 45%, #e5e7eb);
+          display: flex;
+          justify-content: center;
+          padding: 32px 16px;
+        }
+
+        .oc-container {
+          width: 100%;
+          max-width: 760px;
+          display: flex;
+          flex-direction: column;
+          gap: 16px;
+        }
+
+        .oc-hero {
+          text-align: center;
+          padding: 6px 14px 0;
+        }
+
+        .oc-logo {
+          display: flex;
+          justify-content: center;
+          margin: 0 0 10px;
+        }
+
+        .oc-logo img {
+          height: 92px;
+          width: auto;
+          display: block;
+          object-fit: contain;
+        }
+
+        .oc-title {
+          margin: 0;
+          font-size: 34px;
+          font-weight: 700;
+          letter-spacing: -0.02em;
+          color: var(--gp-text);
+        }
+
+        .oc-subtitle {
+          margin-top: 6px;
+          font-size: 13px;
+          color: var(--gp-muted-soft);
+        }
+
+        .warn {
+          border-radius: 16px;
+          border: 1px solid rgba(251, 146, 60, 0.35);
+          background: rgba(255, 237, 213, 0.75);
+          padding: 12px 14px;
+          color: #7c2d12;
+          font-weight: 700;
+          font-size: 13px;
+          box-shadow: 0 12px 26px rgba(15, 23, 42, 0.06);
+        }
+
+        .section-card {
+          border-radius: 18px;
+          padding: 18px 20px;
+          background: var(--gp-surface);
+          box-shadow: 0 16px 36px rgba(15, 23, 42, 0.06);
+        }
+
+        .section-head {
           display: flex;
           align-items: center;
-          justify-content: space-between;
-          margin-bottom: 10px;
           gap: 8px;
         }
 
-        /* ===== campos ===== */
-        .oc-grid {
+        .section-title {
+          font-size: 14px;
+          font-weight: 800;
+          margin: 0;
+          color: var(--gp-text);
+        }
+
+        .section-sub {
+          margin-top: 4px;
+          font-size: 12px;
+          color: var(--gp-muted-soft);
+        }
+
+        .type-grid {
           display: grid;
-          grid-template-columns: repeat(12, minmax(0, 1fr));
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+          margin-top: 12px;
+        }
+
+        .type-btn {
+          border: 1px solid #e5e7eb;
+          background: #fff;
+          border-radius: 14px;
+          padding: 12px 10px;
+          cursor: pointer;
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          box-shadow: 0 10px 24px rgba(15, 23, 42, 0.04);
+          transition: transform 0.04s ease, border-color 0.08s ease, background 0.08s ease;
+        }
+
+        .type-btn:hover {
+          transform: translateY(-1px);
+        }
+
+        .type-btn strong {
+          font-size: 13px;
+          font-weight: 650;
+          color: var(--gp-text);
+        }
+
+        .type-btn.active {
+          border-color: #10b981;
+          background: #ecfdf5;
+          box-shadow: 0 14px 34px rgba(16, 185, 129, 0.12);
+        }
+
+        .row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
           gap: 12px;
           margin-top: 12px;
         }
 
-        .oc-col-6 { grid-column: span 6; }
-        .oc-col-12 { grid-column: span 12; }
-        .oc-col-4 { grid-column: span 4; }
+        .grid-2 {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 12px;
+          margin-top: 12px;
+        }
 
-        .oc-field {
+        .field {
           display: flex;
           flex-direction: column;
           gap: 6px;
         }
 
-        .oc-label {
-          font-size: 0.72rem;
-          text-transform: uppercase;
-          letter-spacing: 0.12em;
-          color: var(--gp-muted-soft);
+        .label {
+          font-size: 12px;
+          font-weight: 650;
+          color: #111827;
         }
 
-        .oc-input,
-        .oc-textarea,
-        .oc-select {
+        .input,
+        .textarea,
+        .select {
           width: 100%;
           border: 1px solid #e5e7eb;
           background: #fff;
-          border-radius: 14px;
-          padding: 10px 12px;
-          font-size: 0.92rem;
+          border-radius: 12px;
+          padding: 11px 12px;
+          font-size: 14px;
           outline: none;
-          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
         }
 
-        .oc-input:focus,
-        .oc-textarea:focus,
-        .oc-select:focus {
+        .input:focus,
+        .textarea:focus,
+        .select:focus {
           border-color: #cbd5e1;
           box-shadow: 0 0 0 4px rgba(148, 163, 184, 0.15);
         }
 
-        .oc-textarea { min-height: 98px; resize: vertical; }
-
-        .oc-hint {
-          margin-top: 6px;
-          font-size: 0.8rem;
-          color: var(--gp-muted);
+        .textarea {
+          min-height: 96px;
+          resize: vertical;
         }
 
-        /* ===== chips estilo filter-bar ===== */
-        .oc-filterbar {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 10px;
-          padding: 10px 14px;
-          border-radius: 999px;
-          background: #ffffff;
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
-          margin-top: 12px;
-        }
-
-        .oc-filterlabel {
-          font-size: 0.75rem;
+        .muted {
+          font-size: 12px;
           color: var(--gp-muted-soft);
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          display: flex;
-          align-items: center;
-          gap: 6px;
         }
 
-        .oc-chip {
-          flex: 0 0 auto;
-          padding: 8px 12px;
-          border-radius: 999px;
-          font-size: 0.8rem;
-          color: var(--gp-muted);
-          background: var(--gp-surface-soft);
-          border: 1px solid transparent;
+        .btn-add {
+          width: 100%;
+          border: 1px dashed #a7f3d0;
+          background: #ecfdf5;
+          color: #047857;
+          border-radius: 14px;
+          padding: 12px;
+          font-weight: 800;
           cursor: pointer;
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          user-select: none;
         }
 
-        .oc-chip:hover {
-          border-color: #e5e7eb;
-          background: #fff;
-        }
-
-        .oc-chip.active {
-          border-color: var(--gp-accent);
-          background: var(--gp-accent-soft);
-          color: var(--gp-text);
-        }
-
-        /* ===== warn/error ===== */
-        .oc-warn {
-          border-radius: 18px;
-          padding: 16px 18px;
-          background: #ffffff;
-          border: 1px dashed #e5e7eb;
-          font-size: 0.9rem;
-          color: var(--gp-muted);
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
-        }
-
-        .oc-err {
-          margin-top: 10px;
-          color: #b91c1c;
-          font-size: 0.9rem;
-          font-weight: 600;
-        }
-
-        /* ===== itens ===== */
-        .oc-item {
-          border-radius: 18px;
-          padding: 16px 18px;
-          background: var(--gp-surface);
-          box-shadow: 0 12px 30px rgba(15, 23, 42, 0.06);
-          border: 1px solid #f3f4f6;
+        .item-card {
           margin-top: 12px;
+          border: 1px solid #eef2f7;
+          border-radius: 16px;
+          padding: 16px;
+          background: #ffffff;
+          box-shadow: 0 10px 20px rgba(15, 23, 42, 0.03);
         }
 
-        .oc-item-head {
+        .item-grid {
+          display: grid;
+          grid-template-columns: 160px 1fr;
+          gap: 14px;
+        }
+
+        .item-grid-2 {
+          display: grid;
+          grid-template-columns: 1fr 150px;
+          gap: 14px;
+          margin-top: 14px;
+          align-items: end;
+        }
+
+        .btn-remove {
+          border: 1px solid #e5e7eb;
+          background: #fff;
+          border-radius: 12px;
+          padding: 11px 12px;
+          cursor: pointer;
+          color: var(--gp-muted);
+          font-weight: 700;
+        }
+
+        .preview-toggle {
+          width: 100%;
+          border: 1px solid #e5e7eb;
+          background: #fff;
+          border-radius: 14px;
+          padding: 12px 14px;
+          cursor: pointer;
+          font-weight: 900;
+          color: #0f172a;
           display: flex;
           align-items: center;
           justify-content: space-between;
+        }
+
+        .preview-box {
+          margin-top: 12px;
+          border: 1px solid #eef2f7;
+          border-radius: 16px;
+          background: #ffffff;
+          padding: 14px;
+          white-space: pre-wrap;
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono",
+            "Courier New", monospace;
+          font-size: 13px;
+          line-height: 1.5;
+          color: #0f172a;
+        }
+
+        .actions {
+          display: grid;
+          grid-template-columns: 1fr;
           gap: 10px;
-          margin-bottom: 12px;
+          margin-top: 14px;
         }
 
-        .oc-item-title {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          font-size: 0.9rem;
-          font-weight: 600;
-          color: var(--gp-text);
-        }
-
-        .oc-item-actions {
-          display: inline-flex;
-          gap: 8px;
-          align-items: center;
-        }
-
-        .oc-btn {
-          padding: 10px 12px;
-          border-radius: 14px;
-          border: 1px solid #e5e7eb;
-          background: #fff;
-          font-weight: 600;
-          cursor: pointer;
-          color: var(--gp-text);
-          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.04);
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .oc-btn:hover { background: #f9fafb; }
-
-        .oc-btn-primary {
-          border: 1px solid transparent;
-          background: var(--gp-accent);
+        .btn-primary {
+          border: none;
+          background: #059669;
           color: #fff;
+          border-radius: 14px;
+          padding: 13px 14px;
+          font-weight: 900;
+          cursor: pointer;
         }
 
-        .oc-btn-primary:hover { filter: brightness(0.96); }
-
-        .oc-btn-primary:disabled {
+        .btn-primary:disabled {
           opacity: 0.6;
           cursor: not-allowed;
         }
 
-        .oc-btn-whats {
-          border: 1px solid transparent;
+        .btn-secondary {
+          border: 1px solid #e5e7eb;
+          background: #fff;
+          border-radius: 14px;
+          padding: 13px 14px;
+          font-weight: 900;
+          cursor: pointer;
+          color: #0f172a;
+        }
+
+        .btn-whats {
+          border: none;
           background: #22c55e;
           color: #fff;
+          border-radius: 14px;
+          padding: 13px 14px;
+          font-weight: 900;
+          cursor: pointer;
         }
 
-        .oc-btn-ghost {
-          background: var(--gp-surface-soft);
+        .err {
+          margin-top: 10px;
+          color: #b91c1c;
+          font-size: 13px;
+          font-weight: 700;
         }
 
-        /* ===== preview ===== */
-        .oc-preview {
-          border-radius: 18px;
-          padding: 14px 16px;
-          background: #ffffff;
-          border: 1px solid #e5e7eb;
-          box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
-          white-space: pre-wrap;
-          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-          font-size: 0.82rem;
-          line-height: 1.6;
-          color: #0f172a;
-          margin-top: 12px;
-        }
-
-        .oc-inline-note {
-          display: inline-flex;
-          align-items: center;
-          gap: 6px;
-          padding: 6px 10px;
-          border-radius: 999px;
-          background: #ffffff;
-          border: 1px solid #e5e7eb;
-          box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
-          color: var(--gp-muted);
-          font-size: 0.75rem;
-        }
-
-        /* ===== responsivo ===== */
-        @media (max-width: 900px) {
-          .oc-col-6 { grid-column: span 12; }
-          .oc-col-4 { grid-column: span 12; }
+        @media (max-width: 560px) {
+          .oc-title { font-size: 28px; }
+          .row, .grid-2 { grid-template-columns: 1fr; }
+          .item-grid { grid-template-columns: 1fr; }
+          .item-grid-2 { grid-template-columns: 1fr; }
+          .oc-logo img { height: 76px; }
         }
       `}</style>
 
-      <div className="page-root oc-page">
-        <div className="page-container">
-          {/* HEADER igual dashboard */}
-          <header
-            className="page-header"
-            style={{
-              flexDirection: "column",
-              alignItems: "center",
-              gap: "8px",
-            }}
-          >
-            <div
-              className="brand"
-              style={{
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "8px",
-              }}
-            >
-              <img
-                src="/gpasfalto-logo.png"
-                alt="GP Asfalto"
-                style={{
-                  width: 120,
-                  height: 120,
-                  objectFit: "contain",
-                  border: "none",
-                  background: "transparent",
-                }}
-              />
-              <div style={{ textAlign: "center" }}>
-                <div className="brand-text-main">Registrar OC</div>
-                <div className="brand-text-sub">Criar OC rápida e padrão para WhatsApp</div>
-              </div>
+      <main className="oc-root">
+        <div className="oc-container">
+          <div className="oc-hero">
+            <div className="oc-logo">
+              <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
             </div>
-
-            <div style={{ marginTop: 4, display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "center" }}>
-              <div className="header-pill">
-                <span>ID previsto</span>
-                <strong>{idGerado}</strong>
-              </div>
-              <div className="header-pill">
-                <span>OC</span>
-                <strong>{numeroOC || "—"}</strong>
-              </div>
-              {saved && savedOrderId ? (
-                <div className="header-pill">
-                  <span>Salvo</span>
-                  <strong>#{savedOrderId}</strong>
-                </div>
-              ) : null}
-            </div>
-          </header>
+            <h1 className="oc-title">Registrar OC</h1>
+            <div className="oc-subtitle">Criar OC rápida e padrão para WhatsApp</div>
+          </div>
 
           {!env.ok && (
-            <div className="oc-warn">
+            <div className="warn">
               Configuração no Vercel necessária: defina <b>NEXT_PUBLIC_SUPABASE_URL</b> e{" "}
               <b>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY</b> (ou <b>NEXT_PUBLIC_SUPABASE_ANON_KEY</b>).
             </div>
           )}
 
-          {/* TIPO (chips estilo dashboard) */}
           <section className="section-card">
-            <div className="section-header">
-              <div>
-                <div className="section-title">Tipo de Pedido</div>
-                <div className="section-subtitle">Escolha o tipo para montar a mensagem e regras (ex.: cotações).</div>
-              </div>
-              <div className="oc-inline-note">
-                <span className="msi msi-18">bolt</span>
-                <span>Prévia sempre disponível</span>
-              </div>
+            <div className="section-head">
+              <span className="msi msi-sm">widgets</span>
+              <h2 className="section-title">Tipo de Pedido</h2>
             </div>
 
-            <div className="oc-filterbar">
-              <div className="oc-filterlabel">
-                <span className="msi msi-18">tune</span>
-                <span>Tipos</span>
-              </div>
-
+            <div className="type-grid">
               {typeButtons.map((b) => (
                 <button
                   key={b.key}
-                  type="button"
-                  className={`oc-chip ${tipo === b.key ? "active" : ""}`}
+                  className={`type-btn ${tipo === b.key ? "active" : ""}`}
                   onClick={() => {
                     setTipo(b.key);
                     resetSaved();
                   }}
+                  type="button"
                 >
-                  <span className="msi msi-20">{b.icon}</span>
-                  <span>{b.label}</span>
+                  <span className="msi">{b.icon}</span>
+                  <strong>{b.label}</strong>
                 </button>
               ))}
             </div>
           </section>
 
-          {/* DADOS */}
           <section className="section-card">
-            <div className="section-header">
-              <div>
-                <div className="section-title">Dados essenciais</div>
-                <div className="section-subtitle">Preencha o mínimo e copie/mande no WhatsApp após salvar.</div>
-              </div>
+            <div className="section-head">
+              <span className="msi msi-sm">description</span>
+              <h2 className="section-title">Dados Essenciais</h2>
             </div>
+            <div className="section-sub">Padrão: Manutenção</div>
 
-            <div className="oc-grid">
-              <div className="oc-field oc-col-6">
-                <div className="oc-label">ID (previsto)</div>
-                <input className="oc-input" value={idGerado} disabled />
+            <div className="row">
+              <div className="field">
+                <div className="label">ID (previsto)</div>
+                <input className="input" value={idGerado} disabled />
               </div>
 
-              <div className="oc-field oc-col-6">
-                <div className="oc-label">OC</div>
+              <div className="field">
+                <div className="label">OC</div>
                 <input
-                  className="oc-input"
+                  className="input"
                   value={numeroOC}
                   onChange={(e) => {
                     setNumeroOC(e.target.value);
@@ -822,33 +853,37 @@ export default function OCPage() {
                   placeholder="OC20337"
                 />
               </div>
+            </div>
 
-              <div className="oc-field oc-col-12">
-                <div className="oc-label">Equipamento</div>
-                <input
-                  className="oc-input"
-                  value={equipamento}
-                  onChange={(e) => {
-                    setEquipamento(e.target.value);
-                    resetSaved();
-                  }}
-                  placeholder="Digite ou selecione o equipamento"
-                  list="equipList"
-                />
-                <datalist id="equipList">
-                  {equipmentOptions.map((x) => (
-                    <option key={x} value={x} />
-                  ))}
-                </datalist>
-                {!equipmentOptions.length && (
-                  <div className="oc-hint">(Lista não carregou — você ainda pode digitar livremente.)</div>
-                )}
-              </div>
+            <div className="field" style={{ marginTop: 12 }}>
+              <div className="label">Equipamento</div>
+              <input
+                className="input"
+                value={equipamento}
+                onChange={(e) => {
+                  setEquipamento(e.target.value);
+                  resetSaved();
+                }}
+                placeholder="Digite ou selecione o equipamento"
+                list="equipList"
+              />
+              <datalist id="equipList">
+                {equipmentOptions.map((x) => (
+                  <option key={x} value={x} />
+                ))}
+              </datalist>
+              {!equipmentOptions.length && (
+                <div className="muted" style={{ marginTop: 6 }}>
+                  (Lista não carregou — você ainda pode digitar livremente.)
+                </div>
+              )}
+            </div>
 
-              <div className="oc-field oc-col-6">
-                <div className="oc-label">Obra</div>
+            <div className="grid-2">
+              <div className="field">
+                <div className="label">Obra</div>
                 <input
-                  className="oc-input"
+                  className="input"
                   value={obra}
                   onChange={(e) => {
                     setObra(e.target.value);
@@ -858,10 +893,10 @@ export default function OCPage() {
                 />
               </div>
 
-              <div className="oc-field oc-col-6">
-                <div className="oc-label">Operador</div>
+              <div className="field">
+                <div className="label">Operador</div>
                 <input
-                  className="oc-input"
+                  className="input"
                   value={operador}
                   onChange={(e) => {
                     setOperador(e.target.value);
@@ -870,11 +905,13 @@ export default function OCPage() {
                   placeholder="Nome do operador"
                 />
               </div>
+            </div>
 
-              <div className="oc-field oc-col-6">
-                <div className="oc-label">Horímetro</div>
+            <div className="grid-2">
+              <div className="field">
+                <div className="label">Horímetro</div>
                 <input
-                  className="oc-input"
+                  className="input"
                   inputMode="numeric"
                   value={horimetro}
                   onChange={(e) => {
@@ -885,10 +922,10 @@ export default function OCPage() {
                 />
               </div>
 
-              <div className="oc-field oc-col-6">
-                <div className="oc-label">Local de entrega</div>
+              <div className="field">
+                <div className="label">Local de entrega</div>
                 <input
-                  className="oc-input"
+                  className="input"
                   value={localEntrega}
                   onChange={(e) => {
                     setLocalEntrega(e.target.value);
@@ -897,39 +934,45 @@ export default function OCPage() {
                   placeholder="Endereço ou local"
                 />
               </div>
+            </div>
 
-              <div className="oc-field oc-col-12">
-                <div className="oc-label">Observações</div>
-                <textarea
-                  className="oc-textarea"
-                  value={observacoes}
-                  onChange={(e) => {
-                    setObservacoes(e.target.value);
-                    resetSaved();
-                  }}
-                  placeholder="Informações adicionais..."
-                />
-              </div>
+            <div className="field" style={{ marginTop: 12 }}>
+              <div className="label">Observações</div>
+              <textarea
+                className="textarea"
+                value={observacoes}
+                onChange={(e) => {
+                  setObservacoes(e.target.value);
+                  resetSaved();
+                }}
+                placeholder="Informações adicionais..."
+              />
             </div>
 
             {tipo === "MANUTENCAO" && (
               <div style={{ marginTop: 14 }}>
-                <div className="section-header" style={{ marginBottom: 8 }}>
-                  <div>
-                    <div className="section-title">Cotações</div>
-                    <div className="section-subtitle">1–3 fornecedores e preços (menor preço é considerado).</div>
-                  </div>
-                  {computed.valorMenor !== null ? (
-                    <div className="header-pill">
-                      <span>Menor preço</span>
-                      <strong>{formatBRLFromNumber(computed.valorMenor)}</strong>
-                    </div>
-                  ) : (
-                    <div className="header-pill">
-                      <span>Menor preço</span>
-                      <strong>—</strong>
-                    </div>
-                  )}
+                <div className="section-head" style={{ marginTop: 6 }}>
+                  <span className="msi msi-sm">store</span>
+                  <div className="label">Fornecedores (cotações)</div>
+                </div>
+                <div className="muted" style={{ marginTop: 4 }}>
+                  Escolha 1–3 fornecedores e informe os preços. Menor preço será considerado.
+                </div>
+
+                <div className="field" style={{ width: 140, marginTop: 10 }}>
+                  <div className="label">Qtd</div>
+                  <select
+                    className="select"
+                    value={qtdFornecedores}
+                    onChange={(e) => {
+                      setQtdFornecedores(Number(e.target.value));
+                      resetSaved();
+                    }}
+                  >
+                    <option value={1}>1</option>
+                    <option value={2}>2</option>
+                    <option value={3}>3</option>
+                  </select>
                 </div>
 
                 <datalist id="supList">
@@ -938,27 +981,11 @@ export default function OCPage() {
                   ))}
                 </datalist>
 
-                <div className="oc-grid" style={{ marginTop: 0 }}>
-                  <div className="oc-field oc-col-4">
-                    <div className="oc-label">Qtd de fornecedores</div>
-                    <select
-                      className="oc-select"
-                      value={qtdFornecedores}
-                      onChange={(e) => {
-                        setQtdFornecedores(Number(e.target.value));
-                        resetSaved();
-                      }}
-                    >
-                      <option value={1}>1</option>
-                      <option value={2}>2</option>
-                      <option value={3}>3</option>
-                    </select>
-                  </div>
-
-                  <div className="oc-field oc-col-4">
-                    <div className="oc-label">Fornecedor 1</div>
+                <div className="grid-2" style={{ marginTop: 10 }}>
+                  <div className="field">
+                    <div className="label">Fornecedor 1</div>
                     <input
-                      className="oc-input"
+                      className="input"
                       value={forn1}
                       onChange={(e) => {
                         setForn1(e.target.value);
@@ -968,11 +995,10 @@ export default function OCPage() {
                       placeholder="Digite ou selecione"
                     />
                   </div>
-
-                  <div className="oc-field oc-col-4">
-                    <div className="oc-label">Preço 1</div>
+                  <div className="field">
+                    <div className="label">Preço 1</div>
                     <input
-                      className="oc-input"
+                      className="input"
                       inputMode="numeric"
                       value={preco1}
                       onChange={(e) => {
@@ -985,10 +1011,10 @@ export default function OCPage() {
 
                   {qtdFornecedores >= 2 && (
                     <>
-                      <div className="oc-field oc-col-6">
-                        <div className="oc-label">Fornecedor 2</div>
+                      <div className="field">
+                        <div className="label">Fornecedor 2</div>
                         <input
-                          className="oc-input"
+                          className="input"
                           value={forn2}
                           onChange={(e) => {
                             setForn2(e.target.value);
@@ -998,11 +1024,10 @@ export default function OCPage() {
                           placeholder="Digite ou selecione"
                         />
                       </div>
-
-                      <div className="oc-field oc-col-6">
-                        <div className="oc-label">Preço 2</div>
+                      <div className="field">
+                        <div className="label">Preço 2</div>
                         <input
-                          className="oc-input"
+                          className="input"
                           inputMode="numeric"
                           value={preco2}
                           onChange={(e) => {
@@ -1017,10 +1042,10 @@ export default function OCPage() {
 
                   {qtdFornecedores >= 3 && (
                     <>
-                      <div className="oc-field oc-col-6">
-                        <div className="oc-label">Fornecedor 3</div>
+                      <div className="field">
+                        <div className="label">Fornecedor 3</div>
                         <input
-                          className="oc-input"
+                          className="input"
                           value={forn3}
                           onChange={(e) => {
                             setForn3(e.target.value);
@@ -1030,11 +1055,10 @@ export default function OCPage() {
                           placeholder="Digite ou selecione"
                         />
                       </div>
-
-                      <div className="oc-field oc-col-6">
-                        <div className="oc-label">Preço 3</div>
+                      <div className="field">
+                        <div className="label">Preço 3</div>
                         <input
-                          className="oc-input"
+                          className="input"
                           inputMode="numeric"
                           value={preco3}
                           onChange={(e) => {
@@ -1048,140 +1072,131 @@ export default function OCPage() {
                   )}
                 </div>
 
-                {computed.valorMenor !== null && computed.fornecedorVencedor ? (
-                  <div className="oc-hint">
-                    Vencedor: <b style={{ color: "var(--gp-text)" }}>{computed.fornecedorVencedor}</b>
+                {computed.valorMenor !== null && (
+                  <div className="muted" style={{ marginTop: 10 }}>
+                    Menor preço considerado:{" "}
+                    <strong style={{ color: "#0f172a" }}>
+                      {formatBRLFromNumber(computed.valorMenor)}
+                    </strong>
+                    {computed.fornecedorVencedor ? (
+                      <>
+                        {" "}
+                        • Vencedor:{" "}
+                        <strong style={{ color: "#0f172a" }}>
+                          {computed.fornecedorVencedor}
+                        </strong>
+                      </>
+                    ) : null}
                   </div>
-                ) : null}
+                )}
               </div>
             )}
           </section>
 
-          {/* ITENS */}
           <section className="section-card">
-            <div className="section-header">
-              <div>
-                <div className="section-title">Itens da ordem</div>
-                <div className="section-subtitle">Adicione itens (quantidade, descrição e valor opcional).</div>
-              </div>
-              <button className="oc-btn oc-btn-ghost" type="button" onClick={addItem}>
-                <span className="msi msi-20">add</span>
-                <span>Adicionar item</span>
-              </button>
+            <div className="section-head">
+              <span className="msi msi-sm">inventory_2</span>
+              <h2 className="section-title">Itens da ordem</h2>
             </div>
 
-            {!items.length ? (
-              <div className="oc-warn">Nenhum item adicionado ainda.</div>
-            ) : (
-              items.map((it, idx) => (
-                <div key={idx} className="oc-item">
-                  <div className="oc-item-head">
-                    <div className="oc-item-title">
-                      <span className="msi msi-20">inventory_2</span>
-                      <span>Item {idx + 1}</span>
+            <div style={{ marginTop: 12 }}>
+              <button className="btn-add" type="button" onClick={addItem}>
+                + Adicionar item
+              </button>
+
+              {!items.length ? (
+                <div className="muted" style={{ marginTop: 10 }}>
+                  Nenhum item adicionado ainda.
+                </div>
+              ) : (
+                items.map((it, idx) => (
+                  <div key={idx} className="item-card">
+                    <div className="item-grid">
+                      <div className="field">
+                        <div className="label">Quantidade</div>
+                        <input
+                          className="input"
+                          inputMode="numeric"
+                          value={it.qtd}
+                          onChange={(e) => {
+                            const v = onlyDigits(e.target.value).slice(0, 6);
+                            updateItem(idx, { qtd: v });
+                          }}
+                          placeholder="Ex: 2"
+                        />
+                      </div>
+
+                      <div className="field">
+                        <div className="label">Descrição</div>
+                        <input
+                          className="input"
+                          value={it.descricao}
+                          onChange={(e) => updateItem(idx, { descricao: e.target.value })}
+                          placeholder="Ex: mangueira hidráulica"
+                        />
+                      </div>
                     </div>
-                    <div className="oc-item-actions">
-                      <button className="oc-btn" type="button" onClick={() => removeItem(idx)}>
-                        <span className="msi msi-20">delete</span>
-                        <span>Remover</span>
+
+                    <div className="item-grid-2">
+                      <div className="field">
+                        <div className="label">Valor (opcional)</div>
+                        <input
+                          className="input"
+                          inputMode="numeric"
+                          value={it.valor}
+                          onChange={(e) => {
+                            const brl = formatBRLFromDigits(onlyDigits(e.target.value));
+                            updateItem(idx, { valor: brl });
+                          }}
+                          placeholder="R$ 0,00"
+                        />
+                      </div>
+
+                      <button className="btn-remove" type="button" onClick={() => removeItem(idx)}>
+                        Remover
                       </button>
                     </div>
                   </div>
-
-                  <div className="oc-grid" style={{ marginTop: 0 }}>
-                    <div className="oc-field oc-col-4">
-                      <div className="oc-label">Quantidade</div>
-                      <input
-                        className="oc-input"
-                        inputMode="numeric"
-                        value={it.qtd}
-                        onChange={(e) => {
-                          const v = onlyDigits(e.target.value).slice(0, 6);
-                          updateItem(idx, { qtd: v });
-                        }}
-                        placeholder="Ex: 2"
-                      />
-                    </div>
-
-                    <div className="oc-field oc-col-8">
-                      <div className="oc-label">Descrição</div>
-                      <input
-                        className="oc-input"
-                        value={it.descricao}
-                        onChange={(e) => updateItem(idx, { descricao: e.target.value })}
-                        placeholder="Ex: mangueira hidráulica"
-                      />
-                    </div>
-
-                    <div className="oc-field oc-col-6">
-                      <div className="oc-label">Valor (opcional)</div>
-                      <input
-                        className="oc-input"
-                        inputMode="numeric"
-                        value={it.valor}
-                        onChange={(e) => {
-                          const brl = formatBRLFromDigits(onlyDigits(e.target.value));
-                          updateItem(idx, { valor: brl });
-                        }}
-                        placeholder="R$ 0,00"
-                      />
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
+                ))
+              )}
+            </div>
           </section>
 
-          {/* PREVIEW + AÇÕES */}
           <section className="section-card">
-            <div className="section-header">
-              <div>
-                <div className="section-title">Mensagem (WhatsApp)</div>
-                <div className="section-subtitle">Revise a prévia. Copiar/Enviar só aparece após salvar.</div>
-              </div>
+            <button className="preview-toggle" type="button" onClick={() => setExpandedPreview((v) => !v)}>
+              <span>Prévia da mensagem (WhatsApp)</span>
+              <span className="muted">{expandedPreview ? "Recolher ▲" : "Mostrar ▼"}</span>
+            </button>
 
-              <button
-                className="oc-btn"
-                type="button"
-                onClick={() => setExpandedPreview((v) => !v)}
-              >
-                <span className="msi msi-20">{expandedPreview ? "expand_less" : "expand_more"}</span>
-                <span>{expandedPreview ? "Recolher" : "Mostrar"}</span>
-              </button>
-            </div>
+            {expandedPreview && <div className="preview-box">{whatsappPreview}</div>}
 
-            {expandedPreview && <div className="oc-preview">{whatsappPreview}</div>}
+            {errorMsg ? <div className="err">{errorMsg}</div> : null}
 
-            {errorMsg ? <div className="oc-err">{errorMsg}</div> : null}
-
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 14, justifyContent: "flex-end" }}>
-              <button className="oc-btn oc-btn-primary" type="button" onClick={saveOrder} disabled={saving}>
-                <span className="msi msi-20">{saving ? "hourglass_top" : "save"}</span>
-                <span>{saving ? "Salvando..." : "Salvar"}</span>
+            <div className="actions">
+              <button className="btn-primary" type="button" onClick={saveOrder} disabled={saving}>
+                {saving ? "Salvando..." : "Salvar"}
               </button>
 
               {saved && (
                 <>
-                  <button className="oc-btn" type="button" onClick={copyText}>
-                    <span className="msi msi-20">content_copy</span>
-                    <span>Copiar</span>
+                  <button className="btn-secondary" type="button" onClick={copyText}>
+                    Copiar mensagem
                   </button>
-                  <button className="oc-btn oc-btn-whats" type="button" onClick={openWhatsapp}>
-                    <span className="msi msi-20">send</span>
-                    <span>Enviar WhatsApp</span>
+                  <button className="btn-whats" type="button" onClick={openWhatsapp}>
+                    Enviar no WhatsApp
                   </button>
                 </>
               )}
             </div>
 
             {saved && savedOrderId ? (
-              <div className="oc-hint" style={{ marginTop: 10 }}>
-                Salvo com sucesso • ID: <b style={{ color: "var(--gp-text)" }}>{savedOrderId}</b>
+              <div className="muted" style={{ marginTop: 10 }}>
+                Salvo com sucesso • ID: <strong>{savedOrderId}</strong>
               </div>
             ) : null}
           </section>
         </div>
-      </div>
+      </main>
     </>
   );
 }
