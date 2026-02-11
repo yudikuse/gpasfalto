@@ -6,6 +6,18 @@ import { supabase } from "@/lib/supabaseClient";
 
 type TicketTipo = "ENTRADA" | "SAIDA";
 
+type OcResumo = {
+  plan_id: number | null;
+  obra: string;
+  oc: string | null;
+  material: string;
+  ilimitado: boolean | null;
+  total_t: number | null;
+  entrada_t: number | null;
+  saida_t: number | null;
+  saldo_t: number | null;
+};
+
 function extFromFile(file: File) {
   const t = (file.type || "").toLowerCase();
   if (t.includes("png")) return "png";
@@ -49,8 +61,7 @@ function parseDateBR(raw: string): Date | null {
   if (m[3].length === 2) yy = yy <= 69 ? 2000 + yy : 1900 + yy;
 
   const d = new Date(yy, mm - 1, dd);
-  if (d.getFullYear() !== yy || d.getMonth() !== mm - 1 || d.getDate() !== dd)
-    return null;
+  if (d.getFullYear() !== yy || d.getMonth() !== mm - 1 || d.getDate() !== dd) return null;
   return d;
 }
 
@@ -121,7 +132,9 @@ async function blobToDataURL(blob: Blob): Promise<string> {
  * Comprime/redimensiona a imagem antes de mandar pro OCR (base64).
  * Mantém o upload original para o Supabase.
  */
-async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; note: string | null }> {
+async function makeOcrDataUrlFromImage(
+  file: File
+): Promise<{ dataUrl: string; note: string | null }> {
   if (!file.type.startsWith("image/")) {
     return { dataUrl: await fileToDataURL(file), note: null };
   }
@@ -170,7 +183,9 @@ async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; n
     const dataUrl = await blobToDataURL(blob);
     return {
       dataUrl,
-      note: `Foto otimizada para OCR (${Math.round(file.size / 1024)}KB → ${Math.round(blob.size / 1024)}KB).`,
+      note: `Foto otimizada para OCR (${Math.round(file.size / 1024)}KB → ${Math.round(
+        blob.size / 1024
+      )}KB).`,
     };
   } finally {
     URL.revokeObjectURL(url);
@@ -198,33 +213,63 @@ function normalizePesoFromOcrToMasked(v: any) {
   return Number(n).toFixed(3);
 }
 
+function fmtT(v: number | null | undefined) {
+  if (v === null || v === undefined) return "-";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return n.toFixed(3);
+}
+
 function buildWhatsappMessage(p: {
   tipo: TicketTipo;
   veiculo: string;
   origem: string;
-  destino: string;
+  obra: string; // destino no form
   material: string;
+  oc: string | null;
   dataISO: string;
   horarioISO: string;
   pesoNum: number;
   savedId?: number | null;
+  resumo?: OcResumo | null;
 }) {
-  const { tipo, veiculo, origem, destino, material, dataISO, horarioISO, pesoNum, savedId } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo } = p;
+
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
     return `${d}/${m}/${y}`;
   })();
 
-  return (
+  let msg =
     `✅ Ticket de ${tipo}\n` +
     `ID: ${savedId ?? "-"}\n` +
     `Veículo: ${veiculo}\n` +
     `Data/Hora: ${dateBR} ${horarioISO}\n` +
     `Origem: ${origem}\n` +
-    `Destino: ${destino}\n` +
+    `Obra: ${obra}\n` +
     `Material: ${material}\n` +
-    `Peso (t): ${pesoNum.toFixed(3)}\n`
-  );
+    `Ordem de Compra: ${oc ? oc : "-"}\n` +
+    `Peso (t): ${pesoNum.toFixed(3)}\n`;
+
+  if (resumo) {
+    const ilimitado = Boolean(resumo.ilimitado);
+
+    msg += `\n📊 Controle (Obra/OC/Material)\n`;
+    msg += `Entrada total: ${fmtT(resumo.entrada_t)} t\n`;
+    msg += `Saída total: ${fmtT(resumo.saida_t)} t\n`;
+
+    if (ilimitado) {
+      msg += `Quantidade total: ILIMITADO\n`;
+      msg += `Saldo: ILIMITADO\n`;
+    } else {
+      msg += `Quantidade total: ${fmtT(resumo.total_t)} t\n`;
+      msg += `Saldo a entregar: ${fmtT(resumo.saldo_t)} t\n`;
+    }
+  } else {
+    msg += `\n⚠️ Plano (material_oc_plan) não encontrado pra esta Obra/OC/Material.\n`;
+  }
+
+  return msg;
 }
 
 export default function MaterialTicketNovoPage() {
@@ -235,8 +280,10 @@ export default function MaterialTicketNovoPage() {
 
   const [veiculo, setVeiculo] = useState("");
   const [origem, setOrigem] = useState("");
-  const [destino, setDestino] = useState("");
+  const [destino, setDestino] = useState(""); // obra
   const [material, setMaterial] = useState("");
+  const [oc, setOc] = useState(""); // ✅ novo
+
   const [dataBr, setDataBr] = useState("");
   const [hora, setHora] = useState("");
   const [peso, setPeso] = useState("");
@@ -257,13 +304,16 @@ export default function MaterialTicketNovoPage() {
     tipo: TicketTipo;
     veiculo: string;
     origem: string;
-    destino: string;
+    obra: string;
     material: string;
+    oc: string | null;
     dataISO: string;
     horarioISO: string;
     pesoNum: number;
     id: number;
   } | null>(null);
+
+  const [lastResumo, setLastResumo] = useState<OcResumo | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -281,9 +331,7 @@ export default function MaterialTicketNovoPage() {
     const p = parsePesoMasked(peso);
 
     const dataISO = d
-      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(
-          d.getDate()
-        ).padStart(2, "0")}`
+      ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
       : null;
 
     const timeISO = t
@@ -311,13 +359,34 @@ export default function MaterialTicketNovoPage() {
 
     if (!veiculo.trim()) return setError("Preencha o veículo."), false;
     if (!origem.trim()) return setError("Preencha a origem."), false;
-    if (!destino.trim()) return setError("Preencha o destino."), false;
+    if (!destino.trim()) return setError("Preencha a obra/destino."), false;
     if (!material.trim()) return setError("Preencha o material."), false;
     if (!parsed.dataOk) return setError("Data inválida. Use dd/mm/aa ou dd/mm/aaaa."), false;
     if (!parsed.horaOk) return setError("Horário inválido. Use hh:mm ou hh:mm:ss."), false;
     if (!parsed.pesoOk) return setError("Peso inválido. Digite só números (ex.: 2720 → 2.720)."), false;
 
     return true;
+  }
+
+  async function loadResumo(obra: string, ocVal: string | null, mat: string): Promise<OcResumo | null> {
+    try {
+      let q = supabase
+        .from("material_oc_saldo_v")
+        .select("plan_id,obra,oc,material,ilimitado,total_t,entrada_t,saida_t,saldo_t")
+        .ilike("obra", obra.trim())
+        .ilike("material", mat.trim())
+        .order("plan_id", { ascending: false })
+        .limit(1);
+
+      if (ocVal) q = q.eq("oc", ocVal);
+      else q = q.is("oc", null);
+
+      const { data, error } = await q.maybeSingle();
+      if (error) return null;
+      return (data as any) ?? null;
+    } catch {
+      return null;
+    }
   }
 
   async function handleOcr() {
@@ -389,6 +458,7 @@ export default function MaterialTicketNovoPage() {
 
     setSaving(true);
     setError(null);
+    setLastResumo(null);
 
     try {
       const dateISO = parsed.dataISO!;
@@ -409,6 +479,8 @@ export default function MaterialTicketNovoPage() {
       });
       if (up.error) throw new Error(`Storage upload falhou: ${up.error.message}`);
 
+      const ocVal = oc.trim() ? oc.trim() : null;
+
       const ins = await supabase
         .from("material_tickets")
         .insert({
@@ -417,6 +489,7 @@ export default function MaterialTicketNovoPage() {
           origem: origem.trim(),
           destino: destino.trim(),
           material: material.trim(),
+          oc: ocVal, // ✅ OC salva no ticket
           data: dateISO,
           horario: timeISO,
           peso_t: pesoNum,
@@ -434,13 +507,18 @@ export default function MaterialTicketNovoPage() {
       setSavedId(newId);
       setSavedMsg("Salvo com sucesso!");
 
+      // ✅ busca resumo (total/saída/saldo) na view
+      const resumo = await loadResumo(destino.trim(), ocVal, material.trim());
+      setLastResumo(resumo);
+
       if (newId) {
         setLastPayload({
           tipo,
           veiculo: veiculo.trim(),
           origem: origem.trim(),
-          destino: destino.trim(),
+          obra: destino.trim(),
           material: material.trim(),
+          oc: ocVal,
           dataISO: dateISO,
           horarioISO: timeISO,
           pesoNum,
@@ -452,6 +530,7 @@ export default function MaterialTicketNovoPage() {
 
       setLastShareFile(file!);
 
+      // limpa só a foto atual
       setFile(null);
       setPreviewUrl(null);
       setOcrRaw(null);
@@ -470,12 +549,14 @@ export default function MaterialTicketNovoPage() {
       tipo: lastPayload.tipo,
       veiculo: lastPayload.veiculo,
       origem: lastPayload.origem,
-      destino: lastPayload.destino,
+      obra: lastPayload.obra,
       material: lastPayload.material,
+      oc: lastPayload.oc,
       dataISO: lastPayload.dataISO,
       horarioISO: lastPayload.horarioISO,
       pesoNum: lastPayload.pesoNum,
       savedId: lastPayload.id,
+      resumo: lastResumo,
     });
 
     // ✅ Melhor no celular: compartilhar A FOTO + texto
@@ -575,21 +656,12 @@ export default function MaterialTicketNovoPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        <header
-          className="page-header"
-          style={{ flexDirection: "column", alignItems: "center", gap: 8 }}
-        >
+        <header className="page-header" style={{ flexDirection: "column", alignItems: "center", gap: 8 }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/gpasfalto-logo.png"
             alt="GP Asfalto"
-            style={{
-              width: 110,
-              height: 110,
-              objectFit: "contain",
-              border: "none",
-              background: "transparent",
-            }}
+            style={{ width: 110, height: 110, objectFit: "contain", border: "none", background: "transparent" }}
           />
           <div style={{ textAlign: "center" }}>
             <div className="brand-text-main">Materiais • Ticket</div>
@@ -601,52 +673,34 @@ export default function MaterialTicketNovoPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Novo ticket</div>
-              <div className="section-subtitle">
-                Tire a foto pelo celular, rode o OCR, ajuste e salve.
-              </div>
+              <div className="section-subtitle">Tire a foto pelo celular, rode o OCR, ajuste e salve.</div>
             </div>
           </div>
 
           {error ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #fecaca",
-                background: "#fef2f2",
-                color: "#991b1b",
-                fontSize: 14,
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
               {error}
             </div>
           ) : null}
 
           {savedMsg ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #bbf7d0",
-                background: "#f0fdf4",
-                color: "#166534",
-                fontSize: 14,
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
+              {lastResumo ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
+                  <b>Controle:</b>{" "}
+                  {lastResumo.ilimitado
+                    ? `ILIMITADO • Saída: ${fmtT(lastResumo.saida_t)} t`
+                    : `Total: ${fmtT(lastResumo.total_t)} t • Saída: ${fmtT(lastResumo.saida_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
+                </div>
+              ) : null}
             </div>
           ) : null}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Tipo (padrão: SAÍDA)</label>
-              <select
-                style={styles.select}
-                value={tipo}
-                onChange={(e) => setTipo(e.target.value as TicketTipo)}
-              >
+              <select style={styles.select} value={tipo} onChange={(e) => setTipo(e.target.value as TicketTipo)}>
                 <option value="SAIDA">SAÍDA</option>
                 <option value="ENTRADA">ENTRADA</option>
               </select>
@@ -666,6 +720,7 @@ export default function MaterialTicketNovoPage() {
                   setOcrNote(null);
                   setLastPayload(null);
                   setLastShareFile(null);
+                  setLastResumo(null);
                 }}
               />
 
@@ -685,26 +740,12 @@ export default function MaterialTicketNovoPage() {
                 <img
                   src={previewUrl}
                   alt="Preview do ticket"
-                  style={{
-                    width: "100%",
-                    maxHeight: 420,
-                    objectFit: "contain",
-                    borderRadius: 16,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                  }}
+                  style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}
                 />
               ) : null}
             </div>
 
-            <div
-              style={{
-                gridColumn: "span 12",
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr",
-                gap: 10,
-              }}
-            >
+            <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <button type="button" style={styles.btnGhost} onClick={handleOcr} disabled={ocrLoading}>
                 {ocrLoading ? "Lendo..." : "Ler via OCR"}
               </button>
@@ -720,90 +761,60 @@ export default function MaterialTicketNovoPage() {
                   Compartilhar no WhatsApp
                 </button>
                 <div style={styles.hint}>
-                  No celular, abre o compartilhamento com a <b>foto</b> + texto (quando suportado).
-                  Se não suportar, abre WhatsApp com <b>texto</b>.
+                  No celular, abre o compartilhamento com a <b>foto</b> + texto (quando suportado). Se não suportar, abre WhatsApp com <b>texto</b>.
                 </div>
               </div>
             ) : null}
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Veículo *</label>
-              <input
-                style={styles.input}
-                value={veiculo}
-                onChange={(e) => setVeiculo(e.target.value)}
-                placeholder="Ex.: GWI-3J50"
-              />
+              <input style={styles.input} value={veiculo} onChange={(e) => setVeiculo(e.target.value)} placeholder="Ex.: KBK-5C37" />
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={dataBr}
-                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
-                placeholder="15/01/26"
-              />
-              <div style={styles.hint}>
-                {parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}
-              </div>
+              <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
+              <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Horário *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={hora}
-                onChange={(e) => setHora(maskTimeInput(e.target.value))}
-                placeholder="08:46:45"
-              />
+              <input style={styles.input} inputMode="numeric" value={hora} onChange={(e) => setHora(maskTimeInput(e.target.value))} placeholder="08:46:45" />
               <div style={styles.hint}>{parsed.horaOk ? "OK" : "Digite só números (084645)"}</div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Origem *</label>
-              <input
-                style={styles.input}
-                value={origem}
-                onChange={(e) => setOrigem(e.target.value)}
-                placeholder="Ex.: GPA ENGENHARIA"
-              />
+              <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: USINA UA-03" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Destino *</label>
-              <input
-                style={styles.input}
-                value={destino}
-                onChange={(e) => setDestino(e.target.value)}
-                placeholder="Ex.: CARGILL"
-              />
+              <label style={styles.label}>Obra / Destino *</label>
+              <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: PMRV TAPA BURACO" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Material *</label>
+              <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: MASSA USINADA (CBUQ)" />
+            </div>
+
+            <div style={{ gridColumn: "span 12" }}>
+              <label style={styles.label}>Ordem de Compra (OC)</label>
               <input
                 style={styles.input}
-                value={material}
-                onChange={(e) => setMaterial(e.target.value)}
-                placeholder="Ex.: MASSA USINADA (CBUQ)"
+                value={oc}
+                onChange={(e) => setOc(e.target.value)}
+                placeholder="Ex.: 32026 (deixe vazio pra prefeitura/ordem ilimitada)"
               />
+              <div style={styles.hint}>
+                Se a obra for “infinita” (prefeitura), pode deixar vazio (OC = NULL).
+              </div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Peso (t) *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={peso}
-                onChange={(e) => setPeso(maskPesoTon3(e.target.value))}
-                placeholder="14.210"
-              />
-              <div style={styles.hint}>
-                {parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}
-              </div>
+              <input style={styles.input} inputMode="numeric" value={peso} onChange={(e) => setPeso(maskPesoTon3(e.target.value))} placeholder="14.210" />
+              <div style={styles.hint}>{parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}</div>
             </div>
 
             {ocrRaw ? (
