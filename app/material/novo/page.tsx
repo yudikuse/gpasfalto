@@ -119,15 +119,13 @@ async function blobToDataURL(blob: Blob): Promise<string> {
 /**
  * ✅ FIX DO 413:
  * Comprime/redimensiona a imagem antes de mandar pro OCR (base64).
- * Mantém o upload original para o Supabase (se você quiser, podemos otimizar o upload depois).
+ * Mantém o upload original para o Supabase.
  */
 async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; note: string | null }> {
-  // Só imagens
   if (!file.type.startsWith("image/")) {
     return { dataUrl: await fileToDataURL(file), note: null };
   }
 
-  // Se já for pequena, manda como está
   if (file.size <= 900_000) {
     return { dataUrl: await fileToDataURL(file), note: null };
   }
@@ -144,7 +142,6 @@ async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; n
     const w = img.naturalWidth || img.width;
     const h = img.naturalHeight || img.height;
 
-    // alvo seguro para não estourar payload
     const maxW = 1600;
     const maxH = 1600;
     const scale = Math.min(1, maxW / w, maxH / h);
@@ -157,7 +154,6 @@ async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; n
     canvas.height = ch;
     const ctx = canvas.getContext("2d");
     if (!ctx) {
-      // fallback
       return { dataUrl: await fileToDataURL(file), note: null };
     }
 
@@ -211,16 +207,15 @@ function buildWhatsappMessage(p: {
   dataISO: string;
   horarioISO: string;
   pesoNum: number;
-  fileUrl?: string | null;
   savedId?: number | null;
 }) {
-  const { tipo, veiculo, origem, destino, material, dataISO, horarioISO, pesoNum, fileUrl, savedId } = p;
+  const { tipo, veiculo, origem, destino, material, dataISO, horarioISO, pesoNum, savedId } = p;
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
     return `${d}/${m}/${y}`;
   })();
 
-  const base =
+  return (
     `✅ Ticket de ${tipo}\n` +
     `ID: ${savedId ?? "-"}\n` +
     `Veículo: ${veiculo}\n` +
@@ -228,14 +223,11 @@ function buildWhatsappMessage(p: {
     `Origem: ${origem}\n` +
     `Destino: ${destino}\n` +
     `Material: ${material}\n` +
-    `Peso (t): ${pesoNum.toFixed(3)}\n`;
-
-  if (fileUrl) return base + `\n📎 Link da foto: ${fileUrl}`;
-  return base;
+    `Peso (t): ${pesoNum.toFixed(3)}\n`
+  );
 }
 
 export default function MaterialTicketNovoPage() {
-  // ✅ padrão SAÍDA
   const [tipo, setTipo] = useState<TicketTipo>("SAIDA");
 
   const [file, setFile] = useState<File | null>(null);
@@ -259,8 +251,7 @@ export default function MaterialTicketNovoPage() {
   const [ocrRaw, setOcrRaw] = useState<string | null>(null);
   const [ocrNote, setOcrNote] = useState<string | null>(null);
 
-  // ✅ compartilhar pós-salvar
-  const [lastFileUrl, setLastFileUrl] = useState<string | null>(null);
+  // ✅ compartilhar pós-salvar (somente foto + texto; sem link)
   const [lastShareFile, setLastShareFile] = useState<File | null>(null);
   const [lastPayload, setLastPayload] = useState<{
     tipo: TicketTipo;
@@ -346,7 +337,6 @@ export default function MaterialTicketNovoPage() {
 
     setOcrLoading(true);
     try {
-      // ✅ aqui está o fix do 413
       const { dataUrl, note } = await makeOcrDataUrlFromImage(file);
       setOcrNote(note);
 
@@ -356,9 +346,10 @@ export default function MaterialTicketNovoPage() {
         body: JSON.stringify({ imageBase64: dataUrl }),
       });
 
-      // erro explícito pra 413 (caso ainda aconteça)
       if (res.status === 413) {
-        throw new Error("Foto muito grande para OCR. O app tentou otimizar, mas ainda excedeu o limite. Tire a foto mais de longe (menos resolução) e tente novamente.");
+        throw new Error(
+          "Foto muito grande para OCR. O app tentou otimizar, mas ainda excedeu o limite. Tire a foto mais de longe (menos resolução) e tente novamente."
+        );
       }
 
       const js = await res.json().catch(() => null);
@@ -443,12 +434,6 @@ export default function MaterialTicketNovoPage() {
       setSavedId(newId);
       setSavedMsg("Salvo com sucesso!");
 
-      // ✅ link assinado (fallback do WhatsApp)
-      const signed = await supabase.storage.from("tickets").createSignedUrl(storagePath, 60 * 60 * 24 * 7);
-      const signedUrl = signed.data?.signedUrl ?? null;
-      setLastFileUrl(signedUrl);
-
-      // ✅ guarda payload pra compartilhar
       if (newId) {
         setLastPayload({
           tipo,
@@ -465,10 +450,8 @@ export default function MaterialTicketNovoPage() {
         setLastPayload(null);
       }
 
-      // ✅ guarda o arquivo para compartilhar via Web Share (foto no WhatsApp)
       setLastShareFile(file!);
 
-      // limpa só a foto atual
       setFile(null);
       setPreviewUrl(null);
       setOcrRaw(null);
@@ -492,17 +475,15 @@ export default function MaterialTicketNovoPage() {
       dataISO: lastPayload.dataISO,
       horarioISO: lastPayload.horarioISO,
       pesoNum: lastPayload.pesoNum,
-      fileUrl: lastFileUrl,
       savedId: lastPayload.id,
     });
 
-    // ✅ Melhor opção no celular: compartilhar A FOTO + texto (abre lista e você escolhe WhatsApp/grupo)
+    // ✅ Melhor no celular: compartilhar A FOTO + texto
     try {
       const navAny: any = navigator as any;
 
       if (navAny?.share && lastShareFile) {
         const withFile = { files: [lastShareFile] };
-
         if (!navAny.canShare || navAny.canShare(withFile)) {
           await navAny.share({
             title: "Ticket de material",
@@ -516,7 +497,7 @@ export default function MaterialTicketNovoPage() {
       // se cancelar ou falhar, cai no fallback
     }
 
-    // fallback: WhatsApp com texto + link assinado
+    // fallback: WhatsApp com texto (sem link)
     const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
     window.open(url, "_blank");
   }
@@ -536,7 +517,7 @@ export default function MaterialTicketNovoPage() {
       borderRadius: 14,
       border: "1px solid #e5e7eb",
       padding: "12px 12px",
-      fontSize: 16, // ✅ evita zoom do iOS
+      fontSize: 16,
       outline: "none",
       background: "#ffffff",
       color: "var(--gp-text)",
@@ -594,12 +575,21 @@ export default function MaterialTicketNovoPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        <header className="page-header" style={{ flexDirection: "column", alignItems: "center", gap: 8 }}>
+        <header
+          className="page-header"
+          style={{ flexDirection: "column", alignItems: "center", gap: 8 }}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/gpasfalto-logo.png"
             alt="GP Asfalto"
-            style={{ width: 110, height: 110, objectFit: "contain", border: "none", background: "transparent" }}
+            style={{
+              width: 110,
+              height: 110,
+              objectFit: "contain",
+              border: "none",
+              background: "transparent",
+            }}
           />
           <div style={{ textAlign: "center" }}>
             <div className="brand-text-main">Materiais • Ticket</div>
@@ -611,18 +601,40 @@ export default function MaterialTicketNovoPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Novo ticket</div>
-              <div className="section-subtitle">Tire a foto pelo celular, rode o OCR, ajuste e salve.</div>
+              <div className="section-subtitle">
+                Tire a foto pelo celular, rode o OCR, ajuste e salve.
+              </div>
             </div>
           </div>
 
           {error ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #fecaca",
+                background: "#fef2f2",
+                color: "#991b1b",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {error}
             </div>
           ) : null}
 
           {savedMsg ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #bbf7d0",
+                background: "#f0fdf4",
+                color: "#166534",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
             </div>
           ) : null}
@@ -630,7 +642,11 @@ export default function MaterialTicketNovoPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Tipo (padrão: SAÍDA)</label>
-              <select style={styles.select} value={tipo} onChange={(e) => setTipo(e.target.value as TicketTipo)}>
+              <select
+                style={styles.select}
+                value={tipo}
+                onChange={(e) => setTipo(e.target.value as TicketTipo)}
+              >
                 <option value="SAIDA">SAÍDA</option>
                 <option value="ENTRADA">ENTRADA</option>
               </select>
@@ -639,7 +655,6 @@ export default function MaterialTicketNovoPage() {
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Foto do ticket *</label>
 
-              {/* ✅ abre câmera no celular */}
               <input
                 style={styles.input}
                 type="file"
@@ -650,7 +665,6 @@ export default function MaterialTicketNovoPage() {
                   setOcrRaw(null);
                   setOcrNote(null);
                   setLastPayload(null);
-                  setLastFileUrl(null);
                   setLastShareFile(null);
                 }}
               />
@@ -658,7 +672,11 @@ export default function MaterialTicketNovoPage() {
               <div style={styles.hint}>
                 No celular isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
               </div>
-              {ocrNote ? <div style={styles.hint}><b>{ocrNote}</b></div> : null}
+              {ocrNote ? (
+                <div style={styles.hint}>
+                  <b>{ocrNote}</b>
+                </div>
+              ) : null}
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
@@ -667,12 +685,26 @@ export default function MaterialTicketNovoPage() {
                 <img
                   src={previewUrl}
                   alt="Preview do ticket"
-                  style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}
+                  style={{
+                    width: "100%",
+                    maxHeight: 420,
+                    objectFit: "contain",
+                    borderRadius: 16,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                  }}
                 />
               ) : null}
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div
+              style={{
+                gridColumn: "span 12",
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 10,
+              }}
+            >
               <button type="button" style={styles.btnGhost} onClick={handleOcr} disabled={ocrLoading}>
                 {ocrLoading ? "Lendo..." : "Ler via OCR"}
               </button>
@@ -688,47 +720,90 @@ export default function MaterialTicketNovoPage() {
                   Compartilhar no WhatsApp
                 </button>
                 <div style={styles.hint}>
-                  No celular, abre o compartilhamento com a <b>foto</b> + texto (quando suportado). Se não suportar, abre WhatsApp com texto+link.
+                  No celular, abre o compartilhamento com a <b>foto</b> + texto (quando suportado).
+                  Se não suportar, abre WhatsApp com <b>texto</b>.
                 </div>
               </div>
             ) : null}
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Veículo *</label>
-              <input style={styles.input} value={veiculo} onChange={(e) => setVeiculo(e.target.value)} placeholder="Ex.: GWI-3J50" />
+              <input
+                style={styles.input}
+                value={veiculo}
+                onChange={(e) => setVeiculo(e.target.value)}
+                placeholder="Ex.: GWI-3J50"
+              />
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data *</label>
-              <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
-              <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={dataBr}
+                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
+                placeholder="15/01/26"
+              />
+              <div style={styles.hint}>
+                {parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}
+              </div>
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Horário *</label>
-              <input style={styles.input} inputMode="numeric" value={hora} onChange={(e) => setHora(maskTimeInput(e.target.value))} placeholder="08:46:45" />
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={hora}
+                onChange={(e) => setHora(maskTimeInput(e.target.value))}
+                placeholder="08:46:45"
+              />
               <div style={styles.hint}>{parsed.horaOk ? "OK" : "Digite só números (084645)"}</div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Origem *</label>
-              <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: GPA ENGENHARIA" />
+              <input
+                style={styles.input}
+                value={origem}
+                onChange={(e) => setOrigem(e.target.value)}
+                placeholder="Ex.: GPA ENGENHARIA"
+              />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Destino *</label>
-              <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: CARGILL" />
+              <input
+                style={styles.input}
+                value={destino}
+                onChange={(e) => setDestino(e.target.value)}
+                placeholder="Ex.: CARGILL"
+              />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Material *</label>
-              <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: MASSA USINADA (CBUQ)" />
+              <input
+                style={styles.input}
+                value={material}
+                onChange={(e) => setMaterial(e.target.value)}
+                placeholder="Ex.: MASSA USINADA (CBUQ)"
+              />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Peso (t) *</label>
-              <input style={styles.input} inputMode="numeric" value={peso} onChange={(e) => setPeso(maskPesoTon3(e.target.value))} placeholder="14.210" />
-              <div style={styles.hint}>{parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}</div>
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={peso}
+                onChange={(e) => setPeso(maskPesoTon3(e.target.value))}
+                placeholder="14.210"
+              />
+              <div style={styles.hint}>
+                {parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}
+              </div>
             </div>
 
             {ocrRaw ? (
