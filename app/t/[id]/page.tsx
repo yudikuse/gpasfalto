@@ -1,221 +1,253 @@
-// FILE: app/t/[id]/page.tsx
-import { createClient } from "@supabase/supabase-js";
+"use client";
 
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
+import { useEffect, useMemo, useState } from "react";
+import { createClient } from "@supabase/supabase-js";
 
 type TicketRow = {
   id: number;
-  tipo: string | null; // "ENTRADA" | "SAIDA"
+  created_at: string;
+  tipo: string | null;
   veiculo: string | null;
-  data: string | null; // date no formato "YYYY-MM-DD" ou "DD/MM/YY"
-  horario: string | null; // "HH:MM:SS"
   origem: string | null;
   destino: string | null;
   material: string | null;
-  peso: number | null;
-  arquivo_path: string | null; // ex: "material/2026-01-15/xxx.jpg"
-  created_at?: string | null;
+  data: string | null; // YYYY-MM-DD
+  horario: string | null; // HH:mm:ss
+  peso_t: number | null;
+  arquivo_path: string | null;
+  arquivo_nome: string | null;
+  arquivo_mime: string | null;
+  arquivo_size: number | null;
 };
 
-function getAppBaseUrl() {
-  // tenta usar URL do ambiente primeiro (mais confiável em produção)
-  const env =
-    process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
-
-  if (env) return env.replace(/\/+$/, "");
-  return "https://gpasfalto.vercel.app";
+function formatDateBR(iso: string | null) {
+  if (!iso) return "";
+  // iso pode vir "2026-02-10"
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  const [, yyyy, mm, dd] = m;
+  return `${dd}/${mm}/${yyyy.slice(-2)}`;
 }
 
-function getSupabaseConfig() {
-  const url =
-    process.env.NEXT_PUBLIC_SUPABASE_URL ||
-    process.env.SUPABASE_URL ||
-    "";
-
-  // no seu projeto já aparece muito como PUBLISHABLE_DEFAULT_KEY
-  const key =
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_PUBLIC_KEY ||
-    process.env.SUPABASE_ANON_KEY ||
-    "";
-
-  return { url, key };
-}
-
-function formatDateBR(s: string | null) {
-  if (!s) return "";
-  // já pode vir "DD/MM/YY"
-  if (/^\d{2}\/\d{2}\/\d{2,4}$/.test(s)) return s.length === 8 ? s : s.slice(0, 8);
-
-  // "YYYY-MM-DD"
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (m) return `${m[3]}/${m[2]}/${m[1].slice(2)}`;
-  return s;
-}
-
-function formatPeso(p: number | null) {
+function fmtPeso(p: number | null) {
   if (p === null || !Number.isFinite(p)) return "";
   return Number(p).toFixed(3);
 }
 
-function buildTicketText(t: TicketRow, shareUrl: string) {
-  const tipo = (t.tipo || "").toUpperCase().includes("ENTR") ? "ENTRADA" : "SAÍDA";
-  const dt = `${formatDateBR(t.data)} ${t.horario || ""}`.trim();
+export default function TicketSharePage({ params }: { params: { id: string } }) {
+  const ticketId = useMemo(() => {
+    const n = Number(params?.id);
+    return Number.isInteger(n) && n > 0 ? n : null;
+  }, [params?.id]);
 
-  const lines = [
-    `✅ Ticket de ${tipo}`,
-    `ID: ${t.id}`,
-    `Veículo: ${t.veiculo || "-"}`,
-    `Data/Hora: ${dt || "-"}`,
-    `Origem: ${t.origem || "-"}`,
-    `Destino: ${t.destino || "-"}`,
-    `Material: ${t.material || "-"}`,
-    `Peso (t): ${formatPeso(t.peso) || "-"}`,
-    ``,
-    `🔗 Link curto: ${shareUrl}`,
-  ];
+  // ✅ aceita ANON_KEY ou o publishable default que você já tem
+  const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
+  const SUPABASE_KEY =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT ||
+    "";
 
-  return lines.join("\n");
-}
+  const [origin, setOrigin] = useState<string>("");
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string>("");
+  const [ticket, setTicket] = useState<TicketRow | null>(null);
+  const [imageUrl, setImageUrl] = useState<string>("");
 
-export default async function TicketSharePage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const idNum = Number(params?.id);
-  if (!Number.isFinite(idNum) || idNum <= 0) {
-    return (
-      <main style={{ padding: 16, fontFamily: "system-ui" }}>
-        <h1 style={{ margin: 0 }}>Ticket</h1>
-        <p style={{ marginTop: 8 }}>ID inválido.</p>
-      </main>
-    );
+  const shareUrl = useMemo(() => {
+    if (!origin || !ticketId) return "";
+    return `${origin}/t/${ticketId}`;
+  }, [origin, ticketId]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") setOrigin(window.location.origin);
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function run() {
+      setErr("");
+      setTicket(null);
+      setImageUrl("");
+      setLoading(true);
+
+      try {
+        if (!ticketId) throw new Error("ID inválido.");
+        if (!SUPABASE_URL || !SUPABASE_KEY) {
+          throw new Error(
+            "Faltam variáveis NEXT_PUBLIC_SUPABASE_URL e/ou NEXT_PUBLIC_SUPABASE_ANON_KEY (ou NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT)."
+          );
+        }
+
+        const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+        const { data, error } = await supabase
+          .from("material_tickets")
+          .select(
+            "id,created_at,tipo,veiculo,origem,destino,material,data,horario,peso_t,arquivo_path,arquivo_nome,arquivo_mime,arquivo_size"
+          )
+          .eq("id", ticketId)
+          .maybeSingle();
+
+        if (error) throw new Error(error.message);
+        if (!data) throw new Error("Ticket não encontrado.");
+
+        if (!alive) return;
+        setTicket(data as TicketRow);
+
+        // tenta carregar imagem (não precisa ser “link curto” aqui, só exibir)
+        if (data?.arquivo_path) {
+          // 1) tenta publicUrl (se bucket for público)
+          const pub = supabase.storage.from("tickets").getPublicUrl(data.arquivo_path);
+          const publicUrl = pub?.data?.publicUrl || "";
+
+          if (publicUrl) {
+            setImageUrl(publicUrl);
+          } else {
+            // 2) fallback: signedUrl (se policy permitir)
+            const signed = await supabase.storage
+              .from("tickets")
+              .createSignedUrl(data.arquivo_path, 60 * 60 * 24); // 24h
+            if (signed?.data?.signedUrl) setImageUrl(signed.data.signedUrl);
+          }
+        }
+      } catch (e: any) {
+        if (!alive) return;
+        setErr(e?.message || "Erro inesperado.");
+      } finally {
+        if (!alive) return;
+        setLoading(false);
+      }
+    }
+
+    run();
+    return () => {
+      alive = false;
+    };
+  }, [ticketId, SUPABASE_URL, SUPABASE_KEY]);
+
+  const shareText = useMemo(() => {
+    if (!ticket) return "";
+    const dt = `${formatDateBR(ticket.data)} ${ticket.horario || ""}`.trim();
+
+    return [
+      `Ticket de ${ticket.tipo || ""}`.trim(),
+      `ID: ${ticket.id}`,
+      `Veículo: ${ticket.veiculo || ""}`.trim(),
+      `Data/Hora: ${dt}`.trim(),
+      `Origem: ${ticket.origem || ""}`.trim(),
+      `Destino: ${ticket.destino || ""}`.trim(),
+      `Material: ${ticket.material || ""}`.trim(),
+      `Peso (t): ${fmtPeso(ticket.peso_t)}`.trim(),
+      "",
+      `Ver: ${shareUrl}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }, [ticket, shareUrl]);
+
+  async function handleShare() {
+    if (!shareText) return;
+
+    try {
+      // share sheet (celular) — melhor pra “escolher grupo”
+      // (não dá pra selecionar grupo automaticamente pelo WhatsApp)
+      if (navigator.share) {
+        await navigator.share({
+          title: "Ticket",
+          text: shareText,
+          url: shareUrl || undefined,
+        });
+        return;
+      }
+    } catch {
+      // cai pro fallback abaixo
+    }
+
+    const wa = `https://wa.me/?text=${encodeURIComponent(shareText)}`;
+    window.open(wa, "_blank");
   }
 
-  const { url, key } = getSupabaseConfig();
-  if (!url || !key) {
-    return (
-      <main style={{ padding: 16, fontFamily: "system-ui" }}>
-        <h1 style={{ margin: 0 }}>Ticket</h1>
-        <p style={{ marginTop: 8 }}>
-          Faltam variáveis do Supabase:
-          <br />
-          - NEXT_PUBLIC_SUPABASE_URL
-          <br />
-          - NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY (ou NEXT_PUBLIC_SUPABASE_ANON_KEY)
-        </p>
-      </main>
-    );
+  async function handleCopy() {
+    if (!shareText) return;
+    try {
+      await navigator.clipboard.writeText(shareText);
+      alert("Copiado!");
+    } catch {
+      alert("Não consegui copiar automaticamente. Selecione e copie manualmente.");
+    }
   }
-
-  const supabase = createClient(url, key);
-
-  const { data: ticket, error } = await supabase
-    .from("material_tickets")
-    .select("*")
-    .eq("id", idNum)
-    .maybeSingle<TicketRow>();
-
-  if (error || !ticket) {
-    return (
-      <main style={{ padding: 16, fontFamily: "system-ui" }}>
-        <h1 style={{ margin: 0 }}>Ticket</h1>
-        <p style={{ marginTop: 8 }}>Ticket não encontrado.</p>
-      </main>
-    );
-  }
-
-  const baseUrl = getAppBaseUrl();
-  const shareUrl = `${baseUrl}/t/${ticket.id}`;
-
-  // pega URL assinada da foto (não fica “curta”, mas fica só dentro da página)
-  let imageUrl: string | null = null;
-  if (ticket.arquivo_path) {
-    const { data } = await supabase.storage
-      .from("tickets")
-      .createSignedUrl(ticket.arquivo_path, 60 * 60 * 24 * 7); // 7 dias
-    imageUrl = data?.signedUrl || null;
-  }
-
-  const waText = buildTicketText(ticket, shareUrl);
-  const waLink = `https://wa.me/?text=${encodeURIComponent(waText)}`;
 
   return (
-    <main style={{ padding: 16, fontFamily: "system-ui", maxWidth: 820, margin: "0 auto" }}>
-      <h1 style={{ margin: 0 }}>Ticket</h1>
-      <p style={{ marginTop: 6, opacity: 0.8 }}>Compartilhamento (link curto)</p>
+    <div style={{ padding: 16, maxWidth: 900, margin: "0 auto" }}>
+      <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 8 }}>Ticket</h1>
 
-      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 12 }}>
-        <a
-          href={waLink}
-          target="_blank"
-          rel="noreferrer"
-          style={{
-            display: "inline-block",
-            padding: "10px 14px",
-            borderRadius: 10,
-            background: "#111827",
-            color: "white",
-            textDecoration: "none",
-            fontWeight: 600,
-          }}
-        >
-          Compartilhar no WhatsApp
-        </a>
+      {loading && <p>Carregando...</p>}
 
-        <a
-          href={shareUrl}
-          style={{
-            display: "inline-block",
-            padding: "10px 14px",
-            borderRadius: 10,
-            background: "#f3f4f6",
-            color: "#111827",
-            textDecoration: "none",
-            fontWeight: 600,
-          }}
-        >
-          Copiar/abrir link curto
-        </a>
-      </div>
-
-      {imageUrl ? (
-        <div style={{ marginTop: 16 }}>
-          <img
-            src={imageUrl}
-            alt={`Ticket ${ticket.id}`}
-            style={{
-              width: "100%",
-              maxHeight: 520,
-              objectFit: "contain",
-              borderRadius: 12,
-              border: "1px solid #e5e7eb",
-              background: "#fff",
-            }}
-          />
+      {!loading && err && (
+        <div style={{ padding: 12, border: "1px solid #fca5a5", borderRadius: 10 }}>
+          <p style={{ margin: 0, fontWeight: 700 }}>Erro</p>
+          <p style={{ margin: "6px 0 0 0" }}>{err}</p>
         </div>
-      ) : (
-        <p style={{ marginTop: 16, opacity: 0.8 }}>Sem foto associada.</p>
       )}
 
-      <div
-        style={{
-          marginTop: 16,
-          padding: 12,
-          borderRadius: 12,
-          border: "1px solid #e5e7eb",
-          background: "#fff",
-          lineHeight: 1.5,
-          whiteSpace: "pre-wrap",
-        }}
-      >
-        {waText}
-      </div>
-    </main>
+      {!loading && ticket && (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <button
+              onClick={handleShare}
+              style={{
+                padding: "12px 14px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Compartilhar (WhatsApp)
+            </button>
+
+            <button
+              onClick={handleCopy}
+              style={{
+                padding: "12px 14px",
+                borderRadius: 10,
+                border: "1px solid #ddd",
+                fontWeight: 700,
+                cursor: "pointer",
+              }}
+            >
+              Copiar texto
+            </button>
+          </div>
+
+          {imageUrl && (
+            <div style={{ border: "1px solid #eee", borderRadius: 12, overflow: "hidden" }}>
+              <img
+                src={imageUrl}
+                alt="Foto do ticket"
+                style={{ width: "100%", height: "auto", display: "block" }}
+              />
+            </div>
+          )}
+
+          <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+            <div><b>ID:</b> {ticket.id}</div>
+            <div><b>Tipo:</b> {ticket.tipo}</div>
+            <div><b>Veículo:</b> {ticket.veiculo}</div>
+            <div><b>Data/Hora:</b> {formatDateBR(ticket.data)} {ticket.horario}</div>
+            <div><b>Origem:</b> {ticket.origem}</div>
+            <div><b>Destino:</b> {ticket.destino}</div>
+            <div><b>Material:</b> {ticket.material}</div>
+            <div><b>Peso (t):</b> {fmtPeso(ticket.peso_t)}</div>
+          </div>
+
+          <div style={{ border: "1px solid #eee", borderRadius: 12, padding: 12 }}>
+            <div style={{ fontWeight: 800, marginBottom: 8 }}>Texto que vai pro WhatsApp</div>
+            <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>{shareText}</pre>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
