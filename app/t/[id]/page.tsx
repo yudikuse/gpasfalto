@@ -1,44 +1,56 @@
 // FILE: app/t/[id]/page.tsx
-import { createClient } from "@supabase/supabase-js";
 import { headers } from "next/headers";
-import { notFound } from "next/navigation";
+import { createClient } from "@supabase/supabase-js";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
-function getBaseUrl() {
-  const h = headers();
+type TicketRow = {
+  id: number;
+  tipo: string | null;
+  veiculo: string | null;
+  data: string | null; // YYYY-MM-DD (date)
+  horario: string | null; // HH:MM:SS (time)
+  origem: string | null;
+  destino: string | null;
+  material: string | null;
+  peso_t: number | null;
+  arquivo_path: string | null;
+};
+
+async function getBaseUrl() {
+  const h = await headers(); // ✅ Next 16: headers() é async
   const proto = h.get("x-forwarded-proto") || "https";
   const host = h.get("x-forwarded-host") || h.get("host") || "";
-  if (!host) return "https://gpasfalto.vercel.app";
-  return `${proto}://${host}`;
+  return host ? `${proto}://${host}` : "https://gpasfalto.vercel.app";
 }
 
-function formatDateBR(dateLike: any): string {
-  if (!dateLike) return "";
-  const s = String(dateLike).trim();
+function getSupabase() {
+  const url =
+    process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL || "";
+  const anon =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    "";
 
-  // já está em dd/mm/aa
-  if (/^\d{2}\/\d{2}\/\d{2,4}$/.test(s)) {
-    const [dd, mm, yy] = s.split("/");
-    const y2 = yy.length === 2 ? yy : yy.slice(-2);
-    return `${dd}/${mm}/${y2}`;
-  }
+  if (!url || !anon) return null;
 
-  // yyyy-mm-dd
-  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
-  if (m) {
-    const yy = m[1].slice(-2);
-    return `${m[3]}/${m[2]}/${yy}`;
-  }
-
-  return s;
+  return createClient(url, anon, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
 }
 
-function formatPeso3(v: any): string {
-  const n = typeof v === "number" ? v : Number.parseFloat(String(v).replace(",", "."));
-  if (!Number.isFinite(n)) return "";
-  return Number(n).toFixed(3);
+function fmtDateBR(iso: string | null) {
+  if (!iso) return "";
+  // iso "2026-01-16"
+  const m = iso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!m) return iso;
+  return `${m[3]}/${m[2]}/${m[1].slice(-2)}`;
+}
+
+function fmtPeso(p: number | null) {
+  if (p === null || !Number.isFinite(p)) return "";
+  return Number(p).toFixed(3);
 }
 
 export default async function TicketSharePage({
@@ -46,122 +58,138 @@ export default async function TicketSharePage({
 }: {
   params: { id: string };
 }) {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const supabaseKey =
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    "";
-
-  if (!supabaseUrl || !supabaseKey) {
+  const id = Number(params.id);
+  if (!Number.isFinite(id)) {
     return (
-      <main style={{ padding: 16, fontFamily: "system-ui, Arial" }}>
-        <h1 style={{ fontSize: 18, marginBottom: 8 }}>Ticket</h1>
-        <p style={{ color: "#b00020" }}>
-          Faltam variáveis <b>NEXT_PUBLIC_SUPABASE_URL</b> e/ou{" "}
-          <b>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY</b> no Vercel.
-        </p>
-      </main>
+      <div style={{ padding: 16, fontFamily: "system-ui" }}>ID inválido.</div>
     );
   }
 
-  const supabase = createClient(supabaseUrl, supabaseKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  const id = Number(params.id);
-  if (!Number.isFinite(id) || id <= 0) notFound();
-
-  const { data: row, error } = await supabase
-    .from("material_tickets")
-    .select("*")
-    .eq("id", id)
-    .single();
-
-  if (error || !row) notFound();
-
-  const baseUrl = getBaseUrl();
-  const shortLink = `${baseUrl}/t/${row.id}`;
-
-  // tenta gerar URL assinada da foto (bucket privado)
-  let signedUrl: string | null = null;
-  const path = (row.arquivo_path || "").toString().trim();
-  if (path) {
-    const { data: signed, error: signErr } = await supabase.storage
-      .from("tickets")
-      .createSignedUrl(path, 60 * 60 * 24 * 7); // 7 dias
-
-    if (!signErr && signed?.signedUrl) signedUrl = signed.signedUrl;
+  const supabase = getSupabase();
+  if (!supabase) {
+    return (
+      <div style={{ padding: 16, fontFamily: "system-ui" }}>
+        <div style={{ fontWeight: 700 }}>Ticket</div>
+        <div>Compartilhamento (link curto)</div>
+        <div style={{ marginTop: 8 }}>
+          Faltam variáveis NEXT_PUBLIC_SUPABASE_URL / NEXT_PUBLIC_SUPABASE_ANON_KEY
+          (ou SUPABASE_URL / SUPABASE_ANON_KEY).
+        </div>
+      </div>
+    );
   }
 
-  const tipo = (row.tipo || "").toString().trim().toUpperCase() || "TICKET";
-  const veiculo = (row.veiculo || "").toString().trim();
-  const origem = (row.origem || "").toString().trim();
-  const destino = (row.destino || "").toString().trim();
-  const material = (row.material || "").toString().trim();
-  const dataBr = formatDateBR(row.data);
-  const horario = (row.horario || "").toString().trim();
-  const peso = formatPeso3(row.peso_t ?? row.peso ?? row.peso_mask);
+  const { data: ticket, error } = await supabase
+    .from("material_tickets")
+    .select(
+      "id,tipo,veiculo,data,horario,origem,destino,material,peso_t,arquivo_path"
+    )
+    .eq("id", id)
+    .maybeSingle<TicketRow>();
 
-  const msg =
-    `${tipo} (link curto)\n` +
-    `ID: ${row.id}\n` +
-    (veiculo ? `Veículo: ${veiculo}\n` : "") +
-    (dataBr || horario ? `Data/Hora: ${dataBr} ${horario}`.trim() + `\n` : "") +
-    (origem ? `Origem: ${origem}\n` : "") +
-    (destino ? `Destino: ${destino}\n` : "") +
-    (material ? `Material: ${material}\n` : "") +
-    (peso ? `Peso (t): ${peso}\n` : "") +
-    `\n${shortLink}`;
+  if (error) {
+    return (
+      <div style={{ padding: 16, fontFamily: "system-ui" }}>
+        Erro lendo ticket: {error.message}
+      </div>
+    );
+  }
 
-  const waUrl = `https://wa.me/?text=${encodeURIComponent(msg)}`;
+  if (!ticket) {
+    return (
+      <div style={{ padding: 16, fontFamily: "system-ui" }}>
+        Ticket não encontrado.
+      </div>
+    );
+  }
+
+  // ✅ Link curto (pra WhatsApp) — você vai usar isso no "compartilhar"
+  const baseUrl = await getBaseUrl();
+  const linkCurto = `${baseUrl}/t/${ticket.id}`;
+
+  // (Opcional) tentar assinar a URL pra abrir a foto dentro da página
+  let signedUrl: string | null = null;
+  if (ticket.arquivo_path) {
+    const { data } = await supabase.storage
+      .from("tickets")
+      .createSignedUrl(ticket.arquivo_path, 60 * 60 * 24); // 24h
+    signedUrl = data?.signedUrl ?? null;
+  }
+
+  const texto = [
+    `✅ Ticket de ${ticket.tipo || "-"}`,
+    `ID: ${ticket.id}`,
+    `Veículo: ${ticket.veiculo || "-"}`,
+    `Data/Hora: ${fmtDateBR(ticket.data)} ${ticket.horario || ""}`.trim(),
+    `Origem: ${ticket.origem || "-"}`,
+    `Destino: ${ticket.destino || "-"}`,
+    `Material: ${ticket.material || "-"}`,
+    `Peso (t): ${fmtPeso(ticket.peso_t) || "-"}`,
+    ``,
+    `🔗 Link (curto): ${linkCurto}`,
+  ].join("\n");
 
   return (
-    <main style={{ maxWidth: 720, margin: "0 auto", padding: 16, fontFamily: "system-ui, Arial" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
-        <h1 style={{ fontSize: 20, margin: 0 }}>{tipo}</h1>
-        <div style={{ color: "#666" }}>ID: {row.id}</div>
-      </div>
+    <div
+      style={{
+        maxWidth: 760,
+        margin: "24px auto",
+        padding: "0 16px",
+        fontFamily: "system-ui",
+      }}
+    >
+      <h1 style={{ margin: "0 0 12px 0" }}>
+        Ticket #{ticket.id} {ticket.tipo ? `(${ticket.tipo})` : ""}
+      </h1>
 
-      <div style={{ marginTop: 12, padding: 12, border: "1px solid #e5e5e5", borderRadius: 12 }}>
-        <div><b>Veículo:</b> {veiculo || "-"}</div>
-        <div><b>Data/Hora:</b> {(dataBr || "-") + (horario ? ` ${horario}` : "")}</div>
-        <div><b>Origem:</b> {origem || "-"}</div>
-        <div><b>Destino:</b> {destino || "-"}</div>
-        <div><b>Material:</b> {material || "-"}</div>
-        <div><b>Peso (t):</b> {peso || "-"}</div>
+      <div style={{ lineHeight: 1.6 }}>
+        <div>
+          <b>Veículo:</b> {ticket.veiculo || "-"}
+        </div>
+        <div>
+          <b>Data:</b> {fmtDateBR(ticket.data) || "-"}
+        </div>
+        <div>
+          <b>Horário:</b> {ticket.horario || "-"}
+        </div>
+        <div>
+          <b>Origem:</b> {ticket.origem || "-"}
+        </div>
+        <div>
+          <b>Destino:</b> {ticket.destino || "-"}
+        </div>
+        <div>
+          <b>Material:</b> {ticket.material || "-"}
+        </div>
+        <div>
+          <b>Peso (t):</b> {fmtPeso(ticket.peso_t) || "-"}
+        </div>
       </div>
 
       {signedUrl ? (
-        <div style={{ marginTop: 14 }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={signedUrl}
-            alt="Foto do ticket"
-            style={{ width: "100%", borderRadius: 12, border: "1px solid #eee" }}
-          />
-          <div style={{ marginTop: 10, display: "flex", gap: 10, flexWrap: "wrap" }}>
-            <a href={signedUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
-              Abrir foto
-            </a>
-            <a href={waUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
-              Compartilhar no WhatsApp
-            </a>
-          </div>
+        <div style={{ marginTop: 16 }}>
+          <a href={signedUrl} target="_blank" rel="noreferrer">
+            Abrir foto do ticket
+          </a>
         </div>
-      ) : (
-        <div style={{ marginTop: 14, color: "#666" }}>
-          Foto não disponível (sem arquivo_path ou sem permissão para assinar URL).
-          <div style={{ marginTop: 8 }}>
-            <a href={waUrl} target="_blank" rel="noreferrer" style={{ textDecoration: "underline" }}>
-              Compartilhar no WhatsApp
-            </a>
-          </div>
-        </div>
-      )}
+      ) : null}
 
-      <div style={{ marginTop: 16, padding: 12, borderRadius: 12, background: "#f7f7f7", whiteSpace: "pre-wrap" }}>
-        {msg}
+      <div style={{ marginTop: 16 }}>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>
+          Texto pra copiar e colar no WhatsApp
+        </div>
+        <pre
+          style={{
+            whiteSpace: "pre-wrap",
+            background: "#f3f4f6",
+            padding: 12,
+            borderRadius: 10,
+            overflow: "auto",
+          }}
+        >
+          {texto}
+        </pre>
       </div>
-    </main>
+    </div>
   );
 }
