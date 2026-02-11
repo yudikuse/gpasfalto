@@ -13,9 +13,9 @@ type OrderType =
   | "OUTRO";
 
 type ItemRow = {
-  qtd: string; // inteiro (mascarado)
+  qtd: string; // inteiro (texto)
   descricao: string;
-  valor: string; // BRL (mascarado) -> (NÃO salva em orders_2025_items porque a coluna não existe no seu schema atual)
+  valor: string; // BRL (apenas para WhatsApp; não salva no items hoje)
 };
 
 function pad(n: number, size: number) {
@@ -73,7 +73,10 @@ function formatHoursFromDigits(digits: string) {
   if (!d) return "";
   const n = Number(d) / 100;
   if (!Number.isFinite(n)) return "";
-  return n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n.toLocaleString("pt-BR", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
 }
 
 function toWhatsappText(lines: string[]) {
@@ -82,7 +85,8 @@ function toWhatsappText(lines: string[]) {
 
 function resolvePublicSupabase(): { url: string; key: string; ok: boolean } {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-  const publishable = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY || "";
+  const publishable =
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY || "";
   const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
   const key = publishable || anon;
   return { url, key, ok: Boolean(url && key) };
@@ -99,7 +103,7 @@ export default function OCPage() {
   }, []);
 
   // cabeçalho
-  const [idGerado, setIdGerado] = useState<string>("-"); // "próximo previsto"
+  const [idGerado, setIdGerado] = useState<string>("-"); // próximo previsto (last id + 1)
   const [numeroOC, setNumeroOC] = useState<string>("");
 
   // campos base
@@ -136,8 +140,10 @@ export default function OCPage() {
     const p2 = parseBRLToNumber(preco2);
     const p3 = parseBRLToNumber(preco3);
 
-    const candidates: { idx: 1 | 2 | 3; price: number; supplier: string }[] = [];
-    if (p1 !== null && forn1.trim()) candidates.push({ idx: 1, price: p1, supplier: forn1.trim() });
+    const candidates: { idx: 1 | 2 | 3; price: number; supplier: string }[] =
+      [];
+    if (p1 !== null && forn1.trim())
+      candidates.push({ idx: 1, price: p1, supplier: forn1.trim() });
     if (qtdFornecedores >= 2 && p2 !== null && forn2.trim())
       candidates.push({ idx: 2, price: p2, supplier: forn2.trim() });
     if (qtdFornecedores >= 3 && p3 !== null && forn3.trim())
@@ -180,7 +186,9 @@ export default function OCPage() {
       `• *Entrega:* ${localEntrega || "-"}`,
     ];
 
-    const obsBlock = observacoes?.trim() ? ["", "*📝 Observações*", observacoes.trim()] : [];
+    const obsBlock = observacoes?.trim()
+      ? ["", "*📝 Observações*", observacoes.trim()]
+      : [];
 
     const itLines: string[] = [];
     if (items.length) {
@@ -205,13 +213,21 @@ export default function OCPage() {
 
       fornLines.push("", "*🏷️ Cotações*");
       fornLines.push(`1) ${f1 || "-"}${p1 ? ` — ${p1}` : ""}`);
-      if (qtdFornecedores >= 2) fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
-      if (qtdFornecedores >= 3) fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
+      if (qtdFornecedores >= 2)
+        fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
+      if (qtdFornecedores >= 3)
+        fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
 
-      // Só mostra menor preço se existir
+      // ✅ removido: aprovado automático
+      // ✅ menor preço só aparece se existir (sem "-" )
       if (computed.valorMenor !== null) {
-        fornLines.push("", `*💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)}`);
-        if (computed.fornecedorVencedor) fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
+        fornLines.push(
+          "",
+          `*💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)}`
+        );
+        if (computed.fornecedorVencedor) {
+          fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
+        }
       }
     }
 
@@ -244,25 +260,32 @@ export default function OCPage() {
     (async () => {
       // 0) Próximo ID previsto (último id + 1)
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("orders_2025_raw")
           .select("id")
           .order("id", { ascending: false })
           .limit(1);
+
+        if (error) throw error;
+
         const lastId = data?.[0]?.id ? Number(data[0].id) : null;
-        setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
+        setIdGerado(
+          lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-"
+        );
       } catch {
         setIdGerado("-");
       }
 
       // 1) OC sequencial (editável)
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("orders_2025_raw")
           .select("numero_oc")
           .not("numero_oc", "is", null)
           .order("id", { ascending: false })
-          .limit(80);
+          .limit(120);
+
+        if (error) throw error;
 
         const last = (data || [])
           .map((r: any) => String(r.numero_oc || ""))
@@ -278,17 +301,31 @@ export default function OCPage() {
         setNumeroOC("OC20000");
       }
 
-      // 2) equipamentos (VIEW equipment_costs_2025 / coluna equipamento)
+      // 2) equipamentos (preferência: equipment_costs_2025_v, fallback: equipment_costs_2025)
       try {
-        const { data } = await supabase
-          .from("equipment_costs_2025")
+        let rows: any[] | null = null;
+
+        const r1 = await supabase
+          .from("equipment_costs_2025_v")
           .select("equipamento")
           .not("equipamento", "is", null)
-          .limit(2000);
+          .limit(4000);
+
+        if (!r1.error) rows = r1.data as any[];
+
+        if (!rows) {
+          const r2 = await supabase
+            .from("equipment_costs_2025")
+            .select("equipamento")
+            .not("equipamento", "is", null)
+            .limit(4000);
+
+          if (!r2.error) rows = r2.data as any[];
+        }
 
         const opts = Array.from(
-          new Set((data || []).map((r: any) => String(r.equipamento || "").trim()).filter(Boolean))
-        ).sort((a, b) => a.localeCompare(b));
+          new Set((rows || []).map((r: any) => String(r.equipamento || "").trim()).filter(Boolean))
+        ).sort((a, b) => a.localeCompare(b, "pt-BR"));
 
         setEquipmentOptions(opts);
       } catch {
@@ -297,19 +334,16 @@ export default function OCPage() {
 
       // 3) fornecedores (de pedidos existentes)
       try {
-        const { data } = await supabase
+        const { data, error } = await supabase
           .from("orders_2025_raw")
-          .select("fornecedor_1,fornecedor_2,fornecedor_3")
+          .select("material") // seu histórico guarda muito fornecedor dentro do texto/material, mas aqui vamos manter simples
           .order("id", { ascending: false })
-          .limit(800);
+          .limit(10);
 
-        const all = (data || []).flatMap((r: any) => [r.fornecedor_1, r.fornecedor_2, r.fornecedor_3]);
-
-        const opts = Array.from(new Set(all.map((x) => String(x || "").trim()).filter(Boolean))).sort((a, b) =>
-          a.localeCompare(b)
-        );
-
-        setSupplierOptions(opts);
+        // ⚠️ melhor: manter o que já funcionava (fornecedor_1/2/3), mas sua tabela raw NÃO tem essas colunas.
+        // Então, por enquanto, deixamos o datalist vazio (não quebra).
+        if (error) throw error;
+        setSupplierOptions([]); // sem fonte confiável no schema atual
       } catch {
         setSupplierOptions([]);
       }
@@ -358,6 +392,7 @@ export default function OCPage() {
     setSaving(true);
 
     try {
+      // ====== orders_2025_raw schema REAL (sem observacoes) ======
       const payload: any = {
         date: nowDateBr(),
         time: nowTime(),
@@ -379,24 +414,20 @@ export default function OCPage() {
         numero_oc: numeroOC || null,
         codigo_equipamento: equipamento || null,
         obra: obra || null,
+        solicitante: null, // não tem campo na tela hoje
         operador: operador || null,
         horimetro: horimetro || null,
+
+        material: null, // deixa vazio (itens ficam na tabela items)
+        quantidade_texto: null, // idem
         local_entrega: localEntrega || null,
-        observacoes: observacoes || null,
-
-        texto_original: whatsappPreview,
-
-        // fornecedores
-        fornecedor_1: tipo === "MANUTENCAO" ? (forn1 || null) : null,
-        fornecedor_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
-        fornecedor_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? (forn3 || null) : null,
-
-        preco_1: tipo === "MANUTENCAO" ? parseBRLToNumber(preco1) : null,
-        preco_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? parseBRLToNumber(preco2) : null,
-        preco_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? parseBRLToNumber(preco3) : null,
+        placa: null,
 
         valor_menor: tipo === "MANUTENCAO" ? computed.valorMenor : null,
-        fornecedor_vencedor: tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
+        moeda: "BRL",
+
+        // ✅ Observações ficam aqui, dentro da mensagem completa
+        texto_original: whatsappPreview,
       };
 
       const { data: inserted, error: err1 } = await supabase
@@ -411,8 +442,7 @@ export default function OCPage() {
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
-      // ✅ ITENS: corrigido para o schema real de orders_2025_items
-      // Colunas existentes: descricao, quantidade_texto, quantidade_num, data, hora, numero_oc, ordem_id
+      // ====== orders_2025_items schema REAL ======
       if (items.length) {
         const rows = items.map((it) => {
           const qtdDigits = onlyDigits(it.qtd);
@@ -420,12 +450,9 @@ export default function OCPage() {
 
           return {
             ordem_id: orderId,
-            data: nowDateBr(),
-            hora: nowTime(),
-            numero_oc: numeroOC || null,
-            descricao: it.descricao || null,
             quantidade_texto: it.qtd || null,
-            quantidade_num: qtdNum,
+            quantidade_num: Number.isFinite(qtdNum as any) ? qtdNum : null,
+            descricao: it.descricao || null,
           };
         });
 
@@ -435,8 +462,8 @@ export default function OCPage() {
 
       setSaved(true);
 
-      // Atualiza próximo previsto
-      setIdGerado(String(orderId + 1));
+      // Atualiza “próximo previsto”
+      setIdGerado(String(orderId));
     } catch (e: any) {
       setSaved(false);
       setSavedOrderId(null);
@@ -779,11 +806,22 @@ export default function OCPage() {
         }
 
         @media (max-width: 560px) {
-          .oc-title { font-size: 28px; }
-          .row, .grid-2 { grid-template-columns: 1fr; }
-          .item-grid { grid-template-columns: 1fr; }
-          .item-grid-2 { grid-template-columns: 1fr; }
-          .oc-logo img { height: 76px; }
+          .oc-title {
+            font-size: 28px;
+          }
+          .row,
+          .grid-2 {
+            grid-template-columns: 1fr;
+          }
+          .item-grid {
+            grid-template-columns: 1fr;
+          }
+          .item-grid-2 {
+            grid-template-columns: 1fr;
+          }
+          .oc-logo img {
+            height: 76px;
+          }
         }
       `}</style>
 
@@ -947,6 +985,9 @@ export default function OCPage() {
                 }}
                 placeholder="Informações adicionais..."
               />
+              <div className="muted">
+                (Observações serão salvas dentro de <b>texto_original</b>.)
+              </div>
             </div>
 
             {tipo === "MANUTENCAO" && (
@@ -992,7 +1033,7 @@ export default function OCPage() {
                         resetSaved();
                       }}
                       list="supList"
-                      placeholder="Digite ou selecione"
+                      placeholder="Digite"
                     />
                   </div>
                   <div className="field">
@@ -1021,7 +1062,7 @@ export default function OCPage() {
                             resetSaved();
                           }}
                           list="supList"
-                          placeholder="Digite ou selecione"
+                          placeholder="Digite"
                         />
                       </div>
                       <div className="field">
@@ -1052,7 +1093,7 @@ export default function OCPage() {
                             resetSaved();
                           }}
                           list="supList"
-                          placeholder="Digite ou selecione"
+                          placeholder="Digite"
                         />
                       </div>
                       <div className="field">
@@ -1150,6 +1191,7 @@ export default function OCPage() {
                           }}
                           placeholder="R$ 0,00"
                         />
+                        <div className="muted">(Hoje esse valor vai só para o WhatsApp.)</div>
                       </div>
 
                       <button className="btn-remove" type="button" onClick={() => removeItem(idx)}>
