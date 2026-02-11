@@ -1,4 +1,3 @@
-// FILE: app/oc/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -13,9 +12,9 @@ type OrderType =
   | "OUTRO";
 
 type ItemRow = {
-  qtd: string; // inteiro (texto)
+  qtd: string; // inteiro (digitos)
   descricao: string;
-  valor: string; // BRL (apenas para WhatsApp; não salva no items hoje)
+  valor: string; // BRL (mascarado) - NÃO salva em coluna (vira texto)
 };
 
 function pad(n: number, size: number) {
@@ -103,7 +102,7 @@ export default function OCPage() {
   }, []);
 
   // cabeçalho
-  const [idGerado, setIdGerado] = useState<string>("-"); // próximo previsto (last id + 1)
+  const [idGerado, setIdGerado] = useState<string>("-");
   const [numeroOC, setNumeroOC] = useState<string>("");
 
   // campos base
@@ -128,22 +127,22 @@ export default function OCPage() {
 
   const [equipmentOptions, setEquipmentOptions] = useState<string[]>([]);
   const [supplierOptions, setSupplierOptions] = useState<string[]>([]);
+  const [obraOptions, setObraOptions] = useState<string[]>([]);
+  const [operadorOptions, setOperadorOptions] = useState<string[]>([]);
+  const [localEntregaOptions, setLocalEntregaOptions] = useState<string[]>([]);
 
   const [saving, setSaving] = useState<boolean>(false);
   const [saved, setSaved] = useState<boolean>(false);
   const [savedOrderId, setSavedOrderId] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
 
-  // ====== computed: menor preço + vencedor ======
   const computed = useMemo(() => {
     const p1 = parseBRLToNumber(preco1);
     const p2 = parseBRLToNumber(preco2);
     const p3 = parseBRLToNumber(preco3);
 
-    const candidates: { idx: 1 | 2 | 3; price: number; supplier: string }[] =
-      [];
-    if (p1 !== null && forn1.trim())
-      candidates.push({ idx: 1, price: p1, supplier: forn1.trim() });
+    const candidates: { idx: 1 | 2 | 3; price: number; supplier: string }[] = [];
+    if (p1 !== null && forn1.trim()) candidates.push({ idx: 1, price: p1, supplier: forn1.trim() });
     if (qtdFornecedores >= 2 && p2 !== null && forn2.trim())
       candidates.push({ idx: 2, price: p2, supplier: forn2.trim() });
     if (qtdFornecedores >= 3 && p3 !== null && forn3.trim())
@@ -158,7 +157,6 @@ export default function OCPage() {
     };
   }, [preco1, preco2, preco3, forn1, forn2, forn3, qtdFornecedores]);
 
-  // ====== preview whatsapp ======
   const whatsappPreview = useMemo(() => {
     const titulo =
       tipo === "ABASTECIMENTO"
@@ -213,21 +211,12 @@ export default function OCPage() {
 
       fornLines.push("", "*🏷️ Cotações*");
       fornLines.push(`1) ${f1 || "-"}${p1 ? ` — ${p1}` : ""}`);
-      if (qtdFornecedores >= 2)
-        fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
-      if (qtdFornecedores >= 3)
-        fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
+      if (qtdFornecedores >= 2) fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
+      if (qtdFornecedores >= 3) fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
 
-      // ✅ removido: aprovado automático
-      // ✅ menor preço só aparece se existir (sem "-" )
       if (computed.valorMenor !== null) {
-        fornLines.push(
-          "",
-          `*💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)}`
-        );
-        if (computed.fornecedorVencedor) {
-          fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
-        }
+        fornLines.push("", `*💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)}`);
+        if (computed.fornecedorVencedor) fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
       }
     }
 
@@ -260,32 +249,26 @@ export default function OCPage() {
     (async () => {
       // 0) Próximo ID previsto (último id + 1)
       try {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from("orders_2025_raw")
           .select("id")
           .order("id", { ascending: false })
           .limit(1);
 
-        if (error) throw error;
-
         const lastId = data?.[0]?.id ? Number(data[0].id) : null;
-        setIdGerado(
-          lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-"
-        );
+        setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
       } catch {
         setIdGerado("-");
       }
 
       // 1) OC sequencial (editável)
       try {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from("orders_2025_raw")
           .select("numero_oc")
           .not("numero_oc", "is", null)
           .order("id", { ascending: false })
           .limit(120);
-
-        if (error) throw error;
 
         const last = (data || [])
           .map((r: any) => String(r.numero_oc || ""))
@@ -301,56 +284,64 @@ export default function OCPage() {
         setNumeroOC("OC20000");
       }
 
-      // 2) equipamentos (preferência: equipment_costs_2025_v, fallback: equipment_costs_2025)
+      // 2) equipamentos (VIEW equipment_costs_2025_v / coluna equipamento)
       try {
-        let rows: any[] | null = null;
-
-        const r1 = await supabase
+        const { data } = await supabase
           .from("equipment_costs_2025_v")
           .select("equipamento")
           .not("equipamento", "is", null)
-          .limit(4000);
-
-        if (!r1.error) rows = r1.data as any[];
-
-        if (!rows) {
-          const r2 = await supabase
-            .from("equipment_costs_2025")
-            .select("equipamento")
-            .not("equipamento", "is", null)
-            .limit(4000);
-
-          if (!r2.error) rows = r2.data as any[];
-        }
+          .limit(5000);
 
         const opts = Array.from(
-          new Set((rows || []).map((r: any) => String(r.equipamento || "").trim()).filter(Boolean))
-        ).sort((a, b) => a.localeCompare(b, "pt-BR"));
+          new Set((data || []).map((r: any) => String(r.equipamento || "").trim()).filter(Boolean))
+        ).sort((a, b) => a.localeCompare(b));
 
         setEquipmentOptions(opts);
       } catch {
         setEquipmentOptions([]);
       }
 
-      // 3) fornecedores (de pedidos existentes)
+      // 3) fornecedores + obra + operador + local_entrega (de pedidos existentes)
       try {
-        const { data, error } = await supabase
+        const { data } = await supabase
           .from("orders_2025_raw")
-          .select("material") // seu histórico guarda muito fornecedor dentro do texto/material, mas aqui vamos manter simples
+          .select("fornecedor_1,fornecedor_2,fornecedor_3,obra,operador,local_entrega")
           .order("id", { ascending: false })
-          .limit(10);
+          .limit(1200);
 
-        // ⚠️ melhor: manter o que já funcionava (fornecedor_1/2/3), mas sua tabela raw NÃO tem essas colunas.
-        // Então, por enquanto, deixamos o datalist vazio (não quebra).
-        if (error) throw error;
-        setSupplierOptions([]); // sem fonte confiável no schema atual
+        const allSup = (data || []).flatMap((r: any) => [r.fornecedor_1, r.fornecedor_2, r.fornecedor_3]);
+        setSupplierOptions(
+          Array.from(new Set(allSup.map((x) => String(x || "").trim()).filter(Boolean))).sort((a, b) =>
+            a.localeCompare(b)
+          )
+        );
+
+        setObraOptions(
+          Array.from(new Set((data || []).map((r: any) => String(r.obra || "").trim()).filter(Boolean))).sort((a, b) =>
+            a.localeCompare(b)
+          )
+        );
+
+        setOperadorOptions(
+          Array.from(new Set((data || []).map((r: any) => String(r.operador || "").trim()).filter(Boolean))).sort(
+            (a, b) => a.localeCompare(b)
+          )
+        );
+
+        setLocalEntregaOptions(
+          Array.from(
+            new Set((data || []).map((r: any) => String(r.local_entrega || "").trim()).filter(Boolean))
+          ).sort((a, b) => a.localeCompare(b))
+        );
       } catch {
         setSupplierOptions([]);
+        setObraOptions([]);
+        setOperadorOptions([]);
+        setLocalEntregaOptions([]);
       }
     })();
   }, [supabase]);
 
-  // ====== actions ======
   function resetSaved() {
     setSaved(false);
     setSavedOrderId(null);
@@ -392,7 +383,10 @@ export default function OCPage() {
     setSaving(true);
 
     try {
-      // ====== orders_2025_raw schema REAL (sem observacoes) ======
+      // Para manter compatibilidade com a extração: Observações ficam no texto_original.
+      // A tabela NÃO tem coluna 'observacoes'.
+      const firstItem = items[0] || null;
+
       const payload: any = {
         date: nowDateBr(),
         time: nowTime(),
@@ -414,20 +408,28 @@ export default function OCPage() {
         numero_oc: numeroOC || null,
         codigo_equipamento: equipamento || null,
         obra: obra || null,
-        solicitante: null, // não tem campo na tela hoje
         operador: operador || null,
         horimetro: horimetro || null,
-
-        material: null, // deixa vazio (itens ficam na tabela items)
-        quantidade_texto: null, // idem
         local_entrega: localEntrega || null,
+
+        // Campos "compat" usados pelo seu parse (não quebra):
+        material: firstItem?.descricao ? String(firstItem.descricao).slice(0, 255) : null,
+        quantidade_texto: firstItem?.qtd ? String(firstItem.qtd).slice(0, 50) : null,
         placa: null,
 
-        valor_menor: tipo === "MANUTENCAO" ? computed.valorMenor : null,
-        moeda: "BRL",
-
-        // ✅ Observações ficam aqui, dentro da mensagem completa
         texto_original: whatsappPreview,
+
+        // fornecedores
+        fornecedor_1: tipo === "MANUTENCAO" ? (forn1 || null) : null,
+        fornecedor_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
+        fornecedor_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? (forn3 || null) : null,
+
+        preco_1: tipo === "MANUTENCAO" ? parseBRLToNumber(preco1) : null,
+        preco_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? parseBRLToNumber(preco2) : null,
+        preco_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? parseBRLToNumber(preco3) : null,
+
+        valor_menor: tipo === "MANUTENCAO" ? computed.valorMenor : null,
+        fornecedor_vencedor: tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
       };
 
       const { data: inserted, error: err1 } = await supabase
@@ -442,17 +444,29 @@ export default function OCPage() {
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
-      // ====== orders_2025_items schema REAL ======
+      // orders_2025_items: colunas reais (pelo seu CSV):
+      // ordem_id; data; hora; numero_oc; descricao; quantidade_texto; quantidade_num
       if (items.length) {
+        const d = nowDateBr();
+        const h = nowTime();
+
         const rows = items.map((it) => {
-          const qtdDigits = onlyDigits(it.qtd);
-          const qtdNum = qtdDigits ? Number(qtdDigits) : null;
+          const qtdNum = it.qtd ? Number(onlyDigits(it.qtd)) : null;
+          const qtdText = it.qtd ? String(onlyDigits(it.qtd)) : null;
+
+          // valor NÃO existe em coluna: vira texto na descricao (sem perder informação)
+          const desc =
+            (it.descricao || "").trim() +
+            (it.valor ? ` — ${it.valor}` : "");
 
           return {
             ordem_id: orderId,
-            quantidade_texto: it.qtd || null,
-            quantidade_num: Number.isFinite(qtdNum as any) ? qtdNum : null,
-            descricao: it.descricao || null,
+            data: d,
+            hora: h,
+            numero_oc: numeroOC || null,
+            descricao: desc ? desc.slice(0, 500) : null,
+            quantidade_texto: qtdText,
+            quantidade_num: qtdNum,
           };
         });
 
@@ -462,8 +476,7 @@ export default function OCPage() {
 
       setSaved(true);
 
-      // Atualiza “próximo previsto”
-      setIdGerado(String(orderId));
+      // Atualiza próximo previsto (id real já exibido; o próximo vem no reload)
     } catch (e: any) {
       setSaved(false);
       setSavedOrderId(null);
@@ -593,7 +606,7 @@ export default function OCPage() {
 
         .type-grid {
           display: grid;
-          grid-template-columns: repeat(2, minmax(0, 1fr));
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           gap: 10px;
           margin-top: 12px;
         }
@@ -822,6 +835,9 @@ export default function OCPage() {
           .oc-logo img {
             height: 76px;
           }
+          .type-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
         }
       `}</style>
 
@@ -917,12 +933,29 @@ export default function OCPage() {
               )}
             </div>
 
+            <datalist id="obraList">
+              {obraOptions.map((x) => (
+                <option key={x} value={x} />
+              ))}
+            </datalist>
+            <datalist id="operadorList">
+              {operadorOptions.map((x) => (
+                <option key={x} value={x} />
+              ))}
+            </datalist>
+            <datalist id="localEntregaList">
+              {localEntregaOptions.map((x) => (
+                <option key={x} value={x} />
+              ))}
+            </datalist>
+
             <div className="grid-2">
               <div className="field">
                 <div className="label">Obra</div>
                 <input
                   className="input"
                   value={obra}
+                  list="obraList"
                   onChange={(e) => {
                     setObra(e.target.value);
                     resetSaved();
@@ -936,6 +969,7 @@ export default function OCPage() {
                 <input
                   className="input"
                   value={operador}
+                  list="operadorList"
                   onChange={(e) => {
                     setOperador(e.target.value);
                     resetSaved();
@@ -965,6 +999,7 @@ export default function OCPage() {
                 <input
                   className="input"
                   value={localEntrega}
+                  list="localEntregaList"
                   onChange={(e) => {
                     setLocalEntrega(e.target.value);
                     resetSaved();
@@ -986,7 +1021,7 @@ export default function OCPage() {
                 placeholder="Informações adicionais..."
               />
               <div className="muted">
-                (Observações serão salvas dentro de <b>texto_original</b>.)
+                Observações são salvas dentro de <b>texto_original</b> (mensagem WhatsApp), para não quebrar o parse.
               </div>
             </div>
 
@@ -1033,7 +1068,7 @@ export default function OCPage() {
                         resetSaved();
                       }}
                       list="supList"
-                      placeholder="Digite"
+                      placeholder="Digite ou selecione"
                     />
                   </div>
                   <div className="field">
@@ -1062,7 +1097,7 @@ export default function OCPage() {
                             resetSaved();
                           }}
                           list="supList"
-                          placeholder="Digite"
+                          placeholder="Digite ou selecione"
                         />
                       </div>
                       <div className="field">
@@ -1093,7 +1128,7 @@ export default function OCPage() {
                             resetSaved();
                           }}
                           list="supList"
-                          placeholder="Digite"
+                          placeholder="Digite ou selecione"
                         />
                       </div>
                       <div className="field">
@@ -1116,16 +1151,12 @@ export default function OCPage() {
                 {computed.valorMenor !== null && (
                   <div className="muted" style={{ marginTop: 10 }}>
                     Menor preço considerado:{" "}
-                    <strong style={{ color: "#0f172a" }}>
-                      {formatBRLFromNumber(computed.valorMenor)}
-                    </strong>
+                    <strong style={{ color: "#0f172a" }}>{formatBRLFromNumber(computed.valorMenor)}</strong>
                     {computed.fornecedorVencedor ? (
                       <>
                         {" "}
                         • Vencedor:{" "}
-                        <strong style={{ color: "#0f172a" }}>
-                          {computed.fornecedorVencedor}
-                        </strong>
+                        <strong style={{ color: "#0f172a" }}>{computed.fornecedorVencedor}</strong>
                       </>
                     ) : null}
                   </div>
@@ -1191,7 +1222,7 @@ export default function OCPage() {
                           }}
                           placeholder="R$ 0,00"
                         />
-                        <div className="muted">(Hoje esse valor vai só para o WhatsApp.)</div>
+                        <div className="muted">Valor é guardado no texto do item (não existe coluna de valor em items).</div>
                       </div>
 
                       <button className="btn-remove" type="button" onClick={() => removeItem(idx)}>
