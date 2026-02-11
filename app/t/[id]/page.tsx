@@ -1,152 +1,105 @@
 // FILE: app/t/[id]/page.tsx
 import { createClient } from "@supabase/supabase-js";
 
+export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-type TicketRow = {
-  id: number;
-  created_at: string;
-  tipo: string | null;
-  veiculo: string | null;
-  origem: string | null;
-  destino: string | null;
-  material: string | null;
-  data: string | null; // YYYY-MM-DD
-  horario: string | null; // HH:mm:ss
-  peso_t: number | null;
-  arquivo_path: string | null; // ex: material/2026-02-10/xxx.jpg
-  arquivo_nome: string | null;
-  arquivo_mime: string | null;
-  arquivo_size: number | null;
-};
+function getEnv() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
 
-function getBaseUrl() {
-  // Sem headers() (Next 16 mudou e dá erro de TS se usar errado)
-  const site = process.env.NEXT_PUBLIC_SITE_URL?.trim();
-  if (site) return site.replace(/\/$/, "");
+  // aceita anon (legacy) ou publishable (novo) — sem te obrigar a entender isso agora
+  const key =
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ||
+    "";
 
-  const vercel = process.env.VERCEL_URL?.trim();
-  if (vercel) return `https://${vercel}`;
+  return { url, key };
+}
 
+function getSiteUrl() {
+  if (process.env.NEXT_PUBLIC_SITE_URL) return process.env.NEXT_PUBLIC_SITE_URL;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
   return "https://gpasfalto.vercel.app";
 }
 
-function getSupabase() {
-  const url = (process.env.NEXT_PUBLIC_SUPABASE_URL || "").trim();
-
-  // Prioriza a key nova do Supabase, mas aceita a legacy anon também
-  const key = (
-    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    ""
-  ).trim();
-
-  if (!url || !key) {
-    return { supabase: null as any, url, key };
-  }
-
-  const supabase = createClient(url, key, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-
-  return { supabase, url, key };
+function asNumberId(idRaw: any) {
+  const n = Number(String(idRaw || "").trim());
+  if (!Number.isFinite(n)) return null;
+  if (n <= 0) return null;
+  return Math.trunc(n);
 }
 
-function fmtPeso(peso: number | null) {
-  if (peso === null || !Number.isFinite(peso)) return "-";
-  return peso.toFixed(3).replace(".", ",");
-}
+export default async function TicketPage(props: any) {
+  const id = asNumberId(props?.params?.id);
 
-function fmtDataHora(data: string | null, horario: string | null) {
-  if (!data && !horario) return "-";
-  const d = data ? data.split("-").reverse().join("/") : "";
-  const h = horario ? horario : "";
-  return `${d}${d && h ? " " : ""}${h}`.trim() || "-";
-}
-
-export default async function TicketPage({
-  params,
-}: {
-  params: { id: string };
-}) {
-  const baseUrl = getBaseUrl();
-
-  const idStr = (params?.id || "").trim();
-  const idNum = Number.parseInt(idStr, 10);
-
-  if (!idStr || !Number.isFinite(idNum) || idNum <= 0) {
+  if (!id) {
     return (
       <main style={{ padding: 24, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28, marginBottom: 8 }}>Ticket</h1>
-        <div
-          style={{
-            border: "1px solid #fca5a5",
-            background: "#fef2f2",
-            padding: 12,
-            borderRadius: 10,
-            maxWidth: 900,
-          }}
-        >
-          <strong>Erro</strong>
-          <div>ID inválido.</div>
-        </div>
+        <h1>Ticket</h1>
+        <div style={{ marginTop: 8, color: "#b00020" }}>ID inválido.</div>
       </main>
     );
   }
 
-  const { supabase, url, key } = getSupabase();
-
-  if (!supabase) {
+  const { url, key } = getEnv();
+  if (!url || !key) {
     return (
       <main style={{ padding: 24, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28, marginBottom: 8 }}>Ticket</h1>
+        <h1>Ticket</h1>
         <div
           style={{
-            border: "1px solid #fca5a5",
-            background: "#fef2f2",
+            marginTop: 12,
             padding: 12,
+            border: "1px solid #ffb4b4",
+            background: "#fff5f5",
             borderRadius: 10,
-            maxWidth: 900,
-            whiteSpace: "pre-wrap",
+            maxWidth: 720,
           }}
         >
-          <strong>Erro</strong>
-          <div>
-            Faltam variáveis no Vercel:
-            {"\n"}- NEXT_PUBLIC_SUPABASE_URL: {url ? "OK" : "FALTA"}
-            {"\n"}- NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT ou
-            NEXT_PUBLIC_SUPABASE_ANON_KEY: {key ? "OK" : "FALTA"}
+          <b>Erro</b>
+          <div style={{ marginTop: 6 }}>
+            Faltam variáveis <code>NEXT_PUBLIC_SUPABASE_URL</code> /{" "}
+            <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> no Vercel.
           </div>
         </div>
       </main>
     );
   }
 
+  const supabase = createClient(url, key, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+  });
+
   const { data, error } = await supabase
     .from("material_tickets")
-    .select(
-      "id,created_at,tipo,veiculo,origem,destino,material,data,horario,peso_t,arquivo_path,arquivo_nome,arquivo_mime,arquivo_size"
-    )
-    .eq("id", idNum)
-    .maybeSingle<TicketRow>();
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
 
   if (error) {
     return (
       <main style={{ padding: 24, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28, marginBottom: 8 }}>Ticket</h1>
+        <h1>Ticket</h1>
         <div
           style={{
-            border: "1px solid #fca5a5",
-            background: "#fef2f2",
+            marginTop: 12,
             padding: 12,
+            border: "1px solid #ffb4b4",
+            background: "#fff5f5",
             borderRadius: 10,
-            maxWidth: 900,
-            whiteSpace: "pre-wrap",
+            maxWidth: 720,
           }}
         >
-          <strong>Erro</strong>
-          <div>Falha ao buscar ticket no Supabase.</div>
-          <div style={{ marginTop: 8 }}>{String(error.message || error)}</div>
+          <b>Erro ao buscar no Supabase</b>
+          <div style={{ marginTop: 6, whiteSpace: "pre-wrap" }}>
+            {error.message}
+          </div>
         </div>
       </main>
     );
@@ -155,102 +108,100 @@ export default async function TicketPage({
   if (!data) {
     return (
       <main style={{ padding: 24, fontFamily: "system-ui" }}>
-        <h1 style={{ fontSize: 28, marginBottom: 8 }}>Ticket</h1>
-        <div
-          style={{
-            border: "1px solid #fca5a5",
-            background: "#fef2f2",
-            padding: 12,
-            borderRadius: 10,
-            maxWidth: 900,
-          }}
-        >
-          <strong>Não encontrado</strong>
-          <div>Ticket #{idNum} não existe na tabela.</div>
-        </div>
+        <h1>Ticket</h1>
+        <div style={{ marginTop: 8 }}>Ticket não encontrado (id {id}).</div>
       </main>
     );
   }
 
-  // tenta gerar signed URL (bucket privado). Se falhar, só não mostra a imagem.
-  let signedUrl: string | null = null;
-  if (data.arquivo_path) {
-    try {
-      const r = await supabase.storage
-        .from("tickets")
-        .createSignedUrl(data.arquivo_path, 60 * 60 * 24 * 7); // 7 dias
-      signedUrl = r.data?.signedUrl || null;
-    } catch {
-      signedUrl = null;
-    }
-  }
+  const row: any = data;
 
-  const shareTicketUrl = `${baseUrl}/t/${data.id}`;
+  // tenta achar um link de foto já pronto no registro
+  const photoUrl =
+    row?.foto_url ||
+    row?.link_foto ||
+    row?.arquivo_url ||
+    row?.signed_url ||
+    row?.url ||
+    null;
+
+  // se tiver só o path, tenta montar public URL (só funciona se o bucket for público)
+  const arquivoPath = row?.arquivo_path || row?.path || null;
+  const bucket = row?.bucket || "tickets";
+  const publicFromPath =
+    arquivoPath && url
+      ? `${url}/storage/v1/object/public/${bucket}/${arquivoPath}`
+      : null;
+
+  const finalPhoto = photoUrl || publicFromPath;
+
+  const siteUrl = getSiteUrl();
+  const shareUrl = `${siteUrl}/t/${id}`;
+
+  const linha = (label: string, value: any) => (
+    <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+      <div style={{ width: 120, opacity: 0.7 }}>{label}</div>
+      <div style={{ fontWeight: 600 }}>{value ?? "-"}</div>
+    </div>
+  );
 
   return (
-    <main style={{ padding: 24, fontFamily: "system-ui" }}>
-      <div style={{ maxWidth: 900, margin: "0 auto" }}>
-        <h1 style={{ fontSize: 34, marginBottom: 6 }}>Ticket</h1>
-        <div style={{ color: "#555", marginBottom: 16 }}>
-          Compartilhamento (link curto):{" "}
-          <a href={shareTicketUrl} style={{ textDecoration: "underline" }}>
-            {shareTicketUrl}
-          </a>
-        </div>
+    <main
+      style={{
+        padding: 24,
+        fontFamily: "system-ui",
+        display: "flex",
+        justifyContent: "center",
+      }}
+    >
+      <div style={{ width: "min(900px, 100%)" }}>
+        <h1 style={{ margin: 0 }}>Ticket</h1>
 
         <div
           style={{
-            border: "1px solid #e5e7eb",
-            borderRadius: 14,
-            padding: 16,
-            marginBottom: 16,
+            marginTop: 12,
+            padding: 14,
+            border: "1px solid #e7e7e7",
+            borderRadius: 12,
+            background: "#fff",
           }}
         >
-          <div style={{ display: "grid", gap: 10 }}>
-            <div>
-              <strong>ID:</strong> {data.id}
-            </div>
-            <div>
-              <strong>Tipo:</strong> {data.tipo || "-"}
-            </div>
-            <div>
-              <strong>Veículo:</strong> {data.veiculo || "-"}
-            </div>
-            <div>
-              <strong>Data/Hora:</strong> {fmtDataHora(data.data, data.horario)}
-            </div>
-            <div>
-              <strong>Origem:</strong> {data.origem || "-"}
-            </div>
-            <div>
-              <strong>Destino:</strong> {data.destino || "-"}
-            </div>
-            <div>
-              <strong>Material:</strong> {data.material || "-"}
-            </div>
-            <div>
-              <strong>Peso (t):</strong> {fmtPeso(data.peso_t)}
-            </div>
+          {linha("ID", row?.id)}
+          {linha("Tipo", row?.tipo)}
+          {linha("Veículo", row?.veiculo)}
+          {linha("Data", row?.data || row?.data_br)}
+          {linha("Horário", row?.horario)}
+          {linha("Origem", row?.origem)}
+          {linha("Destino", row?.destino)}
+          {linha("Material", row?.material)}
+          {linha("Peso (t)", row?.peso_t ?? row?.peso_mask)}
+
+          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid #eee" }}>
+            <div style={{ opacity: 0.7, marginBottom: 6 }}>Compartilhamento</div>
+            <div style={{ fontWeight: 600 }}>{shareUrl}</div>
           </div>
         </div>
 
-        {signedUrl ? (
-          <div
-            style={{
-              border: "1px solid #e5e7eb",
-              borderRadius: 14,
-              padding: 12,
-            }}
-          >
+        {finalPhoto ? (
+          <div style={{ marginTop: 14 }}>
+            <div style={{ opacity: 0.7, marginBottom: 6 }}>Foto</div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
-              src={signedUrl}
-              alt={data.arquivo_nome || "ticket"}
-              style={{ width: "100%", borderRadius: 10 }}
+              src={finalPhoto}
+              alt="Ticket"
+              style={{
+                width: "100%",
+                maxHeight: 520,
+                objectFit: "contain",
+                borderRadius: 12,
+                border: "1px solid #e7e7e7",
+                background: "#fff",
+              }}
             />
           </div>
         ) : (
-          <div style={{ color: "#666" }}>
-            Foto indisponível (sem signedUrl). Path: {data.arquivo_path || "-"}
+          <div style={{ marginTop: 14, opacity: 0.7 }}>
+            (Sem link de foto no registro)
           </div>
         )}
       </div>
