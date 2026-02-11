@@ -1,48 +1,28 @@
 // FILE: app/t/[id]/page.tsx
-
 export const dynamic = "force-dynamic";
 
-export default async function Page({
+export default function TicketLinkDisabledPage({
   params,
 }: {
-  params: Promise<{ id: string }>;
+  params: { id?: string };
 }) {
-  const { id } = await params;
+  const id = (params?.id ?? "").toString().trim();
 
   return (
-    <main
-      style={{
-        padding: 24,
-        fontFamily:
-          "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif",
-      }}
-    >
-      <h1 style={{ fontSize: 28, fontWeight: 800, marginBottom: 12 }}>
-        Ticket
-      </h1>
+    <main className="min-h-screen bg-gray-50">
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <h1 className="text-3xl font-semibold text-gray-900">Ticket</h1>
 
-      <div
-        style={{
-          border: "1px solid #f3b4b4",
-          background: "#fff5f5",
-          color: "#7a1a1a",
-          padding: 12,
-          borderRadius: 10,
-          maxWidth: 760,
-        }}
-      >
-        <div style={{ fontWeight: 800, marginBottom: 4 }}>
-          Compartilhamento por link desativado
+        <div className="mt-6 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-red-800">
+          <div className="font-semibold">Compartilhamento por link desativado</div>
+          <div className="mt-1 text-sm">ID recebido: {id || "—"}</div>
         </div>
-        <div style={{ fontSize: 14 }}>
-          ID recebido: <b>{id || "(vazio)"}</b>
-        </div>
+
+        <p className="mt-4 text-sm text-gray-700">
+          O ticket é compartilhado direto no WhatsApp (foto). Se um dia você quiser
+          voltar com link curto, a gente faz direito e sem depender de gambiarra.
+        </p>
       </div>
-
-      <p style={{ marginTop: 12, color: "#555", maxWidth: 760 }}>
-        O ticket é compartilhado direto no WhatsApp (foto). Se um dia você quiser
-        voltar com link curto, a gente faz direito e sem depender de gambiarra.
-      </p>
     </main>
   );
 }
