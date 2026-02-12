@@ -18,6 +18,11 @@ type OcResumo = {
   saldo_t: number | null;
 };
 
+type DiaResumo = {
+  cbs: number;      // quantidade de tickets no dia (CBs)
+  total_t: number;  // soma (t) no dia
+};
+
 function extFromFile(file: File) {
   const t = (file.type || "").toLowerCase();
   if (t.includes("png")) return "png";
@@ -232,8 +237,9 @@ function buildWhatsappMessage(p: {
   pesoNum: number;
   savedId?: number | null;
   resumo?: OcResumo | null;
+  dia?: DiaResumo | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, dia } = p;
 
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
@@ -251,6 +257,17 @@ function buildWhatsappMessage(p: {
     `Ordem de Compra: ${oc ? oc : "-"}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
+  // ✅ acumulado do dia (CBs + total t)
+  if (dia) {
+    const label = tipo === "SAIDA" ? "Saída" : "Entrada";
+    msg += `\n📆 Acumulado do dia\n`;
+    msg += `Quantidade (CB) no dia (com esta): ${dia.cbs} CB\n`;
+    msg += `${label} total no dia (com esta): ${fmtT(dia.total_t)} t\n`;
+  } else {
+    msg += `\n⚠️ Acumulado do dia não encontrado (view material_ticket_dia_v).\n`;
+  }
+
+  // ✅ plano (saldo/total)
   if (resumo) {
     const ilimitado = Boolean(resumo.ilimitado);
 
@@ -282,7 +299,7 @@ export default function MaterialTicketNovoPage() {
   const [origem, setOrigem] = useState("");
   const [destino, setDestino] = useState(""); // obra
   const [material, setMaterial] = useState("");
-  const [oc, setOc] = useState(""); // ✅ novo
+  const [oc, setOc] = useState(""); // ✅ OC
 
   const [dataBr, setDataBr] = useState("");
   const [hora, setHora] = useState("");
@@ -298,7 +315,7 @@ export default function MaterialTicketNovoPage() {
   const [ocrRaw, setOcrRaw] = useState<string | null>(null);
   const [ocrNote, setOcrNote] = useState<string | null>(null);
 
-  // ✅ compartilhar pós-salvar (somente foto + texto; sem link)
+  // ✅ compartilhar pós-salvar
   const [lastShareFile, setLastShareFile] = useState<File | null>(null);
   const [lastPayload, setLastPayload] = useState<{
     tipo: TicketTipo;
@@ -314,6 +331,7 @@ export default function MaterialTicketNovoPage() {
   } | null>(null);
 
   const [lastResumo, setLastResumo] = useState<OcResumo | null>(null);
+  const [lastDia, setLastDia] = useState<DiaResumo | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -389,6 +407,42 @@ export default function MaterialTicketNovoPage() {
     }
   }
 
+  // ✅ acumulado do dia (CBs + total t)
+  async function loadDiaResumo(
+    tipoVal: TicketTipo,
+    dataISO: string,
+    obra: string,
+    ocVal: string | null,
+    mat: string
+  ): Promise<DiaResumo | null> {
+    try {
+      let q = supabase
+        .from("material_ticket_dia_v")
+        .select("cbs,total_t")
+        .eq("tipo", tipoVal)
+        .eq("data", dataISO)
+        .ilike("obra", obra.trim())
+        .ilike("material", mat.trim())
+        .limit(1);
+
+      if (ocVal) q = q.eq("oc", ocVal);
+      else q = q.is("oc", null);
+
+      const { data, error } = await q.maybeSingle();
+      if (error || !data) return null;
+
+      const cbs = Number((data as any).cbs ?? 0);
+      const total_t = Number((data as any).total_t ?? 0);
+
+      return {
+        cbs: Number.isFinite(cbs) ? cbs : 0,
+        total_t: Number.isFinite(total_t) ? total_t : 0,
+      };
+    } catch {
+      return null;
+    }
+  }
+
   async function handleOcr() {
     setError(null);
     setSavedMsg(null);
@@ -459,6 +513,7 @@ export default function MaterialTicketNovoPage() {
     setSaving(true);
     setError(null);
     setLastResumo(null);
+    setLastDia(null);
 
     try {
       const dateISO = parsed.dataISO!;
@@ -489,7 +544,7 @@ export default function MaterialTicketNovoPage() {
           origem: origem.trim(),
           destino: destino.trim(),
           material: material.trim(),
-          oc: ocVal, // ✅ OC salva no ticket
+          oc: ocVal,
           data: dateISO,
           horario: timeISO,
           peso_t: pesoNum,
@@ -507,9 +562,13 @@ export default function MaterialTicketNovoPage() {
       setSavedId(newId);
       setSavedMsg("Salvo com sucesso!");
 
-      // ✅ busca resumo (total/saída/saldo) na view
+      // ✅ saldo/total (plano)
       const resumo = await loadResumo(destino.trim(), ocVal, material.trim());
       setLastResumo(resumo);
+
+      // ✅ acumulado do dia (CBs + total no dia)
+      const dia = await loadDiaResumo(tipo, dateISO, destino.trim(), ocVal, material.trim());
+      setLastDia(dia);
 
       if (newId) {
         setLastPayload({
@@ -557,9 +616,9 @@ export default function MaterialTicketNovoPage() {
       pesoNum: lastPayload.pesoNum,
       savedId: lastPayload.id,
       resumo: lastResumo,
+      dia: lastDia,
     });
 
-    // ✅ Melhor no celular: compartilhar A FOTO + texto
     try {
       const navAny: any = navigator as any;
 
@@ -575,10 +634,9 @@ export default function MaterialTicketNovoPage() {
         }
       }
     } catch {
-      // se cancelar ou falhar, cai no fallback
+      // fallback abaixo
     }
 
-    // fallback: WhatsApp com texto (sem link)
     const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
     window.open(url, "_blank");
   }
@@ -686,8 +744,15 @@ export default function MaterialTicketNovoPage() {
           {savedMsg ? (
             <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
-              {lastResumo ? (
+
+              {lastDia ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
+                  <b>Dia:</b> {lastDia.cbs} CB • Total no dia: {fmtT(lastDia.total_t)} t
+                </div>
+              ) : null}
+
+              {lastResumo ? (
+                <div style={{ marginTop: 6, fontSize: 12, color: "#14532d" }}>
                   <b>Controle:</b>{" "}
                   {lastResumo.ilimitado
                     ? `ILIMITADO • Saída: ${fmtT(lastResumo.saida_t)} t`
@@ -721,6 +786,7 @@ export default function MaterialTicketNovoPage() {
                   setLastPayload(null);
                   setLastShareFile(null);
                   setLastResumo(null);
+                  setLastDia(null);
                 }}
               />
 
