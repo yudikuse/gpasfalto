@@ -18,9 +18,17 @@ type OcResumo = {
   saldo_t: number | null;
 };
 
-type DiaResumo = {
-  cbs: number;      // quantidade de tickets no dia (CBs)
-  total_t: number;  // soma (t) no dia
+type Acumulados = {
+  dia_qtd: number | null;
+  dia_total_t: number | null;
+  semana_ini: string | null;
+  semana_fim: string | null;
+  semana_qtd: number | null;
+  semana_total_t: number | null;
+  mes_ini: string | null;
+  mes_fim: string | null;
+  mes_qtd: number | null;
+  mes_total_t: number | null;
 };
 
 function extFromFile(file: File) {
@@ -225,11 +233,18 @@ function fmtT(v: number | null | undefined) {
   return n.toFixed(3);
 }
 
+function fmtQtd(v: number | null | undefined) {
+  if (v === null || v === undefined) return "-";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return String(Math.trunc(n));
+}
+
 function buildWhatsappMessage(p: {
   tipo: TicketTipo;
   veiculo: string;
   origem: string;
-  obra: string; // destino no form
+  obra: string;
   material: string;
   oc: string | null;
   dataISO: string;
@@ -237,14 +252,16 @@ function buildWhatsappMessage(p: {
   pesoNum: number;
   savedId?: number | null;
   resumo?: OcResumo | null;
-  dia?: DiaResumo | null;
+  acum?: Acumulados | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, dia } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum } = p;
 
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
     return `${d}/${m}/${y}`;
   })();
+
+  const unidadeQtd = tipo === "SAIDA" ? "CB" : "tickets";
 
   let msg =
     `✅ Ticket de ${tipo}\n` +
@@ -257,28 +274,24 @@ function buildWhatsappMessage(p: {
     `Ordem de Compra: ${oc ? oc : "-"}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
-  // ✅ acumulado do dia (CBs + total t)
-  if (dia) {
-    const label = tipo === "SAIDA" ? "Saída" : "Entrada";
-    msg += `\n📆 Acumulado do dia\n`;
-    msg += `Quantidade (CB) no dia (com esta): ${dia.cbs} CB\n`;
-    msg += `${label} total no dia (com esta): ${fmtT(dia.total_t)} t\n`;
-  } else {
-    msg += `\n⚠️ Acumulado do dia não encontrado (view material_ticket_dia_v).\n`;
+  if (acum) {
+    msg += `\n📅 Acumulado\n`;
+    msg += `Dia (com esta): ${fmtQtd(acum.dia_qtd)} ${unidadeQtd} • ${fmtT(acum.dia_total_t)} t\n`;
+    msg += `Semana (Seg-Dom): ${fmtQtd(acum.semana_qtd)} ${unidadeQtd} • ${fmtT(acum.semana_total_t)} t\n`;
+    msg += `Mês: ${fmtQtd(acum.mes_qtd)} ${unidadeQtd} • ${fmtT(acum.mes_total_t)} t\n`;
   }
 
-  // ✅ plano (saldo/total)
   if (resumo) {
     const ilimitado = Boolean(resumo.ilimitado);
 
     msg += `\n📊 Controle (Obra/OC/Material)\n`;
-    msg += `Entrada total: ${fmtT(resumo.entrada_t)} t\n`;
-    msg += `Saída total: ${fmtT(resumo.saida_t)} t\n`;
 
     if (ilimitado) {
       msg += `Quantidade total: ILIMITADO\n`;
       msg += `Saldo: ILIMITADO\n`;
     } else {
+      msg += `Entrada total: ${fmtT(resumo.entrada_t)} t\n`;
+      msg += `Saída total: ${fmtT(resumo.saida_t)} t\n`;
       msg += `Quantidade total: ${fmtT(resumo.total_t)} t\n`;
       msg += `Saldo a entregar: ${fmtT(resumo.saldo_t)} t\n`;
     }
@@ -299,7 +312,7 @@ export default function MaterialTicketNovoPage() {
   const [origem, setOrigem] = useState("");
   const [destino, setDestino] = useState(""); // obra
   const [material, setMaterial] = useState("");
-  const [oc, setOc] = useState(""); // ✅ OC
+  const [oc, setOc] = useState("");
 
   const [dataBr, setDataBr] = useState("");
   const [hora, setHora] = useState("");
@@ -315,7 +328,6 @@ export default function MaterialTicketNovoPage() {
   const [ocrRaw, setOcrRaw] = useState<string | null>(null);
   const [ocrNote, setOcrNote] = useState<string | null>(null);
 
-  // ✅ compartilhar pós-salvar
   const [lastShareFile, setLastShareFile] = useState<File | null>(null);
   const [lastPayload, setLastPayload] = useState<{
     tipo: TicketTipo;
@@ -331,7 +343,7 @@ export default function MaterialTicketNovoPage() {
   } | null>(null);
 
   const [lastResumo, setLastResumo] = useState<OcResumo | null>(null);
-  const [lastDia, setLastDia] = useState<DiaResumo | null>(null);
+  const [lastAcum, setLastAcum] = useState<Acumulados | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -407,37 +419,25 @@ export default function MaterialTicketNovoPage() {
     }
   }
 
-  // ✅ acumulado do dia (CBs + total t)
-  async function loadDiaResumo(
+  async function loadAcumulados(
     tipoVal: TicketTipo,
-    dataISO: string,
-    obra: string,
+    obraVal: string,
     ocVal: string | null,
-    mat: string
-  ): Promise<DiaResumo | null> {
+    matVal: string,
+    dataISO: string
+  ): Promise<Acumulados | null> {
     try {
-      let q = supabase
-        .from("material_ticket_dia_v")
-        .select("cbs,total_t")
-        .eq("tipo", tipoVal)
-        .eq("data", dataISO)
-        .ilike("obra", obra.trim())
-        .ilike("material", mat.trim())
-        .limit(1);
+      const { data, error } = await supabase.rpc("material_ticket_acumulados", {
+        p_tipo: tipoVal,
+        p_obra: obraVal,
+        p_oc: ocVal,
+        p_material: matVal,
+        p_data: dataISO,
+      });
 
-      if (ocVal) q = q.eq("oc", ocVal);
-      else q = q.is("oc", null);
-
-      const { data, error } = await q.maybeSingle();
-      if (error || !data) return null;
-
-      const cbs = Number((data as any).cbs ?? 0);
-      const total_t = Number((data as any).total_t ?? 0);
-
-      return {
-        cbs: Number.isFinite(cbs) ? cbs : 0,
-        total_t: Number.isFinite(total_t) ? total_t : 0,
-      };
+      if (error) return null;
+      const row = Array.isArray(data) ? data[0] : data;
+      return (row as any) ?? null;
     } catch {
       return null;
     }
@@ -513,7 +513,7 @@ export default function MaterialTicketNovoPage() {
     setSaving(true);
     setError(null);
     setLastResumo(null);
-    setLastDia(null);
+    setLastAcum(null);
 
     try {
       const dateISO = parsed.dataISO!;
@@ -562,13 +562,13 @@ export default function MaterialTicketNovoPage() {
       setSavedId(newId);
       setSavedMsg("Salvo com sucesso!");
 
-      // ✅ saldo/total (plano)
+      // ✅ acumulados (Dia/Semana/Mês) — semana SEG→DOM no SQL
+      const acum = await loadAcumulados(tipo, destino.trim(), ocVal, material.trim(), dateISO);
+      setLastAcum(acum);
+
+      // ✅ plano (obra/oc/material)
       const resumo = await loadResumo(destino.trim(), ocVal, material.trim());
       setLastResumo(resumo);
-
-      // ✅ acumulado do dia (CBs + total no dia)
-      const dia = await loadDiaResumo(tipo, dateISO, destino.trim(), ocVal, material.trim());
-      setLastDia(dia);
 
       if (newId) {
         setLastPayload({
@@ -589,7 +589,6 @@ export default function MaterialTicketNovoPage() {
 
       setLastShareFile(file!);
 
-      // limpa só a foto atual
       setFile(null);
       setPreviewUrl(null);
       setOcrRaw(null);
@@ -616,7 +615,7 @@ export default function MaterialTicketNovoPage() {
       pesoNum: lastPayload.pesoNum,
       savedId: lastPayload.id,
       resumo: lastResumo,
-      dia: lastDia,
+      acum: lastAcum,
     });
 
     try {
@@ -711,11 +710,12 @@ export default function MaterialTicketNovoPage() {
     hint: { fontSize: 12, color: "var(--gp-muted-soft)", marginTop: 6 },
   };
 
+  const unidadeQtd = tipo === "SAIDA" ? "CB" : "tickets";
+
   return (
     <div className="page-root">
       <div className="page-container">
         <header className="page-header" style={{ flexDirection: "column", alignItems: "center", gap: 8 }}>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src="/gpasfalto-logo.png"
             alt="GP Asfalto"
@@ -745,18 +745,20 @@ export default function MaterialTicketNovoPage() {
             <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
 
-              {lastDia ? (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
-                  <b>Dia:</b> {lastDia.cbs} CB • Total no dia: {fmtT(lastDia.total_t)} t
+              {lastAcum ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
+                  <b>Dia:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t<br />
+                  <b>Semana (Seg-Dom):</b> {fmtQtd(lastAcum.semana_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.semana_total_t)} t<br />
+                  <b>Mês:</b> {fmtQtd(lastAcum.mes_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.mes_total_t)} t
                 </div>
               ) : null}
 
               {lastResumo ? (
-                <div style={{ marginTop: 6, fontSize: 12, color: "#14532d" }}>
+                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
                   <b>Controle:</b>{" "}
                   {lastResumo.ilimitado
-                    ? `ILIMITADO • Saída: ${fmtT(lastResumo.saida_t)} t`
-                    : `Total: ${fmtT(lastResumo.total_t)} t • Saída: ${fmtT(lastResumo.saida_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
+                    ? `ILIMITADO`
+                    : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
                 </div>
               ) : null}
             </div>
@@ -786,7 +788,7 @@ export default function MaterialTicketNovoPage() {
                   setLastPayload(null);
                   setLastShareFile(null);
                   setLastResumo(null);
-                  setLastDia(null);
+                  setLastAcum(null);
                 }}
               />
 
@@ -802,7 +804,6 @@ export default function MaterialTicketNovoPage() {
 
             <div style={{ gridColumn: "span 12" }}>
               {previewUrl ? (
-                // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={previewUrl}
                   alt="Preview do ticket"
