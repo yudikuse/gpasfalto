@@ -536,13 +536,22 @@ export default function MaterialTicketNovoPage() {
 
       const ocVal = oc.trim() ? oc.trim() : null;
 
+      // ✅ FIX: a obra precisa existir na coluna "obra" também (seu RPC/plan usam "obra")
+      const obraVal = destino.trim();
+
       const ins = await supabase
         .from("material_tickets")
         .insert({
           tipo,
           veiculo: veiculo.trim(),
           origem: origem.trim(),
-          destino: destino.trim(),
+
+          // mantém o que você já tinha:
+          destino: obraVal,
+
+          // ✅ adiciona também:
+          obra: obraVal,
+
           material: material.trim(),
           oc: ocVal,
           data: dateISO,
@@ -562,12 +571,12 @@ export default function MaterialTicketNovoPage() {
       setSavedId(newId);
       setSavedMsg("Salvo com sucesso!");
 
-      // ✅ acumulados (Dia/Semana/Mês) — semana SEG→DOM no SQL
-      const acum = await loadAcumulados(tipo, destino.trim(), ocVal, material.trim(), dateISO);
+      // ✅ acumulados (Dia/Semana/Mês)
+      const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
       setLastAcum(acum);
 
       // ✅ plano (obra/oc/material)
-      const resumo = await loadResumo(destino.trim(), ocVal, material.trim());
+      const resumo = await loadResumo(obraVal, ocVal, material.trim());
       setLastResumo(resumo);
 
       if (newId) {
@@ -575,7 +584,7 @@ export default function MaterialTicketNovoPage() {
           tipo,
           veiculo: veiculo.trim(),
           origem: origem.trim(),
-          obra: destino.trim(),
+          obra: obraVal,
           material: material.trim(),
           oc: ocVal,
           dataISO: dateISO,
