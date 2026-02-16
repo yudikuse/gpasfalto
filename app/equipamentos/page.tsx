@@ -6,7 +6,7 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 type TipoFiltro = "TODOS" | "MANUTENCAO" | "COMPRA" | "ABASTECIMENTO" | "SERVICOS" | "PECAS" | "OUTRO";
 
-type RawLikeRow = {
+type RawRow = {
   id?: number;
   date?: string | null; // "03/12/2025" (texto)
   time?: string | null;
@@ -15,28 +15,37 @@ type RawLikeRow = {
   numero_oc?: string | null;
   codigo_equipamento?: string | null;
   obra?: string | null;
+  solicitante?: string | null;
   operador?: string | null;
+  horimetro?: string | null;
+  material?: string | null;
+  quantidade_texto?: string | null; // (da RAW, NÃO é a dos itens)
   local_entrega?: string | null;
+  placa?: string | null;
+  valor_menor?: number | null; // total OC
+  moeda?: string | null;
+  texto_original?: string | null;
 
   fornecedor_1?: string | null;
   fornecedor_2?: string | null;
   fornecedor_3?: string | null;
-
   preco_1?: number | null;
   preco_2?: number | null;
   preco_3?: number | null;
-
-  valor_menor?: number | null; // total OC (no seu modelo)
   fornecedor_vencedor?: string | null;
-  texto_original?: string | null;
+
+  rn?: number | null; // na dedup view
 };
 
 type ItemRowDb = {
   id?: number;
   ordem_id?: number | null;
+  data?: string | null;
+  hora?: string | null;
+  numero_oc?: string | null;
   descricao?: string | null;
-  quantidade_texto?: string | null; // <-- existe
-  quantidade_num?: number | null; // <-- existe
+  quantidade_texto?: string | null;
+  quantidade_num?: number | null;
 };
 
 type Line = {
@@ -55,6 +64,7 @@ type Line = {
   obra: string;
   operador: string;
   textoOriginal: string;
+  rawId: number | null;
 };
 
 function pad(n: number, size: number) {
@@ -95,7 +105,7 @@ function brDateToISO(d: string | null | undefined) {
   return `${yyyy}-${pad(mm, 2)}-${pad(dd, 2)}`;
 }
 
-function getMesAno(row: RawLikeRow) {
+function getMesAno(row: RawRow) {
   const ma = (row.mes_ano || "").trim();
   if (/^\d{4}-\d{2}$/.test(ma)) return ma;
 
@@ -118,7 +128,7 @@ function mapTipo(tipo_registro: string | null | undefined): string {
   return t || "OUTRO";
 }
 
-function pickFornecedor(r: RawLikeRow) {
+function pickFornecedor(r: RawRow) {
   return (
     (r.fornecedor_vencedor || "").trim() ||
     (r.fornecedor_1 || "").trim() ||
@@ -143,6 +153,33 @@ function formatQtd(it: ItemRowDb): string {
   return "—";
 }
 
+// paginação padrão do PostgREST (Supabase): range(from, to)
+async function fetchAll<T>(
+  supabase: SupabaseClient,
+  tableOrView: string,
+  build: (q: any) => any,
+  pageSize = 1000,
+  maxPages = 50
+): Promise<T[]> {
+  const out: T[] = [];
+  for (let page = 0; page < maxPages; page++) {
+    const from = page * pageSize;
+    const to = from + pageSize - 1;
+
+    let q = supabase.from(tableOrView).select("*");
+    q = build(q).range(from, to);
+
+    const res = await q;
+    if (res.error) throw res.error;
+
+    const rows = (res.data || []) as T[];
+    out.push(...rows);
+
+    if (rows.length < pageSize) break; // acabou
+  }
+  return out;
+}
+
 export default function EquipamentosComprasPage() {
   const env = resolvePublicSupabase();
 
@@ -155,7 +192,7 @@ export default function EquipamentosComprasPage() {
   const [errorMsg, setErrorMsg] = useState("");
 
   const [equipamento, setEquipamento] = useState<string>("");
-  const [tipo, setTipo] = useState<TipoFiltro>("TODOS"); // <-- já começa em TODOS (como você pediu)
+  const [tipo, setTipo] = useState<TipoFiltro>("TODOS");
   const [deMes, setDeMes] = useState<string>("2025-01");
   const [ateMes, setAteMes] = useState<string>("2025-12");
   const [busca, setBusca] = useState<string>("");
@@ -211,34 +248,27 @@ export default function EquipamentosComprasPage() {
         const de = deMes;
         const ate = ateMes;
 
-        // RAW + STAGE (as duas precisam entrar!)
-        const [rawRes, stageRes] = await Promise.all([
-          supabase.from("orders_2025_raw").select("*").limit(10000),
-          supabase.from("orders_2025_raw_stage").select("*").limit(10000),
-        ]);
+        // ✅ FONTE CORRETA: view já consolidada e deduplicada
+        // Obs: garantimos rn=1 por segurança (dependendo de como você criou a view)
+        const rawFiltered = await fetchAll<RawRow>(
+          supabase,
+          "orders_2025_raw_all_dedup_v",
+          (q) =>
+            q
+              .eq("rn", 1)
+              .eq("codigo_equipamento", equipNorm) // seus dados já estão normalizados como "EH-01"
+              .gte("mes_ano", de)
+              .lte("mes_ano", ate),
+          1000,
+          50
+        );
 
-        if (rawRes.error) throw rawRes.error;
-        if (stageRes.error) throw stageRes.error;
-
-        const all: RawLikeRow[] = [...((rawRes.data || []) as any[]), ...((stageRes.data || []) as any[])];
-
-        // filtra equipamento + período (mes_ano) + tipo
-        const filtered = all.filter((r) => {
-          const eq = normalizeEquip(String(r.codigo_equipamento || ""));
-          if (!eq) return false;
-          if (eq !== equipNorm) return false;
-
-          const ma = getMesAno(r);
-          if (!ma) return false;
-          if (ma < de || ma > ate) return false;
-
+        const filtered = rawFiltered.filter((r) => {
           const t = mapTipo(r.tipo_registro);
           if (tipo !== "TODOS" && t !== tipo) return false;
-
           return true;
         });
 
-        // ids para buscar itens
         const ids = Array.from(
           new Set(
             filtered
@@ -247,7 +277,7 @@ export default function EquipamentosComprasPage() {
           )
         );
 
-        // items: NA SUA TABELA é quantidade_texto / quantidade_num (não existe qtd)
+        // itens via view consolidada
         let itemsByOrder = new Map<number, ItemRowDb[]>();
         if (ids.length) {
           const chunkSize = 800;
@@ -256,8 +286,8 @@ export default function EquipamentosComprasPage() {
           for (let i = 0; i < ids.length; i += chunkSize) {
             const chunk = ids.slice(i, i + chunkSize);
             const itRes = await supabase
-              .from("orders_2025_items")
-              .select("ordem_id,descricao,quantidade_texto,quantidade_num")
+              .from("orders_2025_items_all_v")
+              .select("id,ordem_id,data,hora,numero_oc,descricao,quantidade_texto,quantidade_num")
               .in("ordem_id", chunk);
 
             if (itRes.error) throw itRes.error;
@@ -275,13 +305,12 @@ export default function EquipamentosComprasPage() {
           itemsByOrder = map;
         }
 
-        // monta linhas
         const out: Line[] = [];
 
         for (const r of filtered) {
           const id = Number(r.id);
           const mesAno = getMesAno(r) || "";
-          const iso = brDateToISO(r.date) || `${mesAno}-01`;
+          const iso = brDateToISO(r.date) || (mesAno ? `${mesAno}-01` : "2025-01-01");
           const time = (r.time || "00:00:00").trim();
           const whenSort = `${iso}T${time.length >= 5 ? time : "00:00:00"}`;
 
@@ -289,6 +318,7 @@ export default function EquipamentosComprasPage() {
           const tipoTxt = mapTipo(r.tipo_registro);
           const fornecedor = pickFornecedor(r);
           const totalOc = r.valor_menor ?? null;
+
           const obra = (r.obra || "").trim() || "—";
           const operador = (r.operador || "").trim() || "—";
           const textoOriginal = (r.texto_original || "").trim() || "";
@@ -315,6 +345,7 @@ export default function EquipamentosComprasPage() {
               obra,
               operador,
               textoOriginal,
+              rawId: Number.isFinite(id) ? id : null,
             });
           } else {
             its.forEach((it) => {
@@ -334,12 +365,13 @@ export default function EquipamentosComprasPage() {
                 obra,
                 operador,
                 textoOriginal,
+                rawId: Number.isFinite(id) ? id : null,
               });
             });
           }
         }
 
-        // busca livre
+        // busca livre (client-side)
         const q = busca.trim().toLowerCase();
         const searched = !q
           ? out
@@ -353,9 +385,7 @@ export default function EquipamentosComprasPage() {
               );
             });
 
-        // ordena por data/hora desc
         searched.sort((a, b) => (a.whenSort < b.whenSort ? 1 : a.whenSort > b.whenSort ? -1 : 0));
-
         setLines(searched);
       } catch (e: any) {
         setLines([]);
@@ -366,18 +396,31 @@ export default function EquipamentosComprasPage() {
     })();
   }, [supabase, equipamento, tipo, deMes, ateMes, busca]);
 
+  // ====== totais ======
   const totals = useMemo(() => {
-    const ocs = new Set<string>();
-    let total = 0;
-
+    // Regra: total é 1x por OC. Se OC não existir, usa ID pra não colapsar tudo em "—"
     const ocToTotal = new Map<string, number>();
+    const ocSet = new Set<string>();
+
     for (const l of lines) {
-      if (l.oc && l.oc !== "—") ocs.add(l.oc);
-      if (l.oc && l.oc !== "—" && l.totalOc != null && !ocToTotal.has(l.oc)) ocToTotal.set(l.oc, l.totalOc);
+      const ocTrim = (l.oc || "").trim();
+      const key = ocTrim && ocTrim !== "—" ? ocTrim : `ID:${l.rawId ?? "NA"}`;
+
+      ocSet.add(key);
+
+      if (l.totalOc != null && !ocToTotal.has(key)) {
+        ocToTotal.set(key, l.totalOc);
+      }
     }
+
+    let total = 0;
     for (const v of ocToTotal.values()) total += v;
 
-    return { ocs: ocs.size, itens: lines.length, total };
+    return {
+      ocs: ocSet.size,
+      itens: lines.length,
+      total,
+    };
   }, [lines]);
 
   const typeOptions: { key: TipoFiltro; label: string }[] = [
@@ -676,7 +719,7 @@ export default function EquipamentosComprasPage() {
             </div>
 
             <div className="muted">
-              Importante: várias OCs têm várias peças, mas o valor é o <b>TOTAL da OC</b> (não é valor por item). Normalização automática: MN07 / MN-07 / mn07 → MN-07.
+              Fonte: <b>orders_2025_raw_all_dedup_v (rn=1)</b> + <b>orders_2025_items_all_v</b>. Normalização: MN07 / MN-07 / mn07 → MN-07.
             </div>
           </section>
 
