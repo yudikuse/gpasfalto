@@ -8,14 +8,26 @@ type TipoFiltro = "TODOS" | "MANUTENCAO" | "COMPRA" | "ABASTECIMENTO" | "SERVICO
 
 type RawLikeRow = {
   id?: number;
-  date?: string | null; // "03/12/2025"
-  time?: string | null; // "16:48:38"
-  mes_ano?: string | null; // "2026-01"
+
+  // No view geralmente vem como "YYYY-MM-DD" (date) e "HH:mm:ss" (time)
+  date?: string | null;
+  time?: string | null;
+
+  mes_ano?: string | null; // "2025-12"
   tipo_registro?: string | null;
   numero_oc?: string | null;
   codigo_equipamento?: string | null;
+
   obra?: string | null;
+  solicitante?: string | null;
   operador?: string | null;
+
+  // IMPORTANTES: muitos pedidos têm 1 item só aqui (e não em items_all_v)
+  material?: string | null;
+  quantidade_texto?: string | null;
+
+  local_entrega?: string | null;
+  placa?: string | null;
 
   fornecedor_1?: string | null;
   fornecedor_2?: string | null;
@@ -25,35 +37,38 @@ type RawLikeRow = {
   preco_2?: number | null;
   preco_3?: number | null;
 
-  valor_menor?: number | null; // total OC
+  valor_menor?: number | null; // total do pedido/OC
   fornecedor_vencedor?: string | null;
   texto_original?: string | null;
-
-  rn?: number | null; // do dedup view
 };
 
 type ItemRowDb = {
   id?: number;
   ordem_id?: number | null;
-  numero_oc?: string | null;
   descricao?: string | null;
   quantidade_texto?: string | null;
   quantidade_num?: number | null;
 };
 
 type Line = {
-  whenSort: string; // YYYY-MM-DDTHH:mm:ss
-  dateTxt: string; // dd/mm/yyyy
+  id: number | null;
+  whenSort: string;
+  dateTxt: string;
   timeTxt: string;
-  mesAno: string; // YYYY-MM
+  mesAno: string;
+
   equipamentoNorm: string;
   equipamentoRaw: string;
+
   tipo: string;
   oc: string;
+
   item: string;
   qtd: string;
+
   fornecedor: string;
   totalOc: number | null;
+
   obra: string;
   operador: string;
   textoOriginal: string;
@@ -85,24 +100,24 @@ function normalizeEquip(input: string) {
   return cleaned.replace(/--+/g, "-");
 }
 
-// dd/mm/yyyy -> yyyy-mm-dd (se inválido, retorna null)
-function brDateToISO(d: string | null | undefined) {
+// Tenta formatar data para exibição dd/mm/yyyy quando vier yyyy-mm-dd
+function fmtDatePt(d: string | null | undefined) {
   const s = (d || "").trim();
-  const m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
-  if (!m) return null;
-  const dd = Number(m[1]);
-  const mm = Number(m[2]);
-  const yyyy = Number(m[3]);
-  if (!dd || !mm || !yyyy) return null;
-  return `${yyyy}-${pad(mm, 2)}-${pad(dd, 2)}`;
+  const iso = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[3]}/${iso[2]}/${iso[1]}`;
+  // Se já vier dd/mm/yyyy, mantém
+  const br = s.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (br) return s;
+  return s || "—";
 }
 
 function getMesAno(row: RawLikeRow) {
   const ma = (row.mes_ano || "").trim();
   if (/^\d{4}-\d{2}$/.test(ma)) return ma;
 
-  const iso = brDateToISO(row.date);
-  if (iso) return iso.slice(0, 7);
+  const d = (row.date || "").trim();
+  const iso = d.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (iso) return `${iso[1]}-${iso[2]}`;
 
   const t = (row.texto_original || "").match(/\b(20\d{2})-(\d{2})\b/);
   if (t) return `${t[1]}-${t[2]}`;
@@ -110,20 +125,16 @@ function getMesAno(row: RawLikeRow) {
   return "";
 }
 
-function mapTipo(row: RawLikeRow): string {
-  // IMPORTANTÍSSIMO: seu tipo_registro às vezes é "PEDIDO_C_OCxxxxx"
-  // então precisamos olhar também o texto_original (que contém "MANUTENÇÃO", etc.)
-  const base = `${row.tipo_registro || ""} ${row.texto_original || ""}`.toUpperCase();
-
-  if (base.includes("ABASTEC")) return "ABASTECIMENTO";
-  if (base.includes("SERV")) return "SERVICOS";
-  if (base.includes("PEÇA") || base.includes("PECA")) return "PECAS";
-  if (base.includes("MANUT")) return "MANUTENCAO";
-  if (base.includes("COMPRA")) return "COMPRA";
-
-  // fallback: tenta usar o próprio tipo_registro limpo
-  const t = (row.tipo_registro || "").toUpperCase();
-  return t ? t : "OUTRO";
+function mapTipo(tipo_registro: string | null | undefined): string {
+  const t = (tipo_registro || "").toUpperCase();
+  if (t.includes("ABASTEC")) return "ABASTECIMENTO";
+  if (t.includes("SERV")) return "SERVICOS";
+  if (t.includes("PECA")) return "PECAS";
+  if (t.includes("MANUT")) return "MANUTENCAO";
+  if (t.includes("COMPRA")) return "COMPRA";
+  // quando vem "OC" no seu view
+  if (t === "OC") return "MANUTENCAO";
+  return t || "OUTRO";
 }
 
 function pickFornecedor(r: RawLikeRow) {
@@ -144,93 +155,44 @@ function resolvePublicSupabase(): { url: string; key: string; ok: boolean } {
   return { url, key, ok: Boolean(url && key) };
 }
 
-function formatQtd(it: ItemRowDb): string {
+function formatQtdFromItem(it: ItemRowDb): string {
   const t = (it.quantidade_texto || "").trim();
   if (t) return t;
   if (it.quantidade_num != null && Number.isFinite(it.quantidade_num)) return String(it.quantidade_num);
   return "—";
 }
 
-function monthKeyFromDate(d: Date) {
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}`;
+function safeTime(t: string | null | undefined) {
+  const s = (t || "").trim();
+  if (!s) return "00:00:00";
+  // se vier HH:mm, completa
+  if (/^\d{2}:\d{2}$/.test(s)) return `${s}:00`;
+  // se vier HH:mm:ss ok
+  if (/^\d{2}:\d{2}:\d{2}$/.test(s)) return s;
+  return "00:00:00";
 }
 
-function buildMonthOptions(fromYYYYMM: string, toYYYYMM: string) {
-  const out: string[] = [];
-  const [fy, fm] = fromYYYYMM.split("-").map((x) => Number(x));
-  const [ty, tm] = toYYYYMM.split("-").map((x) => Number(x));
+function monthKey(y: number, m: number) {
+  return `${y}-${pad(m, 2)}`;
+}
 
-  let y = fy;
-  let m = fm;
-  while (y < ty || (y === ty && m <= tm)) {
-    out.push(`${y}-${pad(m, 2)}`);
+function buildMonthOptions(fromYear = 2025, fromMonth = 1) {
+  const now = new Date();
+  const endY = now.getFullYear();
+  const endM = now.getMonth() + 1;
+
+  const out: string[] = [];
+  let y = fromYear;
+  let m = fromMonth;
+
+  while (y < endY || (y === endY && m <= endM)) {
+    out.push(monthKey(y, m));
     m++;
     if (m === 13) {
       m = 1;
       y++;
     }
   }
-  return out;
-}
-
-// monta expressões OR para "codigo_equipamento" (Eh01 / EH01 / EH-01 / EH1 / EH-1 etc)
-function buildEquipOrExpr(equipNorm: string) {
-  // equipNorm vem tipo "EH-01"
-  const cleaned = equipNorm.replace(/-/g, ""); // "EH01"
-  const m = cleaned.match(/^([A-Z]{1,4})(\d{1,3})$/);
-  if (!m) {
-    const safe = equipNorm.replace(/,/g, ""); // só pra não quebrar
-    return `codigo_equipamento.ilike.${safe},codigo_equipamento.ilike.${safe.toLowerCase()}`;
-  }
-
-  const prefix = m[1];
-  const num = Number(m[2]);
-  const n1 = String(num); // "1"
-  const n2 = pad(num, 2); // "01"
-
-  const variants = new Set<string>([
-    `${prefix}${n2}`, // EH01
-    `${prefix}-${n2}`, // EH-01
-    `${prefix}${n1}`, // EH1
-    `${prefix}-${n1}`, // EH-1
-    `${prefix.toLowerCase()}${n2}`, // eh01
-    `${prefix.toLowerCase()}-${n2}`, // eh-01
-    `${prefix.toLowerCase()}${n1}`, // eh1
-    `${prefix.toLowerCase()}-${n1}`, // eh-1
-  ]);
-
-  // Supabase `.or()` aceita condições separadas por vírgula
-  // Vamos usar ilike para pegar "Eh01" também
-  return Array.from(variants)
-    .map((v) => `codigo_equipamento.ilike.${v}`)
-    .join(",");
-}
-
-async function fetchAll<T>(
-  supabase: SupabaseClient,
-  table: string,
-  select: string,
-  buildQuery: (q: any) => any,
-  pageSize = 1000
-): Promise<T[]> {
-  const out: T[] = [];
-  let from = 0;
-
-  while (true) {
-    let q = supabase.from(table).select(select).range(from, from + pageSize - 1);
-    q = buildQuery(q);
-
-    const res = await q;
-    if (res.error) throw res.error;
-
-    const rows = (res.data || []) as T[];
-    out.push(...rows);
-
-    if (rows.length < pageSize) break;
-    from += pageSize;
-    if (from > 200000) break; // guarda de segurança
-  }
-
   return out;
 }
 
@@ -245,16 +207,13 @@ export default function EquipamentosComprasPage() {
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState("");
 
+  const monthOptions = useMemo(() => buildMonthOptions(2025, 1), []);
+  const lastMonth = monthOptions[monthOptions.length - 1] || "2025-12";
+
   const [equipamento, setEquipamento] = useState<string>("");
   const [tipo, setTipo] = useState<TipoFiltro>("TODOS");
-
-  // meses dinâmicos: 2025-01 até mês atual
-  const currentMonth = useMemo(() => monthKeyFromDate(new Date()), []);
-  const monthOptions = useMemo(() => buildMonthOptions("2025-01", currentMonth), [currentMonth]);
-
   const [deMes, setDeMes] = useState<string>("2025-01");
-  const [ateMes, setAteMes] = useState<string>(currentMonth);
-
+  const [ateMes, setAteMes] = useState<string>(lastMonth);
   const [busca, setBusca] = useState<string>("");
 
   const [equipOptions, setEquipOptions] = useState<string[]>([]);
@@ -299,37 +258,33 @@ export default function EquipamentosComprasPage() {
 
       try {
         const equipNorm = normalizeEquip(equipamento);
-        const de = deMes;
-        const ate = ateMes;
 
-        // 1) Puxa RAW dedup (rn=1), filtrando no BANCO por mês e equipamento (com OR)
-        const orExpr = buildEquipOrExpr(equipNorm);
+        // BASE: view dedup + items view
+        // Obs: não vamos puxar 83k pro browser. Filtra por mes_ano (range) e depois filtra por equipamento no front.
+        // Se quiser deixar ainda mais rápido depois, a gente coloca .eq(...) com um campo normalizado no view.
+        const baseRes = await supabase
+          .from("orders_2025_raw_all_dedup_v")
+          .select("*")
+          .gte("mes_ano", deMes)
+          .lte("mes_ano", ateMes)
+          .limit(200000);
 
-        const rawRows = await fetchAll<RawLikeRow>(
-          supabase,
-          "orders_2025_raw_all_dedup_v",
-          "id,date,time,mes_ano,tipo_registro,numero_oc,codigo_equipamento,obra,operador,valor_menor,fornecedor_vencedor,fornecedor_1,fornecedor_2,fornecedor_3,texto_original,rn",
-          (q) => q.eq("rn", 1).gte("mes_ano", de).lte("mes_ano", ate).or(orExpr),
-          1000
-        );
+        if (baseRes.error) throw baseRes.error;
 
-        // 2) filtra final em JS (normalização + tipo)
-        const filtered = rawRows.filter((r) => {
+        const all = (baseRes.data || []) as any as RawLikeRow[];
+
+        // filtra equipamento + tipo
+        const filtered = all.filter((r) => {
           const eq = normalizeEquip(String(r.codigo_equipamento || ""));
           if (!eq) return false;
           if (eq !== equipNorm) return false;
 
-          const ma = getMesAno(r);
-          if (!ma) return false;
-          if (ma < de || ma > ate) return false;
-
-          const t = mapTipo(r);
+          const t = mapTipo(r.tipo_registro);
           if (tipo !== "TODOS" && t !== tipo) return false;
 
           return true;
         });
 
-        // ids para buscar itens
         const ids = Array.from(
           new Set(
             filtered
@@ -338,7 +293,7 @@ export default function EquipamentosComprasPage() {
           )
         );
 
-        // 3) Busca itens no view items_all_v por ordem_id
+        // Itens por ordem (quando existirem múltiplos)
         let itemsByOrder = new Map<number, ItemRowDb[]>();
         if (ids.length) {
           const chunkSize = 800;
@@ -346,10 +301,9 @@ export default function EquipamentosComprasPage() {
 
           for (let i = 0; i < ids.length; i += chunkSize) {
             const chunk = ids.slice(i, i + chunkSize);
-
             const itRes = await supabase
               .from("orders_2025_items_all_v")
-              .select("ordem_id,numero_oc,descricao,quantidade_texto,quantidade_num")
+              .select("ordem_id,descricao,quantidade_texto,quantidade_num")
               .in("ordem_id", chunk);
 
             if (itRes.error) throw itRes.error;
@@ -367,18 +321,20 @@ export default function EquipamentosComprasPage() {
           itemsByOrder = map;
         }
 
-        // 4) monta linhas
         const out: Line[] = [];
 
         for (const r of filtered) {
           const id = Number(r.id);
           const mesAno = getMesAno(r) || "";
-          const iso = brDateToISO(r.date) || `${mesAno}-01`;
-          const time = (r.time || "00:00:00").trim();
-          const whenSort = `${iso}T${time.length >= 5 ? time : "00:00:00"}`;
+          const time = safeTime(r.time);
+
+          // whenSort: usa date iso se vier, senão mesAno-01
+          const d = (r.date || "").trim();
+          const isoOk = /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : mesAno ? `${mesAno}-01` : "1970-01-01";
+          const whenSort = `${isoOk}T${time}`;
 
           const oc = (r.numero_oc || "").trim() || "—";
-          const tipoTxt = mapTipo(r);
+          const tipoTxt = mapTipo(r.tipo_registro);
           const fornecedor = pickFornecedor(r);
           const totalOc = r.valor_menor ?? null;
           const obra = (r.obra || "").trim() || "—";
@@ -390,48 +346,53 @@ export default function EquipamentosComprasPage() {
 
           const its = Number.isFinite(id) ? itemsByOrder.get(id) || [] : [];
 
-          if (!its.length) {
-            out.push({
-              whenSort,
-              dateTxt: (r.date || "").trim() || "—",
-              timeTxt: time || "—",
-              mesAno: mesAno || "—",
-              equipamentoNorm: eqNorm,
-              equipamentoRaw: eqRaw || eqNorm,
-              tipo: tipoTxt,
-              oc,
-              item: "(sem item cadastrado)",
-              qtd: "—",
-              fornecedor,
-              totalOc,
-              obra,
-              operador,
-              textoOriginal,
-            });
-          } else {
+          if (its.length) {
             its.forEach((it) => {
               out.push({
+                id: Number.isFinite(id) ? id : null,
                 whenSort,
-                dateTxt: (r.date || "").trim() || "—",
-                timeTxt: time || "—",
+                dateTxt: fmtDatePt(r.date),
+                timeTxt: time,
                 mesAno: mesAno || "—",
                 equipamentoNorm: eqNorm,
                 equipamentoRaw: eqRaw || eqNorm,
                 tipo: tipoTxt,
                 oc,
                 item: (it.descricao || "").trim() || "—",
-                qtd: formatQtd(it),
+                qtd: formatQtdFromItem(it),
                 fornecedor,
-                totalOc, // TOTAL da OC (repete na lista, sim)
+                totalOc,
                 obra,
                 operador,
                 textoOriginal,
               });
             });
+          } else {
+            // FALLBACK: usa material/quantidade_texto do próprio view (resolve PC-02 e muitos outros)
+            const mat = (r.material || "").trim();
+            const qtdTxt = (r.quantidade_texto || "").trim();
+
+            out.push({
+              id: Number.isFinite(id) ? id : null,
+              whenSort,
+              dateTxt: fmtDatePt(r.date),
+              timeTxt: time,
+              mesAno: mesAno || "—",
+              equipamentoNorm: eqNorm,
+              equipamentoRaw: eqRaw || eqNorm,
+              tipo: tipoTxt,
+              oc,
+              item: mat || "(sem item cadastrado)",
+              qtd: qtdTxt || "—",
+              fornecedor,
+              totalOc,
+              obra,
+              operador,
+              textoOriginal,
+            });
           }
         }
 
-        // 5) busca livre
         const q = busca.trim().toLowerCase();
         const searched = !q
           ? out
@@ -445,9 +406,7 @@ export default function EquipamentosComprasPage() {
               );
             });
 
-        // ordena por data/hora desc
         searched.sort((a, b) => (a.whenSort < b.whenSort ? 1 : a.whenSort > b.whenSort ? -1 : 0));
-
         setLines(searched);
       } catch (e: any) {
         setLines([]);
@@ -458,21 +417,26 @@ export default function EquipamentosComprasPage() {
     })();
   }, [supabase, equipamento, tipo, deMes, ateMes, busca]);
 
-  // Total do topo: soma OC ÚNICA (não soma repetido por item)
+  // TOTAL DO TOPO: soma OC única (e se OC for "—", soma por id único)
   const totals = useMemo(() => {
-    const ocs = new Set<string>();
-    const ocToTotal = new Map<string, number>();
+    const ocSet = new Set<string>();
+    const keyToTotal = new Map<string, number>();
     let total = 0;
 
     for (const l of lines) {
-      if (l.oc && l.oc !== "—") ocs.add(l.oc);
-      if (l.oc && l.oc !== "—" && l.totalOc != null && !ocToTotal.has(l.oc)) {
-        ocToTotal.set(l.oc, l.totalOc);
+      const hasOc = l.oc && l.oc !== "—";
+      const key = hasOc ? `OC:${l.oc}` : l.id != null ? `ID:${l.id}` : null;
+
+      if (hasOc) ocSet.add(l.oc);
+
+      if (key && l.totalOc != null && !keyToTotal.has(key)) {
+        keyToTotal.set(key, l.totalOc);
       }
     }
-    for (const v of ocToTotal.values()) total += v;
 
-    return { ocs: ocs.size, itens: lines.length, total };
+    for (const v of keyToTotal.values()) total += v;
+
+    return { ocs: ocSet.size, itens: lines.length, total };
   }, [lines]);
 
   const typeOptions: { key: TipoFiltro; label: string }[] = [
@@ -512,7 +476,7 @@ export default function EquipamentosComprasPage() {
           margin-bottom: 10px;
         }
         .logo img {
-          height: 120px; /* maior, padrão parecido com Diesel */
+          height: 120px;
           width: auto;
           object-fit: contain;
         }
@@ -688,8 +652,7 @@ export default function EquipamentosComprasPage() {
             </div>
             <h1 className="title">Compras Manutenção - Equipamentos</h1>
             <div className="subtitle">
-              Relatório por equipamento (linha por item quando existir). Na tabela, <b>Total OC</b> é o total do pedido (sem rateio).
-              No topo, o <b>Total</b> soma <b>OC única</b>.
+              Relatório por equipamento (linha por item quando existir). Na tabela, <b>Total OC</b> é o total do pedido (sem rateio). No topo, o <b>Total</b> soma OC única.
             </div>
 
             <div className="pill-row">
@@ -767,12 +730,7 @@ export default function EquipamentosComprasPage() {
 
               <div className="field">
                 <div className="label">Busca</div>
-                <input
-                  className="input"
-                  value={busca}
-                  onChange={(e) => setBusca(e.target.value)}
-                  placeholder="OC, peça, obra, fornecedor, texto…"
-                />
+                <input className="input" value={busca} onChange={(e) => setBusca(e.target.value)} placeholder="OC, peça, obra, fornecedor, texto…" />
               </div>
             </div>
 
@@ -782,7 +740,7 @@ export default function EquipamentosComprasPage() {
           <section className="section-card">
             <h2 className="section-title">Resultados</h2>
             <div className="section-sub">
-              Linha por item (quando existir). Se a OC não tiver itens cadastrados, aparece “(sem item cadastrado)”.
+              Linha por item (quando existir). Se não houver item em <b>orders_2025_items_all_v</b>, usa fallback de <b>material/quantidade</b> do próprio pedido.
             </div>
 
             {loading ? (
@@ -812,7 +770,7 @@ export default function EquipamentosComprasPage() {
                   </thead>
                   <tbody>
                     {lines.map((l, idx) => (
-                      <tr key={`${l.oc}-${idx}-${l.whenSort}`}>
+                      <tr key={`${l.oc}-${l.id ?? "x"}-${idx}-${l.whenSort}`}>
                         <td className="dateCell">
                           {l.dateTxt}
                           <span className="subDate">{l.timeTxt}</span>
