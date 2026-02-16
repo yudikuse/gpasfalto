@@ -1,3 +1,4 @@
+// FILE: app/equipamentos/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -5,9 +6,9 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 type TipoFiltro = "TODOS" | "MANUTENCAO" | "COMPRA" | "ABASTECIMENTO" | "SERVICOS" | "PECAS" | "OUTRO";
 
-type RawRow = {
+type RawLikeRow = {
   id?: number;
-  date?: string | null; // "03/12/2025"
+  date?: string | null; // "03/12/2025" (texto)
   time?: string | null;
   mes_ano?: string | null; // "2025-12"
   tipo_registro?: string | null;
@@ -15,19 +16,22 @@ type RawRow = {
   codigo_equipamento?: string | null;
   obra?: string | null;
   operador?: string | null;
+  local_entrega?: string | null;
 
   fornecedor_1?: string | null;
   fornecedor_2?: string | null;
   fornecedor_3?: string | null;
 
-  valor_menor?: number | null;
+  preco_1?: number | null;
+  preco_2?: number | null;
+  preco_3?: number | null;
+
+  valor_menor?: number | null; // total OC
   fornecedor_vencedor?: string | null;
   texto_original?: string | null;
-
-  rn?: number | null; // do view dedup
 };
 
-type ItemRow = {
+type ItemRowDb = {
   id?: number;
   ordem_id?: number | null;
   descricao?: string | null;
@@ -51,7 +55,6 @@ type Line = {
   obra: string;
   operador: string;
   textoOriginal: string;
-  orderId: number | null;
 };
 
 function pad(n: number, size: number) {
@@ -64,7 +67,6 @@ function currencyBRL(n: number | null | undefined) {
   return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-// Normaliza "eh01", "EH01", "EH-01", "eh-1" => "EH-01"
 function normalizeEquip(input: string) {
   const raw = (input || "").trim();
   if (!raw) return "";
@@ -92,7 +94,7 @@ function brDateToISO(d: string | null | undefined) {
   return `${yyyy}-${pad(mm, 2)}-${pad(dd, 2)}`;
 }
 
-function getMesAno(row: RawRow) {
+function getMesAno(row: RawLikeRow) {
   const ma = (row.mes_ano || "").trim();
   if (/^\d{4}-\d{2}$/.test(ma)) return ma;
 
@@ -115,7 +117,7 @@ function mapTipo(tipo_registro: string | null | undefined): string {
   return t || "OUTRO";
 }
 
-function pickFornecedor(r: RawRow) {
+function pickFornecedor(r: RawLikeRow) {
   return (
     (r.fornecedor_vencedor || "").trim() ||
     (r.fornecedor_1 || "").trim() ||
@@ -133,141 +135,17 @@ function resolvePublicSupabase(): { url: string; key: string; ok: boolean } {
   return { url, key, ok: Boolean(url && key) };
 }
 
-function formatQtd(it: ItemRow): string {
+function formatQtd(it: ItemRowDb): string {
   const t = (it.quantidade_texto || "").trim();
   if (t) return t;
   if (it.quantidade_num != null && Number.isFinite(it.quantidade_num)) return String(it.quantidade_num);
   return "—";
 }
 
-function monthList(fromYYYYMM: string, toYYYYMM: string) {
-  const [fy, fm] = fromYYYYMM.split("-").map((x) => Number(x));
-  const [ty, tm] = toYYYYMM.split("-").map((x) => Number(x));
-  const out: string[] = [];
-
-  let y = fy;
-  let m = fm;
-
-  while (y < ty || (y === ty && m <= tm)) {
-    out.push(`${y}-${pad(m, 2)}`);
-    m++;
-    if (m === 13) {
-      m = 1;
-      y++;
-    }
-  }
-  return out;
-}
-
-function currentYYYYMM() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}`;
-}
-
-function buildEquipOr(norm: string) {
-  // EH-01 => variantes para bater em "Eh01", "EH01", "EH-01", etc
-  const compact = norm.replace(/-/g, ""); // EH01
-  const variants = Array.from(
-    new Set([
-      norm,
-      compact,
-      norm.replace("-", " "),
-      norm.replace("-", "_"),
-      norm.toLowerCase(),
-      compact.toLowerCase(),
-    ])
-  );
-
-  // usa %...% pq no banco pode ter espaços/dash
-  const safe = (v: string) => v.replace(/[%]/g, ""); // só pra não quebrar
-  return variants.map((v) => `codigo_equipamento.ilike.%${safe(v)}%`).join(",");
-}
-
-async function fetchAllRaw(
-  supabase: SupabaseClient,
-  args: { equipNorm: string; de: string; ate: string; tipo: TipoFiltro }
-): Promise<RawRow[]> {
-  const pageSize = 1000;
-  const out: RawRow[] = [];
-  let from = 0;
-
-  // IMPORTANTÍSSIMO: filtra no banco (sem trazer 83k pro browser)
-  while (true) {
-    let q = supabase
-      .from("orders_2025_raw_all_dedup_v")
-      .select(
-        "id,date,time,mes_ano,tipo_registro,numero_oc,codigo_equipamento,obra,operador,fornecedor_1,fornecedor_2,fornecedor_3,fornecedor_vencedor,valor_menor,texto_original,rn"
-      )
-      .gte("mes_ano", args.de)
-      .lte("mes_ano", args.ate)
-      .or(buildEquipOr(args.equipNorm))
-      .range(from, from + pageSize - 1);
-
-    // segurança extra: se por algum motivo o view vier com rn, força rn=1
-    q = q.eq("rn", 1);
-
-    if (args.tipo !== "TODOS") {
-      // no banco pode estar "PEDIDO_C_..." etc, então filtra por contains via ilike
-      // MANUTENCAO => %MANUT%
-      const t = args.tipo === "SERVICOS" ? "SERV" : args.tipo === "ABASTECIMENTO" ? "ABASTEC" : args.tipo;
-      q = q.ilike("tipo_registro", `%${t}%`);
-    }
-
-    const res = await q;
-    if (res.error) throw res.error;
-
-    const rows = (res.data || []) as any[];
-    out.push(...rows);
-
-    if (rows.length < pageSize) break;
-    from += pageSize;
-    if (from > 200000) break; // trava de segurança
-  }
-
-  return out;
-}
-
-async function fetchItemsByOrderIds(supabase: SupabaseClient, ids: number[]) {
-  const itemsByOrder = new Map<number, ItemRow[]>();
-  if (!ids.length) return itemsByOrder;
-
-  const chunkSize = 800;
-  const acc: ItemRow[] = [];
-
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    const chunk = ids.slice(i, i + chunkSize);
-    const itRes = await supabase
-      .from("orders_2025_items_all_v")
-      .select("id,ordem_id,descricao,quantidade_texto,quantidade_num")
-      .in("ordem_id", chunk);
-
-    if (itRes.error) throw itRes.error;
-    acc.push(...((itRes.data || []) as any[]));
-  }
-
-  // dedup de itens idênticos (evita linhas repetidas tipo "filtros de óleo 68" duplicado)
-  const seen = new Set<string>();
-
-  for (const it of acc) {
-    const oid = Number(it.ordem_id);
-    if (!Number.isFinite(oid)) continue;
-
-    const key = [
-      oid,
-      String(it.descricao || "").trim().toLowerCase(),
-      String(it.quantidade_texto || "").trim().toLowerCase(),
-      it.quantidade_num == null ? "" : String(it.quantidade_num),
-    ].join("|");
-
-    if (seen.has(key)) continue;
-    seen.add(key);
-
-    const list = itemsByOrder.get(oid) || [];
-    list.push(it);
-    itemsByOrder.set(oid, list);
-  }
-
-  return itemsByOrder;
+function normalizeOc(oc: string) {
+  const s = (oc || "").trim();
+  if (!s || s === "—") return "";
+  return s.toUpperCase();
 }
 
 export default function EquipamentosComprasPage() {
@@ -284,18 +162,23 @@ export default function EquipamentosComprasPage() {
   const [equipamento, setEquipamento] = useState<string>("");
   const [tipo, setTipo] = useState<TipoFiltro>("TODOS");
   const [deMes, setDeMes] = useState<string>("2025-01");
-  const [ateMes, setAteMes] = useState<string>(currentYYYYMM());
+  const [ateMes, setAteMes] = useState<string>("2025-12");
   const [busca, setBusca] = useState<string>("");
 
   const [equipOptions, setEquipOptions] = useState<string[]>([]);
   const [lines, setLines] = useState<Line[]>([]);
 
+  // meses dinâmicos (2025-01 até 2026-12), você pode estender depois sem mexer no código
   const monthOptions = useMemo(() => {
-    // De 2025-01 até o mês atual (ex.: 2026-02)
-    return monthList("2025-01", currentYYYYMM());
+    const out: string[] = [];
+    const startY = 2025;
+    const endY = 2026;
+    for (let y = startY; y <= endY; y++) {
+      for (let m = 1; m <= 12; m++) out.push(`${y}-${pad(m, 2)}`);
+    }
+    return out;
   }, []);
 
-  // ====== carrega lista oficial de equipamentos ======
   useEffect(() => {
     if (!supabase) return;
 
@@ -323,7 +206,6 @@ export default function EquipamentosComprasPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
 
-  // ====== busca / monta linhas ======
   useEffect(() => {
     if (!supabase) return;
     if (!equipamento) return;
@@ -337,31 +219,42 @@ export default function EquipamentosComprasPage() {
         const de = deMes;
         const ate = ateMes;
 
-        if (ate < de) {
-          setLines([]);
-          setLoading(false);
-          return;
-        }
+        // >>> IMPORTANTÍSSIMO: usar as VIEWS "ALL" (e não a tabela raw/stage isolada)
+        const [rawAllRes, itemsAllRes] = await Promise.all([
+          supabase.from("orders_2025_raw_all_dedup_v").select("*").limit(100000),
+          supabase.from("orders_2025_items_all_v").select("ordem_id,descricao,quantidade_texto,quantidade_num").limit(200000),
+        ]);
 
-        // 1) traz somente o que precisa do VIEW DEDUP (já filtrado no banco)
-        const rawRows = await fetchAllRaw(supabase, { equipNorm, de, ate, tipo });
+        if (rawAllRes.error) throw rawAllRes.error;
+        if (itemsAllRes.error) throw itemsAllRes.error;
 
-        // 2) filtra com normalização final (garantia)
-        const filtered = rawRows.filter((r) => normalizeEquip(String(r.codigo_equipamento || "")) === equipNorm);
+        const all: RawLikeRow[] = (rawAllRes.data || []) as any[];
 
-        // ids para buscar itens
-        const ids = Array.from(
-          new Set(
-            filtered
-              .map((r) => Number(r.id))
-              .filter((n) => Number.isFinite(n)) as number[]
-          )
-        );
+        // indexa itens por ordem_id
+        const itemsByOrder = new Map<number, ItemRowDb[]>();
+        (itemsAllRes.data || []).forEach((it: any) => {
+          const oid = Number(it.ordem_id);
+          if (!Number.isFinite(oid)) return;
+          const list = itemsByOrder.get(oid) || [];
+          list.push(it);
+          itemsByOrder.set(oid, list);
+        });
 
-        // 3) itens pelo VIEW
-        const itemsByOrder = await fetchItemsByOrderIds(supabase, ids);
+        const filtered = all.filter((r) => {
+          const eq = normalizeEquip(String(r.codigo_equipamento || ""));
+          if (!eq) return false;
+          if (eq !== equipNorm) return false;
 
-        // 4) monta linhas
+          const ma = getMesAno(r);
+          if (!ma) return false;
+          if (ma < de || ma > ate) return false;
+
+          const t = mapTipo(r.tipo_registro);
+          if (tipo !== "TODOS" && t !== tipo) return false;
+
+          return true;
+        });
+
         const out: Line[] = [];
 
         for (const r of filtered) {
@@ -401,7 +294,6 @@ export default function EquipamentosComprasPage() {
               obra,
               operador,
               textoOriginal,
-              orderId: Number.isFinite(id) ? id : null,
             });
           } else {
             its.forEach((it) => {
@@ -421,13 +313,11 @@ export default function EquipamentosComprasPage() {
                 obra,
                 operador,
                 textoOriginal,
-                orderId: Number.isFinite(id) ? id : null,
               });
             });
           }
         }
 
-        // busca livre
         const q = busca.trim().toLowerCase();
         const searched = !q
           ? out
@@ -441,7 +331,6 @@ export default function EquipamentosComprasPage() {
               );
             });
 
-        // ordena por data/hora desc
         searched.sort((a, b) => (a.whenSort < b.whenSort ? 1 : a.whenSort > b.whenSort ? -1 : 0));
 
         setLines(searched);
@@ -454,18 +343,29 @@ export default function EquipamentosComprasPage() {
     })();
   }, [supabase, equipamento, tipo, deMes, ateMes, busca]);
 
+  // >>> TOTAL do pill: soma por OC única (não soma repetidas por item)
   const totals = useMemo(() => {
-    const orderIds = new Set<number>();
-    let total = 0;
+    const ocs = new Set<string>();
+    const ocToTotal = new Map<string, number>();
 
-    const idToTotal = new Map<number, number>();
     for (const l of lines) {
-      if (l.orderId != null) orderIds.add(l.orderId);
-      if (l.orderId != null && l.totalOc != null && !idToTotal.has(l.orderId)) idToTotal.set(l.orderId, l.totalOc);
-    }
-    for (const v of idToTotal.values()) total += v;
+      const ocKey = normalizeOc(l.oc);
+      if (!ocKey) continue;
 
-    return { ordens: orderIds.size, itens: lines.length, total };
+      ocs.add(ocKey);
+
+      // se vier duplicado, mantém o MAIOR valor (evita erro se uma linha vier null/0 e outra vier com valor real)
+      if (l.totalOc != null && Number.isFinite(l.totalOc)) {
+        const prev = ocToTotal.get(ocKey);
+        if (prev == null) ocToTotal.set(ocKey, l.totalOc);
+        else ocToTotal.set(ocKey, Math.max(prev, l.totalOc));
+      }
+    }
+
+    let total = 0;
+    for (const v of ocToTotal.values()) total += v;
+
+    return { ocs: ocs.size, itens: lines.length, total };
   }, [lines]);
 
   const typeOptions: { key: TipoFiltro; label: string }[] = [
@@ -505,7 +405,7 @@ export default function EquipamentosComprasPage() {
           margin-bottom: 10px;
         }
         .logo img {
-          height: 92px;
+          height: 72px;
           width: auto;
           object-fit: contain;
         }
@@ -665,7 +565,7 @@ export default function EquipamentosComprasPage() {
             font-size: 28px;
           }
           .logo img {
-            height: 76px;
+            height: 64px;
           }
           .filters {
             grid-template-columns: 1fr;
@@ -681,12 +581,12 @@ export default function EquipamentosComprasPage() {
             </div>
             <h1 className="title">Compras Manutenção - Equipamentos</h1>
             <div className="subtitle">
-              Fonte: <b>orders_2025_raw_all_dedup_v</b> (rn=1) + <b>orders_2025_items_all_v</b>. Total OC é TOTAL da OC (sem rateio por peça).
+              Relatório por equipamento (linha por item quando existir). <b>Total OC</b> na tabela é o total do pedido (sem rateio por peça). No topo, o <b>Total</b> soma OC única.
             </div>
 
             <div className="pill-row">
               <div className="pill">
-                Ordens <strong>{totals.ordens}</strong>
+                OCs <strong>{totals.ocs}</strong>
               </div>
               <div className="pill">
                 Linhas <strong>{totals.itens}</strong>
@@ -709,7 +609,7 @@ export default function EquipamentosComprasPage() {
           <section className="section-card">
             <h2 className="section-title">Filtros</h2>
             <div className="section-sub">
-              Equipamentos vêm de <b>equipment_hours_2025</b> (lista oficial). Período filtra por <b>mes_ano</b> (YYYY-MM).
+              Equipamentos vêm exclusivamente de <b>equipment_hours_2025</b> (lista oficial). Período filtra por <b>mes_ano</b> (YYYY-MM).
             </div>
 
             <div className="filters">
@@ -763,14 +663,12 @@ export default function EquipamentosComprasPage() {
               </div>
             </div>
 
-            <div className="muted">
-              Normalização: EH01 / EH-01 / Eh01 → <b>EH-01</b>. (A busca no banco é por variações via ILIKE, depois confere pela normalização.)
-            </div>
+            <div className="muted">Normalização automática: MN07 / MN-07 / mn07 → MN-07.</div>
           </section>
 
           <section className="section-card">
             <h2 className="section-title">Resultados</h2>
-            <div className="section-sub">Linha por item (quando existir). Se a OC não tiver itens cadastrados, aparece “(sem item cadastrado)”.</div>
+            <div className="section-sub">Linha por item (quando existir). Se a OC não tiver itens cadastrados, aparece uma linha “(sem item cadastrado)”.</div>
 
             {loading ? (
               <div className="muted" style={{ marginTop: 12 }}>
@@ -799,7 +697,7 @@ export default function EquipamentosComprasPage() {
                   </thead>
                   <tbody>
                     {lines.map((l, idx) => (
-                      <tr key={`${l.orderId ?? "x"}-${l.oc}-${idx}-${l.whenSort}`}>
+                      <tr key={`${l.oc}-${idx}-${l.whenSort}`}>
                         <td className="dateCell">
                           {l.dateTxt}
                           <span className="subDate">{l.timeTxt}</span>
