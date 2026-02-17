@@ -292,3 +292,110 @@ body {
   color: var(--gp-muted);
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
 }
+/* =========================
+   CONTROLES PADRÃO (uso por classe)
+   Não quebra outros módulos
+   ========================= */
+
+.gp-input,
+.gp-select {
+  height: 34px;
+  padding: 6px 10px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: var(--gp-text);
+  font-size: 0.85rem;
+  outline: none;
+}
+
+.gp-input:focus,
+.gp-select:focus {
+  border-color: rgba(255, 75, 43, 0.55);
+  box-shadow: 0 0 0 4px rgba(255, 75, 43, 0.12);
+}
+
+.gp-input::placeholder {
+  color: var(--gp-muted-soft);
+}
+
+.gp-btn {
+  height: 34px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  color: var(--gp-text);
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.gp-btn:hover {
+  transform: translateY(-1px);
+}
+
+.gp-btn:active {
+  transform: translateY(0);
+}
+
+.gp-btn-primary {
+  border-color: transparent;
+  background: linear-gradient(180deg, rgba(255, 75, 43, 1), rgba(255, 75, 43, 0.86));
+  color: #ffffff;
+}
+
+.gp-btn-ghost {
+  background: var(--gp-surface-soft);
+  box-shadow: none;
+}
+
+.gp-btn-danger {
+  border-color: rgba(239, 68, 68, 0.25);
+  background: rgba(239, 68, 68, 0.08);
+  color: rgb(185, 28, 28);
+  box-shadow: none;
+}
+
+.gp-inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.gp-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.gp-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid #e5e7eb;
+  background: #ffffff;
+  font-size: 0.75rem;
+  color: var(--gp-muted);
+}
+
+.gp-badge-strong {
+  border-color: rgba(255, 75, 43, 0.25);
+  background: var(--gp-accent-soft);
+  color: rgba(120, 32, 22, 0.95);
+}
+
+.gp-divider {
+  height: 1px;
+  background: #e5e7eb;
+  margin: 12px 0;
+}
+
+.gp-help {
+  font-size: 0.78rem;
+  color: var(--gp-muted);
+}
