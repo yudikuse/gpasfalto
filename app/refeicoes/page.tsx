@@ -36,6 +36,7 @@ type Order = {
 };
 
 type Pick = { ALMOCO: boolean; JANTA: boolean };
+type ViewMode = "AMBOS" | "ALMOCO" | "JANTA";
 
 function isoLocalToday() {
   const d = new Date();
@@ -94,14 +95,19 @@ async function copyToClipboard(text: string) {
 }
 
 function friendlyError(msg: string) {
-  const m = msg ?? "";
-  if (m.toLowerCase().includes("meal_audit") && m.toLowerCase().includes("row-level security")) {
+  const m = (msg ?? "").toLowerCase();
+  if (m.includes("meal_audit") && m.includes("row-level security")) {
     return "Permissão bloqueada (RLS) na tabela meal_audit. Ajuste a policy/trigger de auditoria para permitir inserts no audit.";
   }
-  if (m.toLowerCase().includes("meal_date") && m.toLowerCase().includes("null")) {
+  if (m.includes("meal_date") && m.includes("null")) {
     return "meal_date está vindo nulo. Confirme se a inserção do pedido está enviando meal_date corretamente.";
   }
   return msg;
+}
+
+function wsTitle(ws: Worksite | undefined) {
+  if (!ws) return "";
+  return `${ws.name}${ws.city ? ` - ${ws.city}` : ""}`;
 }
 
 export default function RefeicoesPage() {
@@ -139,6 +145,10 @@ export default function RefeicoesPage() {
   const [showAdd, setShowAdd] = useState<boolean>(false);
   const [newName, setNewName] = useState<string>("");
   const [newIsThird, setNewIsThird] = useState<boolean>(false);
+
+  // UI helpers
+  const [viewMode, setViewMode] = useState<ViewMode>("AMBOS");
+  const [onlySelected, setOnlySelected] = useState<boolean>(false);
 
   // auth bootstrap
   useEffect(() => {
@@ -372,7 +382,7 @@ export default function RefeicoesPage() {
     return [...fav, ...normal, ...third];
   }, [employees, favoritesIds, search]);
 
-  const totals = useMemo(() => {
+  const totalsEditing = useMemo(() => {
     let almoco = 0;
     let janta = 0;
     for (const empId of Object.keys(picks)) {
@@ -383,7 +393,42 @@ export default function RefeicoesPage() {
   }, [picks]);
 
   const dirty =
-    savedTotals.almoco !== totals.almoco || savedTotals.janta !== totals.janta;
+    savedTotals.almoco !== totalsEditing.almoco || savedTotals.janta !== totalsEditing.janta;
+
+  const listLunch = useMemo(
+    () => employeesOrdered.filter((e) => !!picks[e.id]?.ALMOCO),
+    [employeesOrdered, picks]
+  );
+  const listDinner = useMemo(
+    () => employeesOrdered.filter((e) => !!picks[e.id]?.JANTA),
+    [employeesOrdered, picks]
+  );
+
+  const employeesView = useMemo(() => {
+    let arr = employeesOrdered;
+
+    if (onlySelected) {
+      arr = arr.filter((e) => {
+        const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
+        if (viewMode === "ALMOCO") return p.ALMOCO;
+        if (viewMode === "JANTA") return p.JANTA;
+        return p.ALMOCO || p.JANTA;
+      });
+    } else {
+      // se estiver em modo ALMOCO/JANTA, ainda mostra todo mundo, mas o destaque fica no shift escolhido
+      // (isso evita “sumir” funcionário e errar por esquecimento)
+    }
+
+    return arr;
+  }, [employeesOrdered, picks, onlySelected, viewMode]);
+
+  function togglePick(empId: string, shift: Shift) {
+    setPicks((prev) => {
+      const cur = prev[empId] ?? { ALMOCO: false, JANTA: false };
+      const next = { ...cur, [shift]: !cur[shift] };
+      return { ...prev, [empId]: next };
+    });
+  }
 
   async function sendMagicLink() {
     const email = loginEmail.trim().toLowerCase();
@@ -534,7 +579,6 @@ export default function RefeicoesPage() {
 
     if (late && contract.allow_after_cutoff === false) {
       setToast("Atenção: passou do horário e esse contrato não permite após cutoff.");
-      // não bloqueia (por enquanto)
     }
 
     setBusy(shift === "ALMOCO" ? "Salvando almoço..." : "Salvando janta...");
@@ -594,7 +638,6 @@ export default function RefeicoesPage() {
       const delOrder = await supabase.from("meal_orders").delete().eq("id", ord.id);
       if (delOrder.error) throw new Error(delOrder.error.message);
 
-      // atualiza estado local
       setPicks((prev) => {
         const next: Record<string, Pick> = { ...prev };
         for (const k of Object.keys(next)) {
@@ -618,7 +661,7 @@ export default function RefeicoesPage() {
 
   function buildSummary(shift: Shift) {
     const ws = worksites.find((w) => w.id === selectedWorksiteId);
-    const wsName = ws ? `${ws.name}${ws.city ? ` - ${ws.city}` : ""}` : selectedWorksiteId;
+    const wsName = ws ? wsTitle(ws) : selectedWorksiteId;
 
     const selected = employeesOrdered
       .filter((e) => (shift === "ALMOCO" ? picks[e.id]?.ALMOCO : picks[e.id]?.JANTA))
@@ -692,6 +735,7 @@ export default function RefeicoesPage() {
     setToast("Pessoa adicionada ✅");
   }
 
+  // ---- styles / buttons
   const inputStyle: CSSProperties = {
     width: "100%",
     borderRadius: 14,
@@ -708,29 +752,52 @@ export default function RefeicoesPage() {
     background: "#fff",
     cursor: "pointer",
     fontSize: 12,
-    fontWeight: 600,
-  };
-
-  const btnPrimary: CSSProperties = {
-    ...btnBase,
-    border: "1px solid rgba(255,75,43,0.25)",
-    background: "rgba(255,75,43,0.95)",
-    color: "#fff",
+    fontWeight: 700,
   };
 
   const btnDanger: CSSProperties = {
     ...btnBase,
     border: "1px solid rgba(255,75,43,0.35)",
-    background: "rgba(255,75,43,0.12)",
+    background: "rgba(255,75,43,0.10)",
     color: "#7c2d12",
+  };
+
+  const btnLunch: CSSProperties = {
+    ...btnBase,
+    border: "1px solid rgba(16,185,129,0.25)",
+    background: "rgba(16,185,129,0.95)",
+    color: "#fff",
+  };
+
+  const btnDinner: CSSProperties = {
+    ...btnBase,
+    border: "1px solid rgba(59,130,246,0.25)",
+    background: "rgba(59,130,246,0.95)",
+    color: "#fff",
   };
 
   const btnCancel: CSSProperties = {
     ...btnBase,
-    border: "1px solid rgba(124,45,18,0.25)",
+    border: "1px solid rgba(124,45,18,0.20)",
     background: "rgba(124,45,18,0.06)",
     color: "#7c2d12",
   };
+
+  const segBtn: CSSProperties = {
+    ...btnBase,
+    padding: "8px 10px",
+    borderRadius: 999,
+  };
+
+  // ---- rendering helpers
+  function rowTone(p: Pick) {
+    if (p.ALMOCO && p.JANTA) return "tone-both";
+    if (p.ALMOCO) return "tone-lunch";
+    if (p.JANTA) return "tone-dinner";
+    return "tone-none";
+  }
+
+  const selectedWs = worksites.find((w) => w.id === selectedWorksiteId);
 
   if (!sessionUserId) {
     return (
@@ -758,7 +825,7 @@ export default function RefeicoesPage() {
               </div>
 
               <button
-                style={{ ...btnPrimary, padding: "10px 12px", borderRadius: 14 }}
+                style={{ ...btnLunch, padding: "10px 12px", borderRadius: 14 }}
                 onClick={sendMagicLink}
                 disabled={!loginEmail.trim() || !!busy}
               >
@@ -782,6 +849,7 @@ export default function RefeicoesPage() {
   return (
     <div className="page-root">
       <div className="page-container">
+        {/* header */}
         <div className="page-header">
           <div className="brand">
             <div>
@@ -802,6 +870,7 @@ export default function RefeicoesPage() {
           </div>
         </div>
 
+        {/* filters */}
         <div className="filter-bar">
           <div style={{ minWidth: 280 }}>
             <div className="filter-label">Obra</div>
@@ -812,7 +881,7 @@ export default function RefeicoesPage() {
             >
               {worksites.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.name} {w.city ? `- ${w.city}` : ""}
+                  {wsTitle(w)}
                 </option>
               ))}
             </select>
@@ -839,26 +908,34 @@ export default function RefeicoesPage() {
           </div>
         </div>
 
+        {/* summary */}
         <div className="summary-grid">
           <div className="summary-card">
             <div className="summary-label">Totais do dia</div>
 
-            <div className="summary-value">
-              {savedTotals.almoco} / {savedTotals.janta}
+            <div className="big-counts">
+              <div className="big-pill lunch">
+                <div className="big-pill-title">ALMOÇO</div>
+                <div className="big-pill-value">{savedTotals.almoco}</div>
+                <div className="big-pill-sub">{orderLunch?.id ? "salvo" : "não salvo"}</div>
+              </div>
+
+              <div className="big-pill dinner">
+                <div className="big-pill-title">JANTA</div>
+                <div className="big-pill-value">{savedTotals.janta}</div>
+                <div className="big-pill-sub">{orderDinner?.id ? "salvo" : "não salvo"}</div>
+              </div>
             </div>
 
-            <div className="summary-subvalue">Já pedido (salvo) • Almoço / Janta</div>
+            <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
+              Já pedido (salvo) • bater o olho e conferir rápido
+            </div>
 
             {dirty && (
-              <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
-                Em edição: <b>{totals.almoco}</b> / <b>{totals.janta}</b>
+              <div className="edit-warning">
+                Em edição agora: <b>{totalsEditing.almoco}</b> almoço • <b>{totalsEditing.janta}</b> janta
               </div>
             )}
-
-            <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12, color: "#6b7280" }}>
-              <span>Almoço: <b>{orderLunch?.id ? "salvo" : "não salvo"}</b></span>
-              <span>Janta: <b>{orderDinner?.id ? "salvo" : "não salvo"}</b></span>
-            </div>
           </div>
 
           <div className="summary-card">
@@ -887,7 +964,7 @@ export default function RefeicoesPage() {
             </div>
 
             <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-              {worksites.find((w) => w.id === selectedWorksiteId)?.name ?? ""} • {dateISO}
+              {wsTitle(selectedWs)} • {dateISO}
             </div>
           </div>
         </div>
@@ -898,6 +975,48 @@ export default function RefeicoesPage() {
           </div>
         )}
 
+        {/* quick visual list (who is eating) */}
+        <div className="quick-grid">
+          <div className="quick-card lunch">
+            <div className="quick-title">Almoço (marcados agora)</div>
+            <div className="quick-count">{listLunch.length}</div>
+            <div className="quick-list">
+              {listLunch.length ? (
+                listLunch.map((e) => (
+                  <div key={e.id} className="quick-item">
+                    <span className="dot lunch" />
+                    <span className="quick-name">{e.full_name}</span>
+                    {e.is_third_party && <span className="mini-tag third">terceiro</span>}
+                    {favoritesIds.has(e.id) && <span className="mini-tag fav">fav</span>}
+                  </div>
+                ))
+              ) : (
+                <div className="quick-empty">— ninguém marcado —</div>
+              )}
+            </div>
+          </div>
+
+          <div className="quick-card dinner">
+            <div className="quick-title">Janta (marcados agora)</div>
+            <div className="quick-count">{listDinner.length}</div>
+            <div className="quick-list">
+              {listDinner.length ? (
+                listDinner.map((e) => (
+                  <div key={e.id} className="quick-item">
+                    <span className="dot dinner" />
+                    <span className="quick-name">{e.full_name}</span>
+                    {e.is_third_party && <span className="mini-tag third">terceiro</span>}
+                    {favoritesIds.has(e.id) && <span className="mini-tag fav">fav</span>}
+                  </div>
+                ))
+              ) : (
+                <div className="quick-empty">— ninguém marcado —</div>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* add person */}
         {showAdd && (
           <div className="section-card">
             <div className="section-header">
@@ -935,7 +1054,7 @@ export default function RefeicoesPage() {
               <button style={btnBase} onClick={() => setShowAdd(false)} disabled={!!busy}>
                 Cancelar
               </button>
-              <button style={btnPrimary} onClick={addEmployee} disabled={!!busy}>
+              <button style={btnLunch} onClick={addEmployee} disabled={!!busy}>
                 {busy ? busy : "Adicionar"}
               </button>
             </div>
@@ -944,57 +1063,99 @@ export default function RefeicoesPage() {
           </div>
         )}
 
+        {/* main */}
         <div className="section-card">
           <div className="section-header">
             <div>
               <div className="section-title">Marcação</div>
-              <div className="section-subtitle">Você salva almoço e janta em momentos diferentes.</div>
+              <div className="section-subtitle">
+                Visual pensado pro celular: botões grandes e cores por turno.
+              </div>
             </div>
 
-            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              <button style={btnBase} onClick={() => setAll("ALMOCO", true)} disabled={!!busy}>
-                Todos almoço
-              </button>
-              <button style={btnBase} onClick={() => setAll("JANTA", true)} disabled={!!busy}>
-                Todos janta
-              </button>
-              <button style={btnDanger} onClick={clearAll} disabled={!!busy}>
-                Limpar
-              </button>
+            <div className="top-actions">
+              <div className="seg">
+                <button
+                  style={segBtn}
+                  className={viewMode === "AMBOS" ? "seg-on" : "seg-off"}
+                  onClick={() => setViewMode("AMBOS")}
+                  disabled={!!busy}
+                >
+                  Ambos
+                </button>
+                <button
+                  style={segBtn}
+                  className={viewMode === "ALMOCO" ? "seg-on lunch" : "seg-off"}
+                  onClick={() => setViewMode("ALMOCO")}
+                  disabled={!!busy}
+                >
+                  Almoço
+                </button>
+                <button
+                  style={segBtn}
+                  className={viewMode === "JANTA" ? "seg-on dinner" : "seg-off"}
+                  onClick={() => setViewMode("JANTA")}
+                  disabled={!!busy}
+                >
+                  Janta
+                </button>
+              </div>
 
-              <button
-                style={btnCancel}
-                onClick={() => cancelShift("ALMOCO")}
-                disabled={!!busy || !orderLunch?.id}
-                title={!orderLunch?.id ? "Não há almoço salvo" : "Cancela o almoço salvo"}
-              >
-                Cancelar Almoço
-              </button>
+              <label className="only-selected">
+                <input
+                  type="checkbox"
+                  checked={onlySelected}
+                  onChange={(e) => setOnlySelected(e.target.checked)}
+                  disabled={!!busy}
+                />
+                <span>Mostrar só marcados</span>
+              </label>
 
-              <button
-                style={btnCancel}
-                onClick={() => cancelShift("JANTA")}
-                disabled={!!busy || !orderDinner?.id}
-                title={!orderDinner?.id ? "Não há janta salva" : "Cancela a janta salva"}
-              >
-                Cancelar Janta
-              </button>
+              <div className="btns">
+                <button style={btnBase} onClick={() => setAll("ALMOCO", true)} disabled={!!busy}>
+                  Todos almoço
+                </button>
+                <button style={btnBase} onClick={() => setAll("JANTA", true)} disabled={!!busy}>
+                  Todos janta
+                </button>
+                <button style={btnDanger} onClick={clearAll} disabled={!!busy}>
+                  Limpar
+                </button>
 
-              <button
-                style={btnPrimary}
-                onClick={() => saveShift("ALMOCO")}
-                disabled={!!busy || !selectedWorksiteId}
-              >
-                {busy?.includes("almoço") ? busy : "Salvar Almoço"}
-              </button>
+                <button
+                  style={btnCancel}
+                  onClick={() => cancelShift("ALMOCO")}
+                  disabled={!!busy || !orderLunch?.id}
+                  title={!orderLunch?.id ? "Não há almoço salvo" : "Cancela o almoço salvo"}
+                >
+                  Cancelar Almoço
+                </button>
 
-              <button
-                style={btnPrimary}
-                onClick={() => saveShift("JANTA")}
-                disabled={!!busy || !selectedWorksiteId}
-              >
-                {busy?.includes("janta") ? busy : "Salvar Janta"}
-              </button>
+                <button
+                  style={btnCancel}
+                  onClick={() => cancelShift("JANTA")}
+                  disabled={!!busy || !orderDinner?.id}
+                  title={!orderDinner?.id ? "Não há janta salva" : "Cancela a janta salva"}
+                >
+                  Cancelar Janta
+                </button>
+
+                <button
+                  style={btnLunch}
+                  onClick={() => saveShift("ALMOCO")}
+                  disabled={!!busy || !selectedWorksiteId}
+                >
+                  {busy?.includes("almoço") ? busy : "Salvar Almoço"}
+                </button>
+
+                <button
+                  style={btnDinner}
+                  onClick={() => saveShift("JANTA")}
+                  disabled={!!busy || !selectedWorksiteId}
+                >
+                  {busy?.includes("janta") ? busy : "Salvar Janta"}
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1004,110 +1165,71 @@ export default function RefeicoesPage() {
             </div>
           )}
 
-          <div className="table-wrapper">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Funcionário</th>
-                  <th style={{ width: 140, textAlign: "center" }}>Almoço</th>
-                  <th style={{ width: 140, textAlign: "center" }}>Janta</th>
-                </tr>
-              </thead>
-              <tbody>
-                {employeesOrdered.map((e) => {
-                  const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
-                  const isFav = favoritesIds.has(e.id);
+          <div className="list-head">
+            <div className="lh-name">Funcionário</div>
+            {(viewMode === "AMBOS" || viewMode === "ALMOCO") && (
+              <div className="lh-shift lunch">ALMOÇO</div>
+            )}
+            {(viewMode === "AMBOS" || viewMode === "JANTA") && (
+              <div className="lh-shift dinner">JANTA</div>
+            )}
+          </div>
 
-                  return (
-                    <tr key={e.id}>
-                      <td>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-                          <div style={{ fontWeight: 600 }}>{e.full_name}</div>
+          <div className="meal-list">
+            {employeesView.map((e) => {
+              const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
+              const isFav = favoritesIds.has(e.id);
 
-                          {isFav && (
-                            <span
-                              style={{
-                                fontSize: 11,
-                                padding: "4px 10px",
-                                borderRadius: 999,
-                                background: "#ffe7cc",
-                                border: "1px solid #fed7aa",
-                                color: "#9a3412",
-                                fontWeight: 700,
-                              }}
-                            >
-                              favorito
-                            </span>
-                          )}
+              return (
+                <div key={e.id} className={`meal-row ${rowTone(p)}`}>
+                  <div className="mr-name">
+                    <div className="name-line">
+                      <span className={`emp-name ${p.ALMOCO || p.JANTA ? "has-meal" : "no-meal"}`}>
+                        {e.full_name}
+                      </span>
 
-                          {e.is_third_party && (
-                            <span
-                              style={{
-                                fontSize: 11,
-                                padding: "4px 10px",
-                                borderRadius: 999,
-                                background: "#e0f2fe",
-                                border: "1px solid #bae6fd",
-                                color: "#075985",
-                                fontWeight: 700,
-                              }}
-                            >
-                              terceiro
-                            </span>
-                          )}
-                        </div>
-                      </td>
+                      {isFav && <span className="tag fav">favorito</span>}
+                      {e.is_third_party && <span className="tag third">terceiro</span>}
 
-                      <td style={{ textAlign: "center" }}>
-                        <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                          <input
-                            type="checkbox"
-                            checked={p.ALMOCO}
-                            onChange={(ev) =>
-                              setPicks((prev) => ({
-                                ...prev,
-                                [e.id]: {
-                                  ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }),
-                                  ALMOCO: ev.target.checked,
-                                },
-                              }))
-                            }
-                          />
-                          <span style={{ fontSize: 12, color: "#6b7280" }}>Sim</span>
-                        </label>
-                      </td>
+                      {p.ALMOCO && <span className="mini-flag lunch">ALMOÇO</span>}
+                      {p.JANTA && <span className="mini-flag dinner">JANTA</span>}
+                    </div>
+                  </div>
 
-                      <td style={{ textAlign: "center" }}>
-                        <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                          <input
-                            type="checkbox"
-                            checked={p.JANTA}
-                            onChange={(ev) =>
-                              setPicks((prev) => ({
-                                ...prev,
-                                [e.id]: {
-                                  ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }),
-                                  JANTA: ev.target.checked,
-                                },
-                              }))
-                            }
-                          />
-                          <span style={{ fontSize: 12, color: "#6b7280" }}>Sim</span>
-                        </label>
-                      </td>
-                    </tr>
-                  );
-                })}
+                  {(viewMode === "AMBOS" || viewMode === "ALMOCO") && (
+                    <div className="mr-shift">
+                      <button
+                        className={`pill-toggle lunch ${p.ALMOCO ? "on" : "off"}`}
+                        onClick={() => togglePick(e.id, "ALMOCO")}
+                        disabled={!!busy}
+                        aria-label={`Almoço ${e.full_name}`}
+                      >
+                        {p.ALMOCO ? "✓ Vai almoçar" : "+ Almoço"}
+                      </button>
+                    </div>
+                  )}
 
-                {employeesOrdered.length === 0 && (
-                  <tr>
-                    <td colSpan={3} style={{ padding: 18, textAlign: "center", color: "#6b7280" }}>
-                      Nenhum funcionário encontrado.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+                  {(viewMode === "AMBOS" || viewMode === "JANTA") && (
+                    <div className="mr-shift">
+                      <button
+                        className={`pill-toggle dinner ${p.JANTA ? "on" : "off"}`}
+                        onClick={() => togglePick(e.id, "JANTA")}
+                        disabled={!!busy}
+                        aria-label={`Janta ${e.full_name}`}
+                      >
+                        {p.JANTA ? "✓ Vai jantar" : "+ Janta"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+
+            {employeesView.length === 0 && (
+              <div style={{ padding: 18, textAlign: "center", color: "#6b7280" }}>
+                Nenhum funcionário encontrado.
+              </div>
+            )}
           </div>
 
           <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
@@ -1117,6 +1239,361 @@ export default function RefeicoesPage() {
               : "Contrato permite após o limite."}
           </div>
         </div>
+
+        {/* local styles for THIS page (responsive + clear colors) */}
+        <style jsx>{`
+          .big-counts {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin-top: 6px;
+          }
+          .big-pill {
+            border-radius: 16px;
+            padding: 12px 12px;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+          }
+          .big-pill.lunch {
+            border-color: rgba(16, 185, 129, 0.25);
+            background: rgba(16, 185, 129, 0.06);
+          }
+          .big-pill.dinner {
+            border-color: rgba(59, 130, 246, 0.25);
+            background: rgba(59, 130, 246, 0.06);
+          }
+          .big-pill-title {
+            font-size: 11px;
+            letter-spacing: 0.06em;
+            font-weight: 900;
+            color: #374151;
+          }
+          .big-pill-value {
+            font-size: 30px;
+            font-weight: 900;
+            line-height: 1.1;
+            margin-top: 2px;
+          }
+          .big-pill-sub {
+            font-size: 12px;
+            margin-top: 2px;
+            color: #6b7280;
+            font-weight: 700;
+            text-transform: lowercase;
+          }
+          .edit-warning {
+            margin-top: 10px;
+            font-size: 12px;
+            color: #6b7280;
+            border-top: 1px dashed #e5e7eb;
+            padding-top: 10px;
+          }
+
+          .quick-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+            margin-top: 12px;
+            margin-bottom: 12px;
+          }
+          .quick-card {
+            border-radius: 18px;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            padding: 12px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.04);
+          }
+          .quick-card.lunch {
+            border-color: rgba(16, 185, 129, 0.25);
+            background: rgba(16, 185, 129, 0.05);
+          }
+          .quick-card.dinner {
+            border-color: rgba(59, 130, 246, 0.25);
+            background: rgba(59, 130, 246, 0.05);
+          }
+          .quick-title {
+            font-weight: 900;
+            font-size: 13px;
+            color: #111827;
+          }
+          .quick-count {
+            font-size: 26px;
+            font-weight: 900;
+            margin-top: 4px;
+          }
+          .quick-list {
+            margin-top: 10px;
+            max-height: 160px;
+            overflow: auto;
+            padding-right: 6px;
+          }
+          .quick-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 0;
+            border-top: 1px dashed rgba(229,231,235,0.9);
+          }
+          .quick-item:first-child {
+            border-top: none;
+          }
+          .quick-empty {
+            margin-top: 10px;
+            color: #6b7280;
+            font-size: 13px;
+            font-weight: 700;
+          }
+          .dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 999px;
+            flex: 0 0 10px;
+          }
+          .dot.lunch { background: rgba(16,185,129,0.95); }
+          .dot.dinner { background: rgba(59,130,246,0.95); }
+          .quick-name {
+            font-weight: 800;
+            color: #111827;
+            font-size: 13px;
+          }
+          .mini-tag {
+            font-size: 10px;
+            font-weight: 900;
+            padding: 2px 8px;
+            border-radius: 999px;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            color: #374151;
+          }
+          .mini-tag.third {
+            border-color: rgba(59,130,246,0.25);
+            background: rgba(59,130,246,0.07);
+            color: #075985;
+          }
+          .mini-tag.fav {
+            border-color: rgba(251,146,60,0.25);
+            background: rgba(251,146,60,0.10);
+            color: #9a3412;
+          }
+
+          .top-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+            align-items: center;
+          }
+          .seg {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+          }
+          .seg-on {
+            border-color: rgba(17,24,39,0.25);
+            background: rgba(17,24,39,0.06);
+          }
+          .seg-on.lunch {
+            border-color: rgba(16,185,129,0.35);
+            background: rgba(16,185,129,0.10);
+          }
+          .seg-on.dinner {
+            border-color: rgba(59,130,246,0.35);
+            background: rgba(59,130,246,0.10);
+          }
+          .only-selected {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            border-radius: 999px;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            font-weight: 800;
+            font-size: 12px;
+            color: #374151;
+            cursor: pointer;
+            user-select: none;
+          }
+          .btns {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+          }
+
+          .list-head {
+            display: grid;
+            grid-template-columns: 1fr 180px 180px;
+            gap: 10px;
+            padding: 8px 10px;
+            border-radius: 14px;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            font-size: 12px;
+            font-weight: 900;
+            color: #6b7280;
+            margin-bottom: 10px;
+          }
+          .lh-name { padding-left: 6px; }
+          .lh-shift {
+            text-align: center;
+            border-radius: 999px;
+            padding: 6px 10px;
+            border: 1px solid #e5e7eb;
+          }
+          .lh-shift.lunch {
+            border-color: rgba(16,185,129,0.25);
+            background: rgba(16,185,129,0.06);
+            color: #065f46;
+          }
+          .lh-shift.dinner {
+            border-color: rgba(59,130,246,0.25);
+            background: rgba(59,130,246,0.06);
+            color: #1d4ed8;
+          }
+
+          .meal-list {
+            display: grid;
+            gap: 10px;
+          }
+          .meal-row {
+            display: grid;
+            grid-template-columns: 1fr 180px 180px;
+            gap: 10px;
+            padding: 10px 10px;
+            border-radius: 16px;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+          }
+
+          .tone-none {
+            background: #fff;
+          }
+          .tone-lunch {
+            border-color: rgba(16,185,129,0.30);
+            background: rgba(16,185,129,0.05);
+          }
+          .tone-dinner {
+            border-color: rgba(59,130,246,0.30);
+            background: rgba(59,130,246,0.05);
+          }
+          .tone-both {
+            border-color: rgba(139,92,246,0.30);
+            background: rgba(139,92,246,0.05);
+          }
+
+          .mr-name { display: flex; align-items: center; padding-left: 6px; }
+          .name-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+          .emp-name {
+            font-weight: 900;
+            color: #111827;
+            font-size: 14px;
+          }
+          .emp-name.no-meal {
+            color: #6b7280;
+            font-weight: 800;
+          }
+          .tag {
+            font-size: 11px;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-weight: 900;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+          }
+          .tag.fav {
+            background: rgba(251,146,60,0.12);
+            border-color: rgba(251,146,60,0.25);
+            color: #9a3412;
+          }
+          .tag.third {
+            background: rgba(59,130,246,0.10);
+            border-color: rgba(59,130,246,0.25);
+            color: #075985;
+          }
+          .mini-flag {
+            font-size: 10px;
+            font-weight: 900;
+            padding: 3px 8px;
+            border-radius: 999px;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            letter-spacing: 0.04em;
+          }
+          .mini-flag.lunch {
+            border-color: rgba(16,185,129,0.30);
+            background: rgba(16,185,129,0.10);
+            color: #065f46;
+          }
+          .mini-flag.dinner {
+            border-color: rgba(59,130,246,0.30);
+            background: rgba(59,130,246,0.10);
+            color: #1d4ed8;
+          }
+
+          .mr-shift { display: flex; justify-content: center; align-items: center; }
+          .pill-toggle {
+            width: 100%;
+            border-radius: 999px;
+            padding: 10px 12px;
+            font-weight: 900;
+            border: 1px solid #e5e7eb;
+            background: #fff;
+            cursor: pointer;
+            font-size: 12px;
+            text-align: center;
+            user-select: none;
+          }
+          .pill-toggle:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+          }
+          .pill-toggle.lunch.on {
+            background: rgba(16,185,129,0.95);
+            border-color: rgba(16,185,129,0.35);
+            color: #fff;
+          }
+          .pill-toggle.lunch.off {
+            background: rgba(16,185,129,0.06);
+            border-color: rgba(16,185,129,0.20);
+            color: #065f46;
+          }
+          .pill-toggle.dinner.on {
+            background: rgba(59,130,246,0.95);
+            border-color: rgba(59,130,246,0.35);
+            color: #fff;
+          }
+          .pill-toggle.dinner.off {
+            background: rgba(59,130,246,0.06);
+            border-color: rgba(59,130,246,0.20);
+            color: #1d4ed8;
+          }
+
+          /* MOBILE: tudo vira “card” com botões grandes e empilhados */
+          @media (max-width: 820px) {
+            .quick-grid {
+              grid-template-columns: 1fr;
+            }
+            .list-head {
+              display: none;
+            }
+            .meal-row {
+              grid-template-columns: 1fr;
+              gap: 10px;
+            }
+            .mr-shift {
+              justify-content: stretch;
+            }
+            .pill-toggle {
+              padding: 12px 14px;
+              font-size: 13px;
+            }
+            .big-counts {
+              grid-template-columns: 1fr 1fr;
+            }
+          }
+        `}</style>
       </div>
     </div>
   );
