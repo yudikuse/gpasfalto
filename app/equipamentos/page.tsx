@@ -22,11 +22,11 @@ type RawLikeRow = {
   fornecedor_2?: string | null;
   fornecedor_3?: string | null;
 
-  preco_1?: number | null;
-  preco_2?: number | null;
-  preco_3?: number | null;
+  preco_1?: number | string | null;
+  preco_2?: number | string | null;
+  preco_3?: number | string | null;
 
-  valor_menor?: number | null; // menor preço considerado
+  valor_menor?: number | string | null; // menor preço considerado
   fornecedor_vencedor?: string | null;
   texto_original?: string | null;
 
@@ -140,14 +140,39 @@ function approxEq(a: number, b: number, eps = 0.01) {
   return Math.abs(a - b) <= eps;
 }
 
-function cleanStr(x: any) {
-  const s = String(x ?? "").trim();
-  return s ? s : "";
+// ✅ parse robusto de preço (aceita number, "1.265,32", "R$ 417,00", "417.00")
+function parseMoneyBR(v: any): number | null {
+  if (v == null) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+
+  const s0 = String(v).trim();
+  if (!s0) return null;
+
+  // remove moeda e espaços
+  let s = s0.replace(/[R$\s]/g, "").trim();
+
+  // mantém só dígitos, ponto, vírgula e sinal
+  s = s.replace(/[^0-9.,-]/g, "");
+
+  if (!s) return null;
+
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+
+  // se tiver vírgula e ponto, assume pt-BR: "." milhar, "," decimal
+  if (hasComma && hasDot) {
+    s = s.replace(/\./g, "").replace(",", ".");
+  } else if (hasComma && !hasDot) {
+    // só vírgula -> decimal
+    s = s.replace(",", ".");
+  }
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
 }
 
-// FORNECEDOR = o do menor preço considerado
+// FORNECEDOR = o do menor preço considerado (valor_menor)
 function pickFornecedor(r: RawLikeRow) {
-  const clean = (s: any) => String(s ?? "").trim();
+  const clean = (x: any) => String(x ?? "").trim();
 
   const fv = clean(r.fornecedor_vencedor);
   if (fv) return fv;
@@ -156,21 +181,31 @@ function pickFornecedor(r: RawLikeRow) {
   const f2 = clean(r.fornecedor_2);
   const f3 = clean(r.fornecedor_3);
 
-  const n1 = Number(r.preco_1);
-  const n2 = Number(r.preco_2);
-  const n3 = Number(r.preco_3);
+  const p1 = parseMoneyBR(r.preco_1);
+  const p2 = parseMoneyBR(r.preco_2);
+  const p3 = parseMoneyBR(r.preco_3);
 
+  const vm = parseMoneyBR(r.valor_menor);
+
+  // 1) Se valor_menor existir, tenta casar com o fornecedor do preço que bate
+  if (vm != null) {
+    if (f1 && p1 != null && approxEq(p1, vm)) return f1;
+    if (f2 && p2 != null && approxEq(p2, vm)) return f2;
+    if (f3 && p3 != null && approxEq(p3, vm)) return f3;
+  }
+
+  // 2) Senão, escolhe o menor entre os preços disponíveis
   const candidates: { f: string; p: number }[] = [];
-  if (f1 && Number.isFinite(n1)) candidates.push({ f: f1, p: n1 });
-  if (f2 && Number.isFinite(n2)) candidates.push({ f: f2, p: n2 });
-  if (f3 && Number.isFinite(n3)) candidates.push({ f: f3, p: n3 });
+  if (f1 && p1 != null) candidates.push({ f: f1, p: p1 });
+  if (f2 && p2 != null) candidates.push({ f: f2, p: p2 });
+  if (f3 && p3 != null) candidates.push({ f: f3, p: p3 });
 
   if (candidates.length) {
     candidates.sort((a, b) => a.p - b.p);
     return candidates[0].f || "—";
   }
 
-  // fallback final (se tiver fornecedor mas preço veio vazio)
+  // 3) fallback final (se tiver fornecedor mas preço veio vazio / não parseou)
   return f1 || f2 || f3 || "—";
 }
 
@@ -267,7 +302,6 @@ export default function EquipamentosComprasPage() {
         const rawD = rawB.toLowerCase(); // eh01
 
         // ===== RAW (dedup view) =====
-        // puxa já filtrado por período e equipamento (no SQL do Supa), pra não carregar o mundo
         const rawRes = await supabase
           .from("orders_2025_raw_all_dedup_v")
           .select(
@@ -346,8 +380,11 @@ export default function EquipamentosComprasPage() {
 
           const oc = (r.numero_oc || "").trim() || "—";
           const tipoTxt = mapTipo(r.tipo_registro);
+
+          // ✅ fornecedor corrigido (sem mexer no resto)
           const fornecedor = pickFornecedor(r);
-          const totalOc = r.valor_menor ?? null;
+
+          const totalOc = parseMoneyBR(r.valor_menor) ?? null;
           const obra = (r.obra || "").trim() || "—";
           const operador = (r.operador || "").trim() || "—";
           const textoOriginal = (r.texto_original || "").trim() || "";
