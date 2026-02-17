@@ -4,41 +4,37 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-type TipoFiltro =
-  | "TODOS"
-  | "MANUTENCAO"
-  | "COMPRA"
-  | "ABASTECIMENTO"
-  | "SERVICOS"
-  | "PECAS"
-  | "OUTRO";
+type TipoFiltro = "TODOS" | "MANUTENCAO" | "COMPRA" | "ABASTECIMENTO" | "SERVICOS" | "PECAS" | "OUTRO";
 
-type RawRow = {
+type RawLikeRow = {
   id?: number;
   date?: string | null; // "03/12/2025"
-  time?: string | null; // "14:39:30"
-  mes_ano?: string | null; // "2025-12"
+  time?: string | null;
+  mes_ano?: string | null; // "2026-02"
   tipo_registro?: string | null;
   numero_oc?: string | null;
   codigo_equipamento?: string | null;
   obra?: string | null;
   operador?: string | null;
+  local_entrega?: string | null;
 
-  // IMPORTANTES: no seu view RAW ALL DEDUP tem material/quantidade no próprio pedido
-  material?: string | null;
-  quantidade_texto?: string | null;
-  quantidade_num?: number | null;
-
-  fornecedor_vencedor?: string | null;
   fornecedor_1?: string | null;
   fornecedor_2?: string | null;
   fornecedor_3?: string | null;
 
-  valor_menor?: number | null;
+  preco_1?: number | null;
+  preco_2?: number | null;
+  preco_3?: number | null;
+
+  valor_menor?: number | null; // menor preço considerado
+  fornecedor_vencedor?: string | null;
   texto_original?: string | null;
+
+  rn?: number | null;
 };
 
-type ItemRow = {
+type ItemRowDb = {
+  id?: number;
   ordem_id?: number | null;
   descricao?: string | null;
   quantidade_texto?: string | null;
@@ -46,13 +42,10 @@ type ItemRow = {
 };
 
 type Line = {
-  // ordenação
-  whenSort: string;
-
-  // exibição
-  dateTxt: string;
+  whenSort: string; // YYYY-MM-DDTHH:mm:ss
+  dateTxt: string; // dd/mm/yyyy
   timeTxt: string;
-  mesAno: string;
+  mesAno: string; // YYYY-MM
   equipamentoNorm: string;
   equipamentoRaw: string;
   tipo: string;
@@ -64,9 +57,6 @@ type Line = {
   obra: string;
   operador: string;
   textoOriginal: string;
-
-  // controle / dedup / total
-  orderKey: string; // chave estável do pedido (1x por pedido)
 };
 
 function pad(n: number, size: number) {
@@ -79,7 +69,7 @@ function currencyBRL(n: number | null | undefined) {
   return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-// Normaliza "mn07", "MN07", "MN-07", "mn-7" => "MN-07"
+// Normaliza "eh01", "EH01", "EH-01", "eh-1" => "EH-01"
 function normalizeEquip(input: string) {
   const raw = (input || "").trim();
   if (!raw) return "";
@@ -106,7 +96,7 @@ function brDateToISO(d: string | null | undefined) {
   return `${yyyy}-${pad(mm, 2)}-${pad(dd, 2)}`;
 }
 
-function getMesAno(row: RawRow) {
+function getMesAno(row: RawLikeRow) {
   const ma = (row.mes_ano || "").trim();
   if (/^\d{4}-\d{2}$/.test(ma)) return ma;
 
@@ -126,18 +116,9 @@ function mapTipo(tipo_registro: string | null | undefined): string {
   if (t.includes("PECA")) return "PECAS";
   if (t.includes("MANUT")) return "MANUTENCAO";
   if (t.includes("COMPRA")) return "COMPRA";
-  if (t.includes("OC")) return "OC";
+  // no seu texto aparece "OC" também
+  if (t === "OC") return "MANUTENCAO";
   return t || "OUTRO";
-}
-
-function pickFornecedor(r: RawRow) {
-  return (
-    (r.fornecedor_vencedor || "").trim() ||
-    (r.fornecedor_1 || "").trim() ||
-    (r.fornecedor_2 || "").trim() ||
-    (r.fornecedor_3 || "").trim() ||
-    "—"
-  );
 }
 
 function resolvePublicSupabase(): { url: string; key: string; ok: boolean } {
@@ -148,95 +129,74 @@ function resolvePublicSupabase(): { url: string; key: string; ok: boolean } {
   return { url, key, ok: Boolean(url && key) };
 }
 
-function formatQtdFromItem(it: ItemRow): string {
+function formatQtd(it: ItemRowDb): string {
   const t = (it.quantidade_texto || "").trim();
   if (t) return t;
   if (it.quantidade_num != null && Number.isFinite(it.quantidade_num)) return String(it.quantidade_num);
   return "—";
 }
 
-function formatQtdFromRaw(r: RawRow): string {
-  const t = (r.quantidade_texto || "").trim();
-  if (t) return t;
-  if (r.quantidade_num != null && Number.isFinite(r.quantidade_num)) return String(r.quantidade_num);
+function approxEq(a: number, b: number, eps = 0.01) {
+  return Math.abs(a - b) <= eps;
+}
+
+function cleanStr(x: any) {
+  const s = String(x ?? "").trim();
+  return s ? s : "";
+}
+
+// FORNECEDOR = o do menor preço considerado
+function pickFornecedor(r: RawLikeRow) {
+  const f1 = cleanStr(r.fornecedor_1);
+  const f2 = cleanStr(r.fornecedor_2);
+  const f3 = cleanStr(r.fornecedor_3);
+
+  const p1 = typeof r.preco_1 === "number" ? r.preco_1 : null;
+  const p2 = typeof r.preco_2 === "number" ? r.preco_2 : null;
+  const p3 = typeof r.preco_3 === "number" ? r.preco_3 : null;
+
+  const menor = typeof r.valor_menor === "number" ? r.valor_menor : null;
+
+  // 1) se valor_menor bate com algum preco_i, usa fornecedor_i
+  if (menor != null) {
+    if (p1 != null && approxEq(menor, p1) && f1) return f1;
+    if (p2 != null && approxEq(menor, p2) && f2) return f2;
+    if (p3 != null && approxEq(menor, p3) && f3) return f3;
+  }
+
+  // 2) senão pega o menor entre os preços disponíveis
+  const candidates: Array<{ f: string; p: number }> = [];
+  if (p1 != null && f1) candidates.push({ f: f1, p: p1 });
+  if (p2 != null && f2) candidates.push({ f: f2, p: p2 });
+  if (p3 != null && f3) candidates.push({ f: f3, p: p3 });
+  if (candidates.length) {
+    candidates.sort((a, b) => a.p - b.p);
+    return candidates[0].f;
+  }
+
+  // 3) fallback: fornecedor_vencedor
+  const fv = cleanStr(r.fornecedor_vencedor);
+  if (fv) return fv;
+
+  // 4) fallback final: tenta extrair do texto
+  const txt = cleanStr(r.texto_original);
+  const m = txt.match(/Fornecedor vencedor:\s*([^\n\r]+)/i);
+  if (m?.[1]) return m[1].trim();
+
   return "—";
 }
 
-// fallback bem pragmático: tenta puxar Material/Quantidade do texto_original
-function fallbackItemFromTextoOriginal(texto: string) {
-  const t = (texto || "").replace(/\s+/g, " ").trim();
-
-  // Material: xxx | Quantidade: yy ...
-  const m1 = t.match(/\bMaterial\s*:\s*([^|]+)\b/i);
-  const q1 = t.match(/\bQuantidade\s*:\s*([^|]+)\b/i);
-
-  // Peça: xxx | Qtd: yy ...
-  const m2 = t.match(/\b(Pe[cç]a|Item)\s*:\s*([^|]+)\b/i);
-  const q2 = t.match(/\b(Qtd|Qtde)\s*:\s*([^|]+)\b/i);
-
-  const item = (m1?.[1] || m2?.[2] || "").trim();
-  const qtd = (q1?.[1] || q2?.[2] || "").trim();
-
-  return {
-    item: item || "",
-    qtd: qtd || "",
-  };
+function ymNow(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}`;
 }
 
-function makeOrderKey(r: RawRow) {
-  const eq = normalizeEquip(String(r.codigo_equipamento || ""));
-  const ma = getMesAno(r);
-  const d = (r.date || "").trim();
-  const tm = (r.time || "").trim();
-  const oc = (r.numero_oc || "").trim();
-  const v = r.valor_menor ?? null;
-
-  // chave estável: se tem OC, usa OC + campos de contexto pra cortar duplicados do dedup view
-  if (oc) return `OC:${oc}|EQ:${eq}|MA:${ma}|D:${d}|T:${tm}|V:${v ?? ""}`;
-
-  // sem OC: usa id + data/hora/eq + valor
-  const id = Number(r.id);
-  return `ID:${Number.isFinite(id) ? id : "NA"}|EQ:${eq}|MA:${ma}|D:${d}|T:${tm}|V:${v ?? ""}`;
-}
-
-// fetch paginado (porque RLS/supabase normalmente retorna 1000 por vez)
-async function fetchAll<T>(
-  supabase: SupabaseClient,
-  tableOrView: string,
-  select: string,
-  buildQuery: (q: any) => any,
-  pageSize = 1000,
-  maxPages = 50
-): Promise<T[]> {
-  const out: T[] = [];
-  for (let page = 0; page < maxPages; page++) {
-    const from = page * pageSize;
-    const to = from + pageSize - 1;
-
-    let q = supabase.from(tableOrView).select(select).range(from, to);
-    q = buildQuery(q);
-
-    const res = await q;
-    if (res.error) throw res.error;
-
-    const rows = (res.data || []) as T[];
-    out.push(...rows);
-
-    if (rows.length < pageSize) break;
-  }
-  return out;
-}
-
-function buildMonthOptionsUntilNow(start = "2025-01") {
+function buildMonthOptions(startYm: string, endYm: string) {
+  const [sy, sm] = startYm.split("-").map(Number);
+  const [ey, em] = endYm.split("-").map(Number);
   const out: string[] = [];
-  const [sy, sm] = start.split("-").map((x) => Number(x));
-  const now = new Date();
-  const ey = now.getFullYear();
-  const em = now.getMonth() + 1;
-
   let y = sy;
   let m = sm;
-
   while (y < ey || (y === ey && m <= em)) {
     out.push(`${y}-${pad(m, 2)}`);
     m++;
@@ -245,14 +205,7 @@ function buildMonthOptionsUntilNow(start = "2025-01") {
       y++;
     }
   }
-
-  // garante pelo menos 2025-01..2025-12 se estiver rodando num ambiente “antigo”
-  if (!out.includes("2025-12")) {
-    for (let mm = 1; mm <= 12; mm++) out.push(`2025-${pad(mm, 2)}`);
-  }
-
-  // unique + sort
-  return Array.from(new Set(out)).sort((a, b) => a.localeCompare(b));
+  return out;
 }
 
 export default function EquipamentosComprasPage() {
@@ -269,29 +222,21 @@ export default function EquipamentosComprasPage() {
   const [equipamento, setEquipamento] = useState<string>("");
   const [tipo, setTipo] = useState<TipoFiltro>("TODOS");
   const [deMes, setDeMes] = useState<string>("2025-01");
-  const [ateMes, setAteMes] = useState<string>(() => {
-    const now = new Date();
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1, 2)}`;
-  });
+  const [ateMes, setAteMes] = useState<string>(ymNow());
   const [busca, setBusca] = useState<string>("");
 
   const [equipOptions, setEquipOptions] = useState<string[]>([]);
   const [lines, setLines] = useState<Line[]>([]);
 
-  const monthOptions = useMemo(() => buildMonthOptionsUntilNow("2025-01"), []);
+  const monthOptions = useMemo(() => buildMonthOptions("2025-01", ymNow()), []);
 
-  // ====== carrega lista oficial de equipamentos ======
+  // lista oficial de equipamentos
   useEffect(() => {
     if (!supabase) return;
 
     (async () => {
       try {
-        const res = await supabase
-          .from("equipment_hours_2025")
-          .select("equipamento")
-          .not("equipamento", "is", null)
-          .limit(5000);
-
+        const res = await supabase.from("equipment_hours_2025").select("equipamento").not("equipamento", "is", null).limit(5000);
         if (res.error) throw res.error;
 
         const opts = Array.from(
@@ -313,7 +258,7 @@ export default function EquipamentosComprasPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [supabase]);
 
-  // ====== busca / monta linhas ======
+  // busca / monta linhas
   useEffect(() => {
     if (!supabase) return;
     if (!equipamento) return;
@@ -327,62 +272,57 @@ export default function EquipamentosComprasPage() {
         const de = deMes;
         const ate = ateMes;
 
-        // 1) RAW (view dedup)
-        const raws = await fetchAll<RawRow>(
-          supabase,
-          "orders_2025_raw_all_dedup_v",
-          "*",
-          (q) =>
-            q
-              .eq("codigo_equipamento", equipamento) // no view costuma vir "Eh01" / "PC02" etc. Se não bater, troque por eq equipNorm e normalize no view.
-              .gte("mes_ano", de)
-              .lte("mes_ano", ate),
-          1000,
-          80
-        );
+        // variações comuns do código (EH-01 / EH01 / eh01)
+        const rawA = equipNorm; // EH-01
+        const rawB = equipNorm.replace("-", ""); // EH01
+        const rawC = equipNorm.toLowerCase(); // eh-01
+        const rawD = rawB.toLowerCase(); // eh01
 
-        // fallback caso seu view guarde "EH-01" e o filtro acima use "Eh01":
-        // se vier vazio, tenta filtrar por normalização no client
-        const rawFiltered =
-          raws.length > 0
-            ? raws
-            : (await fetchAll<RawRow>(
-                supabase,
-                "orders_2025_raw_all_dedup_v",
-                "*",
-                (q) => q.gte("mes_ano", de).lte("mes_ano", ate),
-                1000,
-                80
-              )).filter((r) => normalizeEquip(String(r.codigo_equipamento || "")) === equipNorm);
+        // ===== RAW (dedup view) =====
+        // puxa já filtrado por período e equipamento (no SQL do Supa), pra não carregar o mundo
+        const rawRes = await supabase
+          .from("orders_2025_raw_all_dedup_v")
+          .select(
+            "id,date,time,mes_ano,tipo_registro,numero_oc,codigo_equipamento,obra,operador,local_entrega,fornecedor_1,fornecedor_2,fornecedor_3,preco_1,preco_2,preco_3,valor_menor,fornecedor_vencedor,texto_original,rn"
+          )
+          .eq("rn", 1)
+          .gte("mes_ano", de)
+          .lte("mes_ano", ate)
+          .or(
+            [
+              `codigo_equipamento.ilike.${rawA}`,
+              `codigo_equipamento.ilike.${rawB}`,
+              `codigo_equipamento.ilike.${rawC}`,
+              `codigo_equipamento.ilike.${rawD}`,
+            ].join(",")
+          )
+          .limit(20000);
 
-        // 2) DEDUP EXTRA no APP (porque o view ainda pode duplicar)
-        const uniqOrdersMap = new Map<string, RawRow>();
-        for (const r of rawFiltered) {
-          const k = makeOrderKey(r);
-          if (!uniqOrdersMap.has(k)) uniqOrdersMap.set(k, r);
-        }
-        const uniqOrders = Array.from(uniqOrdersMap.entries()).map(([, v]) => v);
+        if (rawRes.error) throw rawRes.error;
 
-        // 3) aplica filtro de tipo (client)
-        const uniqOrdersByType = uniqOrders.filter((r) => {
+        const filtered: RawLikeRow[] = (rawRes.data || []) as any[];
+
+        // tipo no client (pra manter regra única)
+        const filteredTipo = filtered.filter((r) => {
           const t = mapTipo(r.tipo_registro);
-          if (tipo === "TODOS") return true;
-          return t === tipo;
+          if (tipo !== "TODOS" && t !== tipo) return false;
+          return true;
         });
 
-        // 4) busca itens (view de itens) SOMENTE dos pedidos que têm id
+        // ids para buscar itens
         const ids = Array.from(
           new Set(
-            uniqOrdersByType
+            filteredTipo
               .map((r) => Number(r.id))
               .filter((n) => Number.isFinite(n)) as number[]
           )
         );
 
-        let itemsByOrder = new Map<number, ItemRow[]>();
+        // ===== ITENS (view) =====
+        let itemsByOrder = new Map<number, ItemRowDb[]>();
         if (ids.length) {
           const chunkSize = 800;
-          const acc: ItemRow[] = [];
+          const acc: ItemRowDb[] = [];
 
           for (let i = 0; i < ids.length; i += chunkSize) {
             const chunk = ids.slice(i, i + chunkSize);
@@ -395,24 +335,24 @@ export default function EquipamentosComprasPage() {
             acc.push(...((itRes.data || []) as any[]));
           }
 
-          const map = new Map<number, ItemRow[]>();
-          for (const it of acc) {
+          const map = new Map<number, ItemRowDb[]>();
+          acc.forEach((it) => {
             const oid = Number(it.ordem_id);
-            if (!Number.isFinite(oid)) continue;
+            if (!Number.isFinite(oid)) return;
             const list = map.get(oid) || [];
             list.push(it);
             map.set(oid, list);
-          }
+          });
           itemsByOrder = map;
         }
 
-        // 5) monta linhas (com fallback quando não tem item)
+        // monta linhas
         const out: Line[] = [];
 
-        for (const r of uniqOrdersByType) {
+        for (const r of filteredTipo) {
           const id = Number(r.id);
           const mesAno = getMesAno(r) || "";
-          const iso = brDateToISO(r.date) || `${mesAno}-01`;
+          const iso = brDateToISO(r.date) || (mesAno ? `${mesAno}-01` : "1970-01-01");
           const time = (r.time || "00:00:00").trim();
           const whenSort = `${iso}T${time.length >= 5 ? time : "00:00:00"}`;
 
@@ -427,12 +367,28 @@ export default function EquipamentosComprasPage() {
           const eqRaw = String(r.codigo_equipamento || "").trim();
           const eqNorm = normalizeEquip(eqRaw);
 
-          const orderKey = makeOrderKey(r);
-
           const its = Number.isFinite(id) ? itemsByOrder.get(id) || [] : [];
 
-          if (its.length) {
-            for (const it of its) {
+          if (!its.length) {
+            out.push({
+              whenSort,
+              dateTxt: (r.date || "").trim() || "—",
+              timeTxt: time || "—",
+              mesAno: mesAno || "—",
+              equipamentoNorm: eqNorm,
+              equipamentoRaw: eqRaw || eqNorm,
+              tipo: tipoTxt,
+              oc,
+              item: "(sem item cadastrado)",
+              qtd: "—",
+              fornecedor,
+              totalOc,
+              obra,
+              operador,
+              textoOriginal,
+            });
+          } else {
+            its.forEach((it) => {
               out.push({
                 whenSort,
                 dateTxt: (r.date || "").trim() || "—",
@@ -443,61 +399,14 @@ export default function EquipamentosComprasPage() {
                 tipo: tipoTxt,
                 oc,
                 item: (it.descricao || "").trim() || "—",
-                qtd: formatQtdFromItem(it),
+                qtd: formatQtd(it),
                 fornecedor,
-                totalOc,
+                totalOc, // TOTAL da OC
                 obra,
                 operador,
                 textoOriginal,
-                orderKey,
               });
-            }
-          } else {
-            // fallback 1: usa material/quantidade do RAW (muito comum no seu view)
-            const mat = (r.material || "").trim();
-            const qtdRaw = formatQtdFromRaw(r);
-
-            if (mat) {
-              out.push({
-                whenSort,
-                dateTxt: (r.date || "").trim() || "—",
-                timeTxt: time || "—",
-                mesAno: mesAno || "—",
-                equipamentoNorm: eqNorm,
-                equipamentoRaw: eqRaw || eqNorm,
-                tipo: tipoTxt,
-                oc,
-                item: mat,
-                qtd: qtdRaw,
-                fornecedor,
-                totalOc,
-                obra,
-                operador,
-                textoOriginal,
-                orderKey,
-              });
-            } else {
-              // fallback 2: tenta extrair do texto_original
-              const fb = fallbackItemFromTextoOriginal(textoOriginal);
-              out.push({
-                whenSort,
-                dateTxt: (r.date || "").trim() || "—",
-                timeTxt: time || "—",
-                mesAno: mesAno || "—",
-                equipamentoNorm: eqNorm,
-                equipamentoRaw: eqRaw || eqNorm,
-                tipo: tipoTxt,
-                oc,
-                item: fb.item || "(sem item cadastrado)",
-                qtd: fb.qtd || "—",
-                fornecedor,
-                totalOc,
-                obra,
-                operador,
-                textoOriginal,
-                orderKey,
-              });
-            }
+            });
           }
         }
 
@@ -528,27 +437,19 @@ export default function EquipamentosComprasPage() {
     })();
   }, [supabase, equipamento, tipo, deMes, ateMes, busca]);
 
-  // ====== totais: SOMA 1x POR PEDIDO (orderKey), mesmo que haja várias linhas ======
+  // TOTAL = soma OC ÚNICA (não soma repetido por item)
   const totals = useMemo(() => {
-    const uniqueOrders = new Map<string, number>(); // orderKey -> totalOc
-    const uniqueOCs = new Set<string>();
-
-    for (const l of lines) {
-      if (!uniqueOrders.has(l.orderKey)) {
-        uniqueOrders.set(l.orderKey, l.totalOc ?? 0);
-      }
-      if (l.oc && l.oc !== "—") uniqueOCs.add(l.oc);
-    }
-
+    const ocs = new Set<string>();
     let total = 0;
-    for (const v of uniqueOrders.values()) total += v;
 
-    return {
-      ocs: uniqueOCs.size,
-      linhas: lines.length,
-      pedidos: uniqueOrders.size,
-      total,
-    };
+    const ocToTotal = new Map<string, number>();
+    for (const l of lines) {
+      if (l.oc && l.oc !== "—") ocs.add(l.oc);
+      if (l.oc && l.oc !== "—" && l.totalOc != null && !ocToTotal.has(l.oc)) ocToTotal.set(l.oc, l.totalOc);
+    }
+    for (const v of ocToTotal.values()) total += v;
+
+    return { ocs: ocs.size, itens: lines.length, total };
   }, [lines]);
 
   const typeOptions: { key: TipoFiltro; label: string }[] = [
@@ -588,7 +489,7 @@ export default function EquipamentosComprasPage() {
           margin-bottom: 10px;
         }
         .logo img {
-          height: 120px; /* igual padrão “Diesel” */
+          height: 92px;
           width: auto;
           object-fit: contain;
         }
@@ -748,7 +649,7 @@ export default function EquipamentosComprasPage() {
             font-size: 28px;
           }
           .logo img {
-            height: 96px;
+            height: 76px;
           }
           .filters {
             grid-template-columns: 1fr;
@@ -762,11 +663,9 @@ export default function EquipamentosComprasPage() {
             <div className="logo">
               <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
             </div>
-
             <h1 className="title">Compras Manutenção - Equipamentos</h1>
-
             <div className="subtitle">
-              Relatório por equipamento (linha por item quando existir). Na tabela, <b>Total OC</b> é o total do pedido (sem rateio). No topo, <b>Total</b> soma <b>1x por pedido</b>.
+              Relatório por equipamento (linha por item quando existir). Na tabela, <b>Total OC</b> é o total do pedido (sem rateio). No topo, o <b>Total</b> soma OC única.
             </div>
 
             <div className="pill-row">
@@ -774,10 +673,7 @@ export default function EquipamentosComprasPage() {
                 OCs <strong>{totals.ocs}</strong>
               </div>
               <div className="pill">
-                Pedidos <strong>{totals.pedidos}</strong>
-              </div>
-              <div className="pill">
-                Linhas <strong>{totals.linhas}</strong>
+                Linhas <strong>{totals.itens}</strong>
               </div>
               <div className="pill">
                 Total <strong>{currencyBRL(totals.total)}</strong>
@@ -787,7 +683,8 @@ export default function EquipamentosComprasPage() {
 
           {!env.ok && (
             <div className="warn">
-              Configuração no Vercel necessária: defina <b>NEXT_PUBLIC_SUPABASE_URL</b> e <b>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY</b> (ou <b>NEXT_PUBLIC_SUPABASE_ANON_KEY</b>).
+              Configuração no Vercel necessária: defina <b>NEXT_PUBLIC_SUPABASE_URL</b> e{" "}
+              <b>NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY</b> (ou <b>NEXT_PUBLIC_SUPABASE_ANON_KEY</b>).
             </div>
           )}
 
@@ -855,9 +752,7 @@ export default function EquipamentosComprasPage() {
 
           <section className="section-card">
             <h2 className="section-title">Resultados</h2>
-            <div className="section-sub">
-              Linha por item (quando existir). Se não houver item em <b>orders_2025_items_all_v</b>, o sistema usa fallback do próprio pedido (material/quantidade ou extração do texto).
-            </div>
+            <div className="section-sub">Linha por item (quando existir). Se a OC não tiver itens cadastrados, aparece “(sem item cadastrado)”.</div>
 
             {loading ? (
               <div className="muted" style={{ marginTop: 12 }}>
@@ -886,7 +781,7 @@ export default function EquipamentosComprasPage() {
                   </thead>
                   <tbody>
                     {lines.map((l, idx) => (
-                      <tr key={`${l.orderKey}-${idx}-${l.whenSort}`}>
+                      <tr key={`${l.oc}-${idx}-${l.whenSort}`}>
                         <td className="dateCell">
                           {l.dateTxt}
                           <span className="subDate">{l.timeTxt}</span>
