@@ -173,18 +173,15 @@ function parseMoneyBR(v: any): number | null {
 // FORNECEDOR = o do menor preço considerado (valor_menor)
 // FILE: app/equipamentos/page.tsx
 
+// FORNECEDOR = o do menor preço considerado
 function pickFornecedor(r: RawLikeRow) {
   const clean = (s: any) => String(s ?? "").trim();
 
-  // 1️⃣ Novo campo calculado no SQL (PRIORIDADE)
-  const calc = clean(r.fornecedor_vencedor_calc);
-  if (calc) return calc;
-
-  // 2️⃣ Campo original se já vier preenchido
+  // 1) Preferência: fornecedor_vencedor já pronto
   const fv = clean(r.fornecedor_vencedor);
   if (fv) return fv;
 
-  // 3️⃣ Fallback antigo (segurança)
+  // 2) Se vierem os 3 fornecedores + preços, usa o menor
   const f1 = clean(r.fornecedor_1);
   const f2 = clean(r.fornecedor_2);
   const f3 = clean(r.fornecedor_3);
@@ -200,12 +197,8 @@ function pickFornecedor(r: RawLikeRow) {
 
   if (candidates.length) {
     candidates.sort((a, b) => a.p - b.p);
-    return candidates[0].f;
+    return candidates[0].f || "—";
   }
-
-  return "—";
-}
-
 
   // 3) Se não tem colunas preenchidas, tenta extrair do texto_original
   // Ex.: "Center tintas: R$ 75,00" ou "Fornecedor X: R$ 1.234,56"
