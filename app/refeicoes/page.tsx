@@ -53,6 +53,10 @@ function isoLocalAddDays(iso: string, days: number) {
   return d2.toISOString().slice(0, 10);
 }
 
+function isValidISODate(iso: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(iso);
+}
+
 function parseHHMM(t: string | null) {
   if (!t) return null;
   const parts = t.split(":");
@@ -255,12 +259,13 @@ export default function RefeicoesPage() {
       setContract(nextContract);
 
       async function fetchOrder(shift: Shift) {
+        // compat: busca pelo meal_date OU order_date (legado)
         const oRes = await supabase
           .from("meal_orders")
           .select("id,restaurant_id,status,shift")
           .eq("worksite_id", selectedWorksiteId)
-          .eq("meal_date", dateISO) // <-- aqui
           .eq("shift", shift)
+          .or(`meal_date.eq.${dateISO},order_date.eq.${dateISO}`)
           .order("created_at", { ascending: false })
           .limit(1);
 
@@ -298,7 +303,8 @@ export default function RefeicoesPage() {
         if (lRes.error) throw new Error(lRes.error.message);
         const rows = (lRes.data ?? []) as any[];
         for (const r of rows) {
-          const empId = r.employee_id as string;
+          const empId = r.employee_id as string | null;
+          if (!empId) continue; // ignora visitor_name
           if (!map[empId]) map[empId] = { ALMOCO: false, JANTA: false };
           map[empId][shift] = true;
         }
@@ -398,8 +404,8 @@ export default function RefeicoesPage() {
         .from("meal_orders")
         .select("id")
         .eq("worksite_id", selectedWorksiteId)
-        .eq("meal_date", y) // <-- aqui
         .eq("shift", shift)
+        .or(`meal_date.eq.${y},order_date.eq.${y}`)
         .order("created_at", { ascending: false })
         .limit(1);
 
@@ -415,7 +421,7 @@ export default function RefeicoesPage() {
         .eq("meal_order_id", orderId);
 
       if (lRes.error) throw new Error(lRes.error.message);
-      return new Set((lRes.data ?? []).map((r: any) => r.employee_id as string));
+      return new Set((lRes.data ?? []).map((r: any) => r.employee_id as string).filter(Boolean));
     }
 
     try {
@@ -446,25 +452,37 @@ export default function RefeicoesPage() {
   async function ensureOrder(shift: Shift): Promise<Order | null> {
     if (!selectedWorksiteId || !contract) return null;
 
+    if (!isValidISODate(dateISO)) {
+      throw new Error("Data inválida (esperado AAAA-MM-DD).");
+    }
+
     const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
+
     if (existing?.id) {
       const upd = await supabase
         .from("meal_orders")
-        .update({ restaurant_id: contract.restaurant_id })
+        .update({
+          restaurant_id: contract.restaurant_id,
+          updated_by: sessionUserId,
+        })
         .eq("id", existing.id);
 
       if (upd.error) throw new Error(upd.error.message);
       return existing;
     }
 
+    // manda meal_date + order_date (compat)
     const ins = await supabase
       .from("meal_orders")
       .insert({
         worksite_id: selectedWorksiteId,
         restaurant_id: contract.restaurant_id,
-        meal_date: dateISO, // <-- aqui (ERA order_date)
+        meal_date: dateISO,
+        order_date: dateISO,
         shift,
         status: "DRAFT",
+        created_by: sessionUserId,
+        updated_by: sessionUserId,
       })
       .select("id,restaurant_id,status,shift")
       .single();
@@ -483,6 +501,10 @@ export default function RefeicoesPage() {
     if (!selectedWorksiteId) return;
     if (!contract) {
       setToast("Sem contrato para salvar.");
+      return;
+    }
+    if (!isValidISODate(dateISO)) {
+      setToast("Data inválida (use o seletor de data).");
       return;
     }
 
@@ -513,8 +535,25 @@ export default function RefeicoesPage() {
       for (const e of employees) {
         const p = picks[e.id];
         if (!p) continue;
-        if (shift === "ALMOCO" && p.ALMOCO) rows.push({ meal_order_id: order.id, employee_id: e.id });
-        if (shift === "JANTA" && p.JANTA) rows.push({ meal_order_id: order.id, employee_id: e.id });
+
+        if (shift === "ALMOCO" && p.ALMOCO) {
+          rows.push({
+            meal_order_id: order.id,
+            employee_id: e.id,
+            included: true,
+            created_by: sessionUserId,
+            updated_by: sessionUserId,
+          });
+        }
+        if (shift === "JANTA" && p.JANTA) {
+          rows.push({
+            meal_order_id: order.id,
+            employee_id: e.id,
+            included: true,
+            created_by: sessionUserId,
+            updated_by: sessionUserId,
+          });
+        }
       }
 
       if (rows.length > 0) {
