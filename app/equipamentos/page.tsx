@@ -147,43 +147,31 @@ function cleanStr(x: any) {
 
 // FORNECEDOR = o do menor preço considerado
 function pickFornecedor(r: RawLikeRow) {
-  const f1 = cleanStr(r.fornecedor_1);
-  const f2 = cleanStr(r.fornecedor_2);
-  const f3 = cleanStr(r.fornecedor_3);
+  const clean = (s: any) => String(s ?? "").trim();
 
-  const p1 = typeof r.preco_1 === "number" ? r.preco_1 : null;
-  const p2 = typeof r.preco_2 === "number" ? r.preco_2 : null;
-  const p3 = typeof r.preco_3 === "number" ? r.preco_3 : null;
-
-  const menor = typeof r.valor_menor === "number" ? r.valor_menor : null;
-
-  // 1) se valor_menor bate com algum preco_i, usa fornecedor_i
-  if (menor != null) {
-    if (p1 != null && approxEq(menor, p1) && f1) return f1;
-    if (p2 != null && approxEq(menor, p2) && f2) return f2;
-    if (p3 != null && approxEq(menor, p3) && f3) return f3;
-  }
-
-  // 2) senão pega o menor entre os preços disponíveis
-  const candidates: Array<{ f: string; p: number }> = [];
-  if (p1 != null && f1) candidates.push({ f: f1, p: p1 });
-  if (p2 != null && f2) candidates.push({ f: f2, p: p2 });
-  if (p3 != null && f3) candidates.push({ f: f3, p: p3 });
-  if (candidates.length) {
-    candidates.sort((a, b) => a.p - b.p);
-    return candidates[0].f;
-  }
-
-  // 3) fallback: fornecedor_vencedor
-  const fv = cleanStr(r.fornecedor_vencedor);
+  const fv = clean(r.fornecedor_vencedor);
   if (fv) return fv;
 
-  // 4) fallback final: tenta extrair do texto
-  const txt = cleanStr(r.texto_original);
-  const m = txt.match(/Fornecedor vencedor:\s*([^\n\r]+)/i);
-  if (m?.[1]) return m[1].trim();
+  const f1 = clean(r.fornecedor_1);
+  const f2 = clean(r.fornecedor_2);
+  const f3 = clean(r.fornecedor_3);
 
-  return "—";
+  const n1 = Number(r.preco_1);
+  const n2 = Number(r.preco_2);
+  const n3 = Number(r.preco_3);
+
+  const candidates: { f: string; p: number }[] = [];
+  if (f1 && Number.isFinite(n1)) candidates.push({ f: f1, p: n1 });
+  if (f2 && Number.isFinite(n2)) candidates.push({ f: f2, p: n2 });
+  if (f3 && Number.isFinite(n3)) candidates.push({ f: f3, p: n3 });
+
+  if (candidates.length) {
+    candidates.sort((a, b) => a.p - b.p);
+    return candidates[0].f || "—";
+  }
+
+  // fallback final (se tiver fornecedor mas preço veio vazio)
+  return f1 || f2 || f3 || "—";
 }
 
 function ymNow(): string {
