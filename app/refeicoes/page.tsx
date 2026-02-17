@@ -1,7 +1,7 @@
 // FILE: app/refeicoes/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Shift = "ALMOCO" | "JANTA";
@@ -53,10 +53,6 @@ function isoLocalAddDays(iso: string, days: number) {
   return d2.toISOString().slice(0, 10);
 }
 
-function isValidISODate(iso: string) {
-  return /^\d{4}-\d{2}-\d{2}$/.test(iso);
-}
-
 function parseHHMM(t: string | null) {
   if (!t) return null;
   const parts = t.split(":");
@@ -97,6 +93,17 @@ async function copyToClipboard(text: string) {
   }
 }
 
+function friendlyError(msg: string) {
+  const m = msg ?? "";
+  if (m.toLowerCase().includes("meal_audit") && m.toLowerCase().includes("row-level security")) {
+    return "Permissão bloqueada (RLS) na tabela meal_audit. Ajuste a policy/trigger de auditoria para permitir inserts no audit.";
+  }
+  if (m.toLowerCase().includes("meal_date") && m.toLowerCase().includes("null")) {
+    return "meal_date está vindo nulo. Confirme se a inserção do pedido está enviando meal_date corretamente.";
+  }
+  return msg;
+}
+
 export default function RefeicoesPage() {
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>("");
@@ -118,6 +125,11 @@ export default function RefeicoesPage() {
   const [orderDinner, setOrderDinner] = useState<Order | null>(null);
 
   const [picks, setPicks] = useState<Record<string, Pick>>({});
+  const [savedTotals, setSavedTotals] = useState<{ almoco: number; janta: number }>({
+    almoco: 0,
+    janta: 0,
+  });
+
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [search, setSearch] = useState<string>("");
@@ -128,6 +140,7 @@ export default function RefeicoesPage() {
   const [newName, setNewName] = useState<string>("");
   const [newIsThird, setNewIsThird] = useState<boolean>(false);
 
+  // auth bootstrap
   useEffect(() => {
     let mounted = true;
 
@@ -153,6 +166,7 @@ export default function RefeicoesPage() {
     };
   }, []);
 
+  // load base lists after login
   useEffect(() => {
     if (!sessionUserId) return;
 
@@ -175,12 +189,12 @@ export default function RefeicoesPage() {
 
       if (wsRes.error) {
         setBusy(null);
-        setToast(`Erro obras: ${wsRes.error.message}`);
+        setToast(`Erro obras: ${friendlyError(wsRes.error.message)}`);
         return;
       }
       if (empRes.error) {
         setBusy(null);
-        setToast(`Erro funcionários: ${empRes.error.message}`);
+        setToast(`Erro funcionários: ${friendlyError(empRes.error.message)}`);
         return;
       }
 
@@ -201,6 +215,7 @@ export default function RefeicoesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionUserId]);
 
+  // whenever worksite/date changes, load favorites + contract + orders + lines (and saved totals)
   useEffect(() => {
     if (!sessionUserId) return;
     if (!selectedWorksiteId) return;
@@ -210,6 +225,7 @@ export default function RefeicoesPage() {
       setBusy("Carregando pedido...");
       setToast(null);
 
+      // favoritos da obra
       const favRes = await supabase
         .from("meal_worksite_favorites")
         .select("employee_id")
@@ -217,11 +233,12 @@ export default function RefeicoesPage() {
 
       if (favRes.error) {
         setBusy(null);
-        setToast(`Erro favoritos: ${favRes.error.message}`);
+        setToast(`Erro favoritos: ${friendlyError(favRes.error.message)}`);
         return;
       }
       setFavoritesIds(new Set((favRes.data ?? []).map((r: any) => r.employee_id)));
 
+      // contrato (mais recente com start_date <= data)
       const ctRes = await supabase
         .from("meal_contracts")
         .select("id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date")
@@ -232,7 +249,7 @@ export default function RefeicoesPage() {
 
       if (ctRes.error) {
         setBusy(null);
-        setToast(`Erro contrato: ${ctRes.error.message}`);
+        setToast(`Erro contrato: ${friendlyError(ctRes.error.message)}`);
         return;
       }
 
@@ -241,9 +258,12 @@ export default function RefeicoesPage() {
         setContract(null);
         setOrderLunch(null);
         setOrderDinner(null);
+        setSavedTotals({ almoco: 0, janta: 0 });
+
         const empty: Record<string, Pick> = {};
         for (const e of employees) empty[e.id] = { ALMOCO: false, JANTA: false };
         setPicks(empty);
+
         setBusy(null);
         setToast("Sem contrato para essa obra/data.");
         return;
@@ -259,13 +279,12 @@ export default function RefeicoesPage() {
       setContract(nextContract);
 
       async function fetchOrder(shift: Shift) {
-        // compat: busca pelo meal_date OU order_date (legado)
         const oRes = await supabase
           .from("meal_orders")
           .select("id,restaurant_id,status,shift")
           .eq("worksite_id", selectedWorksiteId)
+          .eq("meal_date", dateISO)
           .eq("shift", shift)
-          .or(`meal_date.eq.${dateISO},order_date.eq.${dateISO}`)
           .order("created_at", { ascending: false })
           .limit(1);
 
@@ -278,12 +297,12 @@ export default function RefeicoesPage() {
 
       if (lunch.error) {
         setBusy(null);
-        setToast(`Erro pedido almoço: ${lunch.error.message}`);
+        setToast(`Erro pedido almoço: ${friendlyError(lunch.error.message)}`);
         return;
       }
       if (dinner.error) {
         setBusy(null);
-        setToast(`Erro pedido janta: ${dinner.error.message}`);
+        setToast(`Erro pedido janta: ${friendlyError(dinner.error.message)}`);
         return;
       }
 
@@ -294,31 +313,44 @@ export default function RefeicoesPage() {
       for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
 
       async function applyLines(order: Order | null, shift: Shift) {
-        if (!order?.id) return;
+        if (!order?.id) return 0;
+
         const lRes = await supabase
           .from("meal_order_lines")
           .select("employee_id")
           .eq("meal_order_id", order.id);
 
         if (lRes.error) throw new Error(lRes.error.message);
+
         const rows = (lRes.data ?? []) as any[];
+        let count = 0;
+
         for (const r of rows) {
-          const empId = r.employee_id as string | null;
-          if (!empId) continue; // ignora visitor_name
+          const empId = r.employee_id as string;
           if (!map[empId]) map[empId] = { ALMOCO: false, JANTA: false };
           map[empId][shift] = true;
+          count++;
         }
+
+        return count;
       }
 
+      let cntLunch = 0;
+      let cntDinner = 0;
+
       try {
-        await Promise.all([applyLines(lunch.order, "ALMOCO"), applyLines(dinner.order, "JANTA")]);
+        [cntLunch, cntDinner] = await Promise.all([
+          applyLines(lunch.order, "ALMOCO"),
+          applyLines(dinner.order, "JANTA"),
+        ]);
       } catch (e: any) {
         setBusy(null);
-        setToast(`Erro itens: ${e?.message ?? "falha ao carregar itens"}`);
+        setToast(`Erro itens: ${friendlyError(e?.message ?? "falha ao carregar itens")}`);
         return;
       }
 
       setPicks(map);
+      setSavedTotals({ almoco: cntLunch, janta: cntDinner });
       setBusy(null);
     })();
   }, [sessionUserId, selectedWorksiteId, dateISO, employees]);
@@ -350,6 +382,9 @@ export default function RefeicoesPage() {
     return { almoco, janta };
   }, [picks]);
 
+  const dirty =
+    savedTotals.almoco !== totals.almoco || savedTotals.janta !== totals.janta;
+
   async function sendMagicLink() {
     const email = loginEmail.trim().toLowerCase();
     if (!email) return;
@@ -365,7 +400,7 @@ export default function RefeicoesPage() {
     });
 
     setBusy(null);
-    if (error) setToast(`Erro login: ${error.message}`);
+    if (error) setToast(`Erro login: ${friendlyError(error.message)}`);
     else setLoginSent(true);
   }
 
@@ -404,8 +439,8 @@ export default function RefeicoesPage() {
         .from("meal_orders")
         .select("id")
         .eq("worksite_id", selectedWorksiteId)
+        .eq("meal_date", y)
         .eq("shift", shift)
-        .or(`meal_date.eq.${y},order_date.eq.${y}`)
         .order("created_at", { ascending: false })
         .limit(1);
 
@@ -421,7 +456,7 @@ export default function RefeicoesPage() {
         .eq("meal_order_id", orderId);
 
       if (lRes.error) throw new Error(lRes.error.message);
-      return new Set((lRes.data ?? []).map((r: any) => r.employee_id as string).filter(Boolean));
+      return new Set((lRes.data ?? []).map((r: any) => r.employee_id as string));
     }
 
     try {
@@ -445,44 +480,32 @@ export default function RefeicoesPage() {
       setToast("Copiado do dia anterior.");
     } catch (e: any) {
       setBusy(null);
-      setToast(`Erro copiar: ${e?.message ?? "falha"}`);
+      setToast(`Erro copiar: ${friendlyError(e?.message ?? "falha")}`);
     }
   }
 
   async function ensureOrder(shift: Shift): Promise<Order | null> {
     if (!selectedWorksiteId || !contract) return null;
 
-    if (!isValidISODate(dateISO)) {
-      throw new Error("Data inválida (esperado AAAA-MM-DD).");
-    }
-
     const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
-
     if (existing?.id) {
       const upd = await supabase
         .from("meal_orders")
-        .update({
-          restaurant_id: contract.restaurant_id,
-          updated_by: sessionUserId,
-        })
+        .update({ restaurant_id: contract.restaurant_id })
         .eq("id", existing.id);
 
       if (upd.error) throw new Error(upd.error.message);
       return existing;
     }
 
-    // manda meal_date + order_date (compat)
     const ins = await supabase
       .from("meal_orders")
       .insert({
         worksite_id: selectedWorksiteId,
         restaurant_id: contract.restaurant_id,
         meal_date: dateISO,
-        order_date: dateISO,
         shift,
         status: "DRAFT",
-        created_by: sessionUserId,
-        updated_by: sessionUserId,
       })
       .select("id,restaurant_id,status,shift")
       .single();
@@ -503,10 +526,6 @@ export default function RefeicoesPage() {
       setToast("Sem contrato para salvar.");
       return;
     }
-    if (!isValidISODate(dateISO)) {
-      setToast("Data inválida (use o seletor de data).");
-      return;
-    }
 
     const late =
       shift === "ALMOCO"
@@ -515,6 +534,7 @@ export default function RefeicoesPage() {
 
     if (late && contract.allow_after_cutoff === false) {
       setToast("Atenção: passou do horário e esse contrato não permite após cutoff.");
+      // não bloqueia (por enquanto)
     }
 
     setBusy(shift === "ALMOCO" ? "Salvando almoço..." : "Salvando janta...");
@@ -535,25 +555,8 @@ export default function RefeicoesPage() {
       for (const e of employees) {
         const p = picks[e.id];
         if (!p) continue;
-
-        if (shift === "ALMOCO" && p.ALMOCO) {
-          rows.push({
-            meal_order_id: order.id,
-            employee_id: e.id,
-            included: true,
-            created_by: sessionUserId,
-            updated_by: sessionUserId,
-          });
-        }
-        if (shift === "JANTA" && p.JANTA) {
-          rows.push({
-            meal_order_id: order.id,
-            employee_id: e.id,
-            included: true,
-            created_by: sessionUserId,
-            updated_by: sessionUserId,
-          });
-        }
+        if (shift === "ALMOCO" && p.ALMOCO) rows.push({ meal_order_id: order.id, employee_id: e.id });
+        if (shift === "JANTA" && p.JANTA) rows.push({ meal_order_id: order.id, employee_id: e.id });
       }
 
       if (rows.length > 0) {
@@ -561,11 +564,55 @@ export default function RefeicoesPage() {
         if (insLines.error) throw new Error(insLines.error.message);
       }
 
+      setSavedTotals((prev) =>
+        shift === "ALMOCO" ? { ...prev, almoco: rows.length } : { ...prev, janta: rows.length }
+      );
+
       setBusy(null);
       setToast(shift === "ALMOCO" ? "Almoço salvo ✅" : "Janta salva ✅");
     } catch (e: any) {
       setBusy(null);
-      setToast(`Erro salvar: ${e?.message ?? "falha"}`);
+      setToast(`Erro salvar: ${friendlyError(e?.message ?? "falha")}`);
+    }
+  }
+
+  async function cancelShift(shift: Shift) {
+    const ord = shift === "ALMOCO" ? orderLunch : orderDinner;
+
+    if (!ord?.id) {
+      setToast(shift === "ALMOCO" ? "Não há almoço salvo para cancelar." : "Não há janta salva para cancelar.");
+      return;
+    }
+
+    setBusy(shift === "ALMOCO" ? "Cancelando almoço..." : "Cancelando janta...");
+    setToast(null);
+
+    try {
+      const delLines = await supabase.from("meal_order_lines").delete().eq("meal_order_id", ord.id);
+      if (delLines.error) throw new Error(delLines.error.message);
+
+      const delOrder = await supabase.from("meal_orders").delete().eq("id", ord.id);
+      if (delOrder.error) throw new Error(delOrder.error.message);
+
+      // atualiza estado local
+      setPicks((prev) => {
+        const next: Record<string, Pick> = { ...prev };
+        for (const k of Object.keys(next)) {
+          next[k] = { ...next[k], [shift]: false };
+        }
+        return next;
+      });
+
+      if (shift === "ALMOCO") setOrderLunch(null);
+      else setOrderDinner(null);
+
+      setSavedTotals((prev) => (shift === "ALMOCO" ? { ...prev, almoco: 0 } : { ...prev, janta: 0 }));
+
+      setBusy(null);
+      setToast(shift === "ALMOCO" ? "Almoço cancelado ✅" : "Janta cancelada ✅");
+    } catch (e: any) {
+      setBusy(null);
+      setToast(`Erro cancelar: ${friendlyError(e?.message ?? "falha")}`);
     }
   }
 
@@ -622,7 +669,7 @@ export default function RefeicoesPage() {
     setBusy(null);
 
     if (ins.error) {
-      setToast(`Erro adicionar: ${ins.error.message}`);
+      setToast(`Erro adicionar: ${friendlyError(ins.error.message)}`);
       return;
     }
 
@@ -645,7 +692,7 @@ export default function RefeicoesPage() {
     setToast("Pessoa adicionada ✅");
   }
 
-  const inputStyle: React.CSSProperties = {
+  const inputStyle: CSSProperties = {
     width: "100%",
     borderRadius: 14,
     border: "1px solid #e5e7eb",
@@ -654,7 +701,7 @@ export default function RefeicoesPage() {
     outline: "none",
   };
 
-  const btnBase: React.CSSProperties = {
+  const btnBase: CSSProperties = {
     borderRadius: 999,
     border: "1px solid #e5e7eb",
     padding: "8px 12px",
@@ -664,17 +711,24 @@ export default function RefeicoesPage() {
     fontWeight: 600,
   };
 
-  const btnPrimary: React.CSSProperties = {
+  const btnPrimary: CSSProperties = {
     ...btnBase,
     border: "1px solid rgba(255,75,43,0.25)",
     background: "rgba(255,75,43,0.95)",
     color: "#fff",
   };
 
-  const btnDanger: React.CSSProperties = {
+  const btnDanger: CSSProperties = {
     ...btnBase,
     border: "1px solid rgba(255,75,43,0.35)",
     background: "rgba(255,75,43,0.12)",
+    color: "#7c2d12",
+  };
+
+  const btnCancel: CSSProperties = {
+    ...btnBase,
+    border: "1px solid rgba(124,45,18,0.25)",
+    background: "rgba(124,45,18,0.06)",
     color: "#7c2d12",
   };
 
@@ -787,11 +841,24 @@ export default function RefeicoesPage() {
 
         <div className="summary-grid">
           <div className="summary-card">
-            <div className="summary-label">Totais</div>
+            <div className="summary-label">Totais do dia</div>
+
             <div className="summary-value">
-              {totals.almoco} / {totals.janta}
+              {savedTotals.almoco} / {savedTotals.janta}
             </div>
-            <div className="summary-subvalue">Almoço / Janta</div>
+
+            <div className="summary-subvalue">Já pedido (salvo) • Almoço / Janta</div>
+
+            {dirty && (
+              <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+                Em edição: <b>{totals.almoco}</b> / <b>{totals.janta}</b>
+              </div>
+            )}
+
+            <div style={{ marginTop: 8, display: "flex", gap: 12, flexWrap: "wrap", fontSize: 12, color: "#6b7280" }}>
+              <span>Almoço: <b>{orderLunch?.id ? "salvo" : "não salvo"}</b></span>
+              <span>Janta: <b>{orderDinner?.id ? "salvo" : "não salvo"}</b></span>
+            </div>
           </div>
 
           <div className="summary-card">
@@ -894,10 +961,38 @@ export default function RefeicoesPage() {
               <button style={btnDanger} onClick={clearAll} disabled={!!busy}>
                 Limpar
               </button>
-              <button style={btnPrimary} onClick={() => saveShift("ALMOCO")} disabled={!!busy || !selectedWorksiteId}>
+
+              <button
+                style={btnCancel}
+                onClick={() => cancelShift("ALMOCO")}
+                disabled={!!busy || !orderLunch?.id}
+                title={!orderLunch?.id ? "Não há almoço salvo" : "Cancela o almoço salvo"}
+              >
+                Cancelar Almoço
+              </button>
+
+              <button
+                style={btnCancel}
+                onClick={() => cancelShift("JANTA")}
+                disabled={!!busy || !orderDinner?.id}
+                title={!orderDinner?.id ? "Não há janta salva" : "Cancela a janta salva"}
+              >
+                Cancelar Janta
+              </button>
+
+              <button
+                style={btnPrimary}
+                onClick={() => saveShift("ALMOCO")}
+                disabled={!!busy || !selectedWorksiteId}
+              >
                 {busy?.includes("almoço") ? busy : "Salvar Almoço"}
               </button>
-              <button style={btnPrimary} onClick={() => saveShift("JANTA")} disabled={!!busy || !selectedWorksiteId}>
+
+              <button
+                style={btnPrimary}
+                onClick={() => saveShift("JANTA")}
+                disabled={!!busy || !selectedWorksiteId}
+              >
                 {busy?.includes("janta") ? busy : "Salvar Janta"}
               </button>
             </div>
@@ -926,7 +1021,7 @@ export default function RefeicoesPage() {
                   return (
                     <tr key={e.id}>
                       <td>
-                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                           <div style={{ fontWeight: 600 }}>{e.full_name}</div>
 
                           {isFav && (
