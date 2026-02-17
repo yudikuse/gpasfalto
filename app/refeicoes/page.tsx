@@ -19,8 +19,8 @@ type Employee = {
 type Contract = {
   id: string;
   restaurant_id: string;
-  cutoff_lunch: string | null; // "09:30:00"
-  cutoff_dinner: string | null; // "15:30:00"
+  cutoff_lunch: string | null;
+  cutoff_dinner: string | null;
   allow_after_cutoff: boolean | null;
 };
 
@@ -74,7 +74,6 @@ function nowAfterCutoff(cutoff: string | null) {
 }
 
 function fmtBR(iso: string) {
-  // iso yyyy-mm-dd
   const [y, m, d] = iso.split("-").map(Number);
   if (!y || !m || !d) return iso;
   return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
@@ -102,7 +101,6 @@ export default function RefeicoesPage() {
   const [toast, setToast] = useState<string | null>(null);
   const [search, setSearch] = useState<string>("");
 
-  // bootstrap auth
   useEffect(() => {
     let mounted = true;
 
@@ -173,7 +171,7 @@ export default function RefeicoesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionUserId]);
 
-  // garante que todo funcionário tenha chave no picks (evita “sumir” seleção)
+  // garante chave no picks para todos
   useEffect(() => {
     if (!employees.length) return;
     setPicks((prev) => {
@@ -189,7 +187,7 @@ export default function RefeicoesPage() {
     });
   }, [employees]);
 
-  // whenever worksite/date changes, load favorites + contract + order + lines
+  // load favorites + contract + order + lines
   useEffect(() => {
     if (!sessionUserId) return;
     if (!selectedWorksiteId) return;
@@ -198,7 +196,6 @@ export default function RefeicoesPage() {
       setBusy("Carregando pedido...");
       setToast(null);
 
-      // favoritos da obra
       const favRes = await supabase
         .from("meal_worksite_favorites")
         .select("employee_id")
@@ -211,7 +208,6 @@ export default function RefeicoesPage() {
       }
       setFavoritesIds(new Set((favRes.data ?? []).map((r: any) => r.employee_id)));
 
-      // contrato (mais recente com start_date <= data)
       const ctRes = await supabase
         .from("meal_contracts")
         .select("id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date")
@@ -246,7 +242,6 @@ export default function RefeicoesPage() {
         allow_after_cutoff: ct.allow_after_cutoff,
       });
 
-      // pedido do dia (se existir)
       const oRes = await supabase
         .from("meal_orders")
         .select("id,restaurant_id,status")
@@ -264,7 +259,6 @@ export default function RefeicoesPage() {
       const o = (oRes.data?.[0] ?? null) as Order | null;
       setOrder(o);
 
-      // carrega linhas
       if (o?.id) {
         const lRes = await supabase
           .from("meal_order_lines")
@@ -279,7 +273,6 @@ export default function RefeicoesPage() {
 
         const lines = (lRes.data ?? []) as OrderLine[];
         const map: Record<string, Pick> = {};
-
         for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
 
         for (const ln of lines) {
@@ -289,7 +282,6 @@ export default function RefeicoesPage() {
         }
         setPicks(map);
       } else {
-        // novo pedido (zera)
         const map: Record<string, Pick> = {};
         for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
         setPicks(map);
@@ -421,19 +413,28 @@ export default function RefeicoesPage() {
     setToast("Copiado do dia anterior ✅");
   }
 
-  async function copyWhatsappSummary() {
-    const almocoNames: string[] = [];
-    const jantaNames: string[] = [];
-
+  async function copyWhatsappSummary(scope?: "ALMOCO" | "JANTA") {
+    const names: string[] = [];
     for (const e of employeesOrdered) {
       const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
-      if (p.ALMOCO) almocoNames.push(e.full_name);
-      if (p.JANTA) jantaNames.push(e.full_name);
+      if (!scope) {
+        if (p.ALMOCO || p.JANTA) names.push(e.full_name);
+      } else {
+        if (scope === "ALMOCO" && p.ALMOCO) names.push(e.full_name);
+        if (scope === "JANTA" && p.JANTA) names.push(e.full_name);
+      }
     }
 
     const lines: string[] = [];
+    const headScope = scope ? (scope === "ALMOCO" ? "ALMOÇO" : "JANTA") : "ALMOÇO + JANTA";
     lines.push(`Refeições • ${worksiteLabel || "Obra"} • ${fmtBR(dateISO)}`);
-    lines.push(`Almoço: ${totals.almoco} | Janta: ${totals.janta}`);
+    lines.push(`Pedido: ${headScope}`);
+
+    if (!scope) {
+      lines.push(`Almoço: ${totals.almoco} | Janta: ${totals.janta}`);
+    } else {
+      lines.push(`Qtde: ${scope === "ALMOCO" ? totals.almoco : totals.janta}`);
+    }
 
     if (contract) {
       lines.push(
@@ -442,26 +443,37 @@ export default function RefeicoesPage() {
     }
 
     lines.push("");
-    lines.push("ALMOÇO:");
-    if (almocoNames.length) almocoNames.forEach((n) => lines.push(`- ${n}`));
-    else lines.push("- (nenhum)");
+    if (!scope || scope === "ALMOCO") {
+      lines.push("ALMOÇO:");
+      const almocoNames = employeesOrdered
+        .filter((e) => (picks[e.id]?.ALMOCO ?? false))
+        .map((e) => e.full_name);
+      if (almocoNames.length) almocoNames.forEach((n) => lines.push(`- ${n}`));
+      else lines.push("- (nenhum)");
+      lines.push("");
+    }
 
-    lines.push("");
-    lines.push("JANTA:");
-    if (jantaNames.length) jantaNames.forEach((n) => lines.push(`- ${n}`));
-    else lines.push("- (nenhum)");
+    if (!scope || scope === "JANTA") {
+      lines.push("JANTA:");
+      const jantaNames = employeesOrdered
+        .filter((e) => (picks[e.id]?.JANTA ?? false))
+        .map((e) => e.full_name);
+      if (jantaNames.length) jantaNames.forEach((n) => lines.push(`- ${n}`));
+      else lines.push("- (nenhum)");
+    }
 
     const txt = lines.join("\n");
 
     try {
       await navigator.clipboard.writeText(txt);
-      setToast("Resumo copiado ✅ (cole no WhatsApp)");
+      setToast(`Resumo copiado ✅ (cole no WhatsApp)`);
     } catch {
       setToast("Não consegui copiar automaticamente. Tente em outro navegador/dispositivo.");
     }
   }
 
-  async function save() {
+  // 🔥 NOVO: salva por turno (ALMOCO ou JANTA) sem apagar o outro
+  async function saveShift(scope: "ALMOCO" | "JANTA") {
     if (!selectedWorksiteId) return;
     if (!contract) {
       setToast("Sem contrato para salvar.");
@@ -472,10 +484,9 @@ export default function RefeicoesPage() {
     const lateDinner = nowAfterCutoff(contract.cutoff_dinner);
     if ((lateLunch || lateDinner) && contract.allow_after_cutoff === false) {
       setToast("Atenção: passou do horário limite e esse contrato não permite após o limite.");
-      // não bloqueia nesta 1ª versão
     }
 
-    setBusy("Salvando...");
+    setBusy(scope === "ALMOCO" ? "Salvando almoço..." : "Salvando janta...");
     setToast(null);
 
     let orderId = order?.id ?? null;
@@ -512,10 +523,16 @@ export default function RefeicoesPage() {
       }
     }
 
-    const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
+    // apaga SOMENTE o turno salvo
+    const del = await supabase
+      .from("meal_order_lines")
+      .delete()
+      .eq("meal_order_id", orderId)
+      .eq("shift", scope);
+
     if (del.error) {
       setBusy(null);
-      setToast(`Erro limpar itens: ${del.error.message}`);
+      setToast(`Erro limpar itens (${scope}): ${del.error.message}`);
       return;
     }
 
@@ -523,24 +540,27 @@ export default function RefeicoesPage() {
     for (const e of employees) {
       const p = picks[e.id];
       if (!p) continue;
-      if (p.ALMOCO) rows.push({ meal_order_id: orderId, employee_id: e.id, shift: "ALMOCO", qty: 1 });
-      if (p.JANTA) rows.push({ meal_order_id: orderId, employee_id: e.id, shift: "JANTA", qty: 1 });
+
+      if (scope === "ALMOCO" && p.ALMOCO) {
+        rows.push({ meal_order_id: orderId, employee_id: e.id, shift: "ALMOCO", qty: 1 });
+      }
+      if (scope === "JANTA" && p.JANTA) {
+        rows.push({ meal_order_id: orderId, employee_id: e.id, shift: "JANTA", qty: 1 });
+      }
     }
 
     if (rows.length > 0) {
       const insLines = await supabase.from("meal_order_lines").insert(rows);
       if (insLines.error) {
         setBusy(null);
-        setToast(`Erro inserir itens: ${insLines.error.message}`);
+        setToast(`Erro inserir itens (${scope}): ${insLines.error.message}`);
         return;
       }
     }
 
     setBusy(null);
-    setToast("Salvo ✅");
+    setToast(scope === "ALMOCO" ? "Almoço salvo ✅" : "Janta salva ✅");
   }
-
-  // ===== UI =====
 
   if (!sessionUserId) {
     return (
@@ -551,12 +571,7 @@ export default function RefeicoesPage() {
               <div className="brand">
                 <div
                   className="brand-logo"
-                  style={{
-                    display: "grid",
-                    placeItems: "center",
-                    fontWeight: 700,
-                    color: "var(--gp-accent)",
-                  }}
+                  style={{ display: "grid", placeItems: "center", fontWeight: 700, color: "var(--gp-accent)" }}
                 >
                   GP
                 </div>
@@ -591,17 +606,8 @@ export default function RefeicoesPage() {
               </button>
             </div>
 
-            {loginSent && (
-              <div className="gp-help" style={{ marginTop: 10 }}>
-                Link enviado ✅ Abra seu e-mail e clique para entrar.
-              </div>
-            )}
-
-            {toast && (
-              <div className="state-card" style={{ marginTop: 12 }}>
-                {toast}
-              </div>
-            )}
+            {loginSent && <div className="gp-help" style={{ marginTop: 10 }}>Link enviado ✅ Abra seu e-mail e clique para entrar.</div>}
+            {toast && <div className="state-card" style={{ marginTop: 12 }}>{toast}</div>}
           </div>
         </div>
       </div>
@@ -615,25 +621,19 @@ export default function RefeicoesPage() {
           <div className="brand">
             <div
               className="brand-logo"
-              style={{
-                display: "grid",
-                placeItems: "center",
-                fontWeight: 700,
-                color: "var(--gp-accent)",
-              }}
+              style={{ display: "grid", placeItems: "center", fontWeight: 700, color: "var(--gp-accent)" }}
             >
               GP
             </div>
             <div>
               <div className="brand-text-main">Refeições</div>
-              <div className="brand-text-sub">Controle por obra • pronto pra produção</div>
+              <div className="brand-text-sub">Controle por obra • pedido por turno</div>
             </div>
           </div>
 
           <div className="header-right">
             <div className="header-pill">
-              <span style={{ opacity: 0.8 }}>Logado:</span>{" "}
-              <b>{userEmail || sessionUserId}</b>
+              <span style={{ opacity: 0.8 }}>Logado:</span> <b>{userEmail || sessionUserId}</b>
             </div>
 
             <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8 }}>
@@ -708,8 +708,11 @@ export default function RefeicoesPage() {
               <button className="gp-btn" onClick={copyYesterday} disabled={!!busy || !selectedWorksiteId}>
                 Copiar ontem
               </button>
-              <button className="gp-btn gp-btn-ghost" onClick={copyWhatsappSummary} disabled={!!busy}>
-                Copiar resumo WhatsApp
+              <button className="gp-btn gp-btn-ghost" onClick={() => copyWhatsappSummary("ALMOCO")} disabled={!!busy}>
+                Resumo Almoço
+              </button>
+              <button className="gp-btn gp-btn-ghost" onClick={() => copyWhatsappSummary("JANTA")} disabled={!!busy}>
+                Resumo Janta
               </button>
             </div>
             <div className="summary-subvalue" style={{ marginTop: 8 }}>
@@ -724,9 +727,7 @@ export default function RefeicoesPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Marcação</div>
-              <div className="section-subtitle">
-                Marque almoço/janta por funcionário e clique em <b>Salvar</b>.
-              </div>
+              <div className="section-subtitle">Você salva almoço e janta em momentos diferentes.</div>
             </div>
 
             <div className="gp-actions">
@@ -739,8 +740,12 @@ export default function RefeicoesPage() {
               <button className="gp-btn gp-btn-danger" onClick={clearAll} disabled={!!busy}>
                 Limpar
               </button>
-              <button className="gp-btn gp-btn-primary" onClick={save} disabled={!!busy || !selectedWorksiteId}>
-                {busy ? busy : "Salvar"}
+
+              <button className="gp-btn gp-btn-primary" onClick={() => saveShift("ALMOCO")} disabled={!!busy || !selectedWorksiteId}>
+                Salvar Almoço
+              </button>
+              <button className="gp-btn gp-btn-primary" onClick={() => saveShift("JANTA")} disabled={!!busy || !selectedWorksiteId}>
+                Salvar Janta
               </button>
             </div>
           </div>
