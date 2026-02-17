@@ -1,7 +1,10 @@
+// FILE: app/refeicoes/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
+
+type Shift = "ALMOCO" | "JANTA";
 
 type Worksite = {
   id: string;
@@ -14,13 +17,14 @@ type Employee = {
   id: string;
   full_name: string;
   active: boolean | null;
+  is_third_party: boolean | null;
 };
 
 type Contract = {
   id: string;
   restaurant_id: string;
-  cutoff_lunch: string | null;
-  cutoff_dinner: string | null;
+  cutoff_lunch: string | null; // "09:30:00"
+  cutoff_dinner: string | null; // "15:30:00"
   allow_after_cutoff: boolean | null;
 };
 
@@ -28,12 +32,7 @@ type Order = {
   id: string;
   restaurant_id: string;
   status: string | null;
-};
-
-type OrderLine = {
-  employee_id: string;
-  shift: "ALMOCO" | "JANTA";
-  qty: number | null;
+  shift: Shift;
 };
 
 type Pick = { ALMOCO: boolean; JANTA: boolean };
@@ -73,15 +72,32 @@ function nowAfterCutoff(cutoff: string | null) {
   return hh > c.hh || (hh === c.hh && mm > c.mm);
 }
 
-function fmtBR(iso: string) {
-  const [y, m, d] = iso.split("-").map(Number);
-  if (!y || !m || !d) return iso;
-  return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // fallback
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 export default function RefeicoesPage() {
   const [sessionUserId, setSessionUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>("");
+
   const [loginEmail, setLoginEmail] = useState<string>("");
   const [loginSent, setLoginSent] = useState<boolean>(false);
 
@@ -94,13 +110,24 @@ export default function RefeicoesPage() {
   const [favoritesIds, setFavoritesIds] = useState<Set<string>>(new Set());
 
   const [contract, setContract] = useState<Contract | null>(null);
-  const [order, setOrder] = useState<Order | null>(null);
+
+  // pedidos separados por turno
+  const [orderLunch, setOrderLunch] = useState<Order | null>(null);
+  const [orderDinner, setOrderDinner] = useState<Order | null>(null);
 
   const [picks, setPicks] = useState<Record<string, Pick>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [search, setSearch] = useState<string>("");
 
+  const [copiedBanner, setCopiedBanner] = useState<string | null>(null);
+
+  // adicionar pessoa/terceiro
+  const [showAdd, setShowAdd] = useState<boolean>(false);
+  const [newName, setNewName] = useState<string>("");
+  const [newIsThird, setNewIsThird] = useState<boolean>(false);
+
+  // bootstrap auth
   useEffect(() => {
     let mounted = true;
 
@@ -126,7 +153,7 @@ export default function RefeicoesPage() {
     };
   }, []);
 
-  // load base lists after login
+  // load worksites + employees after login
   useEffect(() => {
     if (!sessionUserId) return;
 
@@ -142,7 +169,7 @@ export default function RefeicoesPage() {
           .order("name", { ascending: true }),
         supabase
           .from("meal_employees")
-          .select("id,full_name,active")
+          .select("id,full_name,active,is_third_party")
           .eq("active", true)
           .order("full_name", { ascending: true }),
       ]);
@@ -166,36 +193,27 @@ export default function RefeicoesPage() {
 
       if (!selectedWorksiteId && ws.length > 0) setSelectedWorksiteId(ws[0].id);
 
+      // init picks
+      const map: Record<string, Pick> = {};
+      for (const e of emps) map[e.id] = { ALMOCO: false, JANTA: false };
+      setPicks(map);
+
       setBusy(null);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionUserId]);
 
-  // garante chave no picks para todos
-  useEffect(() => {
-    if (!employees.length) return;
-    setPicks((prev) => {
-      let changed = false;
-      const next: Record<string, Pick> = { ...prev };
-      for (const e of employees) {
-        if (!next[e.id]) {
-          next[e.id] = { ALMOCO: false, JANTA: false };
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [employees]);
-
-  // load favorites + contract + order + lines
+  // load favorites + contract + orders (lunch/dinner) whenever worksite/date changes
   useEffect(() => {
     if (!sessionUserId) return;
     if (!selectedWorksiteId) return;
+    if (employees.length === 0) return;
 
     (async () => {
       setBusy("Carregando pedido...");
       setToast(null);
 
+      // favoritos da obra
       const favRes = await supabase
         .from("meal_worksite_favorites")
         .select("employee_id")
@@ -208,9 +226,12 @@ export default function RefeicoesPage() {
       }
       setFavoritesIds(new Set((favRes.data ?? []).map((r: any) => r.employee_id)));
 
+      // contrato (mais recente start_date <= data)
       const ctRes = await supabase
         .from("meal_contracts")
-        .select("id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date")
+        .select(
+          "id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date"
+        )
         .eq("worksite_id", selectedWorksiteId)
         .lte("start_date", dateISO)
         .order("start_date", { ascending: false })
@@ -221,92 +242,115 @@ export default function RefeicoesPage() {
         setToast(`Erro contrato: ${ctRes.error.message}`);
         return;
       }
+
       const ct = (ctRes.data?.[0] ?? null) as any;
       if (!ct) {
         setContract(null);
-        setOrder(null);
-        setPicks((prev) => {
-          const next = { ...prev };
-          for (const k of Object.keys(next)) next[k] = { ALMOCO: false, JANTA: false };
-          return next;
-        });
+        setOrderLunch(null);
+        setOrderDinner(null);
+        const empty: Record<string, Pick> = {};
+        for (const e of employees) empty[e.id] = { ALMOCO: false, JANTA: false };
+        setPicks(empty);
         setBusy(null);
         setToast("Sem contrato para essa obra/data.");
         return;
       }
-      setContract({
+
+      const nextContract: Contract = {
         id: ct.id,
         restaurant_id: ct.restaurant_id,
         cutoff_lunch: ct.cutoff_lunch,
         cutoff_dinner: ct.cutoff_dinner,
         allow_after_cutoff: ct.allow_after_cutoff,
-      });
+      };
+      setContract(nextContract);
 
-      const oRes = await supabase
-        .from("meal_orders")
-        .select("id,restaurant_id,status")
-        .eq("worksite_id", selectedWorksiteId)
-        .eq("order_date", dateISO)
-        .order("created_at", { ascending: false })
-        .limit(1);
+      // busca pedidos do dia (separados por shift)
+      async function fetchOrder(shift: Shift) {
+        const oRes = await supabase
+          .from("meal_orders")
+          .select("id,restaurant_id,status,shift")
+          .eq("worksite_id", selectedWorksiteId)
+          .eq("order_date", dateISO)
+          .eq("shift", shift)
+          .order("created_at", { ascending: false })
+          .limit(1);
 
-      if (oRes.error) {
+        if (oRes.error) return { error: oRes.error, order: null as Order | null };
+        const o = (oRes.data?.[0] ?? null) as Order | null;
+        return { error: null, order: o };
+      }
+
+      const [lunch, dinner] = await Promise.all([fetchOrder("ALMOCO"), fetchOrder("JANTA")]);
+
+      if (lunch.error) {
         setBusy(null);
-        setToast(`Erro pedido: ${oRes.error.message}`);
+        setToast(`Erro pedido almoço: ${lunch.error.message}`);
+        return;
+      }
+      if (dinner.error) {
+        setBusy(null);
+        setToast(`Erro pedido janta: ${dinner.error.message}`);
         return;
       }
 
-      const o = (oRes.data?.[0] ?? null) as Order | null;
-      setOrder(o);
+      setOrderLunch(lunch.order);
+      setOrderDinner(dinner.order);
 
-      if (o?.id) {
+      // carrega linhas e monta picks
+      const map: Record<string, Pick> = {};
+      for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
+
+      async function applyLines(order: Order | null, shift: Shift) {
+        if (!order?.id) return;
         const lRes = await supabase
           .from("meal_order_lines")
-          .select("employee_id,shift,qty")
-          .eq("meal_order_id", o.id);
+          .select("employee_id")
+          .eq("meal_order_id", order.id);
 
-        if (lRes.error) {
-          setBusy(null);
-          setToast(`Erro itens: ${lRes.error.message}`);
-          return;
+        if (lRes.error) throw new Error(lRes.error.message);
+        const rows = (lRes.data ?? []) as any[];
+        for (const r of rows) {
+          const empId = r.employee_id as string;
+          if (!map[empId]) map[empId] = { ALMOCO: false, JANTA: false };
+          map[empId][shift] = true;
         }
-
-        const lines = (lRes.data ?? []) as OrderLine[];
-        const map: Record<string, Pick> = {};
-        for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
-
-        for (const ln of lines) {
-          if (!map[ln.employee_id]) map[ln.employee_id] = { ALMOCO: false, JANTA: false };
-          if (ln.shift === "ALMOCO") map[ln.employee_id].ALMOCO = (ln.qty ?? 0) > 0;
-          if (ln.shift === "JANTA") map[ln.employee_id].JANTA = (ln.qty ?? 0) > 0;
-        }
-        setPicks(map);
-      } else {
-        const map: Record<string, Pick> = {};
-        for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
-        setPicks(map);
       }
 
+      try {
+        await Promise.all([
+          applyLines(lunch.order, "ALMOCO"),
+          applyLines(dinner.order, "JANTA"),
+        ]);
+      } catch (e: any) {
+        setBusy(null);
+        setToast(`Erro itens: ${e?.message ?? "falha ao carregar itens"}`);
+        return;
+      }
+
+      setPicks(map);
       setBusy(null);
     })();
   }, [sessionUserId, selectedWorksiteId, dateISO, employees]);
 
-  const worksiteLabel = useMemo(() => {
-    const w = worksites.find((x) => x.id === selectedWorksiteId);
-    if (!w) return "";
-    return `${w.name}${w.city ? ` - ${w.city}` : ""}`;
-  }, [worksites, selectedWorksiteId]);
-
   const employeesOrdered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const list = employees.filter((e) => (q ? e.full_name.toLowerCase().includes(q) : true));
+    const filtered = employees.filter((e) =>
+      q ? e.full_name.toLowerCase().includes(q) : true
+    );
+
+    // favoritos primeiro; depois terceiros por último (fica mais limpo)
     const fav: Employee[] = [];
-    const rest: Employee[] = [];
-    for (const e of list) {
+    const normal: Employee[] = [];
+    const third: Employee[] = [];
+
+    for (const e of filtered) {
       if (favoritesIds.has(e.id)) fav.push(e);
-      else rest.push(e);
+      else if (e.is_third_party) third.push(e);
+      else normal.push(e);
     }
-    return [...fav, ...rest];
+
+    return [...fav, ...normal, ...third];
   }, [employees, favoritesIds, search]);
 
   const totals = useMemo(() => {
@@ -322,13 +366,16 @@ export default function RefeicoesPage() {
   async function sendMagicLink() {
     const email = loginEmail.trim().toLowerCase();
     if (!email) return;
+
     setBusy("Enviando link...");
     setToast(null);
 
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL ?? window.location.origin}/refeicoes`,
+        emailRedirectTo: `${
+          process.env.NEXT_PUBLIC_SITE_URL ?? window.location.origin
+        }/refeicoes`,
       },
     });
 
@@ -341,7 +388,7 @@ export default function RefeicoesPage() {
     await supabase.auth.signOut();
   }
 
-  function setAll(shift: "ALMOCO" | "JANTA", value: boolean) {
+  function setAll(shift: Shift, value: boolean) {
     setPicks((prev) => {
       const next = { ...prev };
       for (const e of employees) {
@@ -367,232 +414,280 @@ export default function RefeicoesPage() {
     setBusy("Copiando ontem...");
     setToast(null);
 
-    const oRes = await supabase
-      .from("meal_orders")
-      .select("id")
-      .eq("worksite_id", selectedWorksiteId)
-      .eq("order_date", y)
-      .order("created_at", { ascending: false })
-      .limit(1);
+    async function getOrderId(shift: Shift) {
+      const oRes = await supabase
+        .from("meal_orders")
+        .select("id")
+        .eq("worksite_id", selectedWorksiteId)
+        .eq("order_date", y)
+        .eq("shift", shift)
+        .order("created_at", { ascending: false })
+        .limit(1);
 
-    if (oRes.error) {
-      setBusy(null);
-      setToast(`Erro copiar: ${oRes.error.message}`);
-      return;
+      if (oRes.error) throw new Error(oRes.error.message);
+      return (oRes.data?.[0]?.id as string | undefined) ?? null;
     }
 
-    const oid = oRes.data?.[0]?.id as string | undefined;
-    if (!oid) {
-      setBusy(null);
-      setToast("Ontem não tem pedido nessa obra.");
-      return;
+    async function getLines(orderId: string | null) {
+      if (!orderId) return new Set<string>();
+      const lRes = await supabase
+        .from("meal_order_lines")
+        .select("employee_id")
+        .eq("meal_order_id", orderId);
+
+      if (lRes.error) throw new Error(lRes.error.message);
+      return new Set((lRes.data ?? []).map((r: any) => r.employee_id as string));
     }
-
-    const lRes = await supabase
-      .from("meal_order_lines")
-      .select("employee_id,shift,qty")
-      .eq("meal_order_id", oid);
-
-    if (lRes.error) {
-      setBusy(null);
-      setToast(`Erro copiar itens: ${lRes.error.message}`);
-      return;
-    }
-
-    const lines = (lRes.data ?? []) as OrderLine[];
-    const map: Record<string, Pick> = {};
-    for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
-    for (const ln of lines) {
-      if (!map[ln.employee_id]) map[ln.employee_id] = { ALMOCO: false, JANTA: false };
-      if (ln.shift === "ALMOCO") map[ln.employee_id].ALMOCO = (ln.qty ?? 0) > 0;
-      if (ln.shift === "JANTA") map[ln.employee_id].JANTA = (ln.qty ?? 0) > 0;
-    }
-    setPicks(map);
-
-    setBusy(null);
-    setToast("Copiado do dia anterior ✅");
-  }
-
-  async function copyWhatsappSummary(scope?: "ALMOCO" | "JANTA") {
-    const names: string[] = [];
-    for (const e of employeesOrdered) {
-      const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
-      if (!scope) {
-        if (p.ALMOCO || p.JANTA) names.push(e.full_name);
-      } else {
-        if (scope === "ALMOCO" && p.ALMOCO) names.push(e.full_name);
-        if (scope === "JANTA" && p.JANTA) names.push(e.full_name);
-      }
-    }
-
-    const lines: string[] = [];
-    const headScope = scope ? (scope === "ALMOCO" ? "ALMOÇO" : "JANTA") : "ALMOÇO + JANTA";
-    lines.push(`Refeições • ${worksiteLabel || "Obra"} • ${fmtBR(dateISO)}`);
-    lines.push(`Pedido: ${headScope}`);
-
-    if (!scope) {
-      lines.push(`Almoço: ${totals.almoco} | Janta: ${totals.janta}`);
-    } else {
-      lines.push(`Qtde: ${scope === "ALMOCO" ? totals.almoco : totals.janta}`);
-    }
-
-    if (contract) {
-      lines.push(
-        `Horário limite: Almoço ${contract.cutoff_lunch ?? "--"} | Janta ${contract.cutoff_dinner ?? "--"}`
-      );
-    }
-
-    lines.push("");
-    if (!scope || scope === "ALMOCO") {
-      lines.push("ALMOÇO:");
-      const almocoNames = employeesOrdered
-        .filter((e) => (picks[e.id]?.ALMOCO ?? false))
-        .map((e) => e.full_name);
-      if (almocoNames.length) almocoNames.forEach((n) => lines.push(`- ${n}`));
-      else lines.push("- (nenhum)");
-      lines.push("");
-    }
-
-    if (!scope || scope === "JANTA") {
-      lines.push("JANTA:");
-      const jantaNames = employeesOrdered
-        .filter((e) => (picks[e.id]?.JANTA ?? false))
-        .map((e) => e.full_name);
-      if (jantaNames.length) jantaNames.forEach((n) => lines.push(`- ${n}`));
-      else lines.push("- (nenhum)");
-    }
-
-    const txt = lines.join("\n");
 
     try {
-      await navigator.clipboard.writeText(txt);
-      setToast(`Resumo copiado ✅ (cole no WhatsApp)`);
-    } catch {
-      setToast("Não consegui copiar automaticamente. Tente em outro navegador/dispositivo.");
+      const [oidLunch, oidDinner] = await Promise.all([
+        getOrderId("ALMOCO"),
+        getOrderId("JANTA"),
+      ]);
+
+      if (!oidLunch && !oidDinner) {
+        setBusy(null);
+        setToast("Ontem não tem pedido nessa obra.");
+        return;
+      }
+
+      const [setLunch, setDinner] = await Promise.all([
+        getLines(oidLunch),
+        getLines(oidDinner),
+      ]);
+
+      const map: Record<string, Pick> = {};
+      for (const e of employees) {
+        map[e.id] = { ALMOCO: setLunch.has(e.id), JANTA: setDinner.has(e.id) };
+      }
+
+      setPicks(map);
+      setBusy(null);
+      setToast("Copiado do dia anterior.");
+    } catch (e: any) {
+      setBusy(null);
+      setToast(`Erro copiar: ${e?.message ?? "falha"}`);
     }
   }
 
-  // 🔥 NOVO: salva por turno (ALMOCO ou JANTA) sem apagar o outro
-  async function saveShift(scope: "ALMOCO" | "JANTA") {
+  async function ensureOrder(shift: Shift): Promise<Order | null> {
+    if (!selectedWorksiteId || !contract) return null;
+
+    const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
+    if (existing?.id) {
+      // garante restaurant_id atualizado
+      const upd = await supabase
+        .from("meal_orders")
+        .update({ restaurant_id: contract.restaurant_id })
+        .eq("id", existing.id);
+
+      if (upd.error) throw new Error(upd.error.message);
+      return existing;
+    }
+
+    const ins = await supabase
+      .from("meal_orders")
+      .insert({
+        worksite_id: selectedWorksiteId,
+        restaurant_id: contract.restaurant_id,
+        order_date: dateISO,
+        shift,
+        status: "DRAFT",
+      })
+      .select("id,restaurant_id,status,shift")
+      .single();
+
+    if (ins.error) throw new Error(ins.error.message);
+
+    const created = ins.data as Order;
+
+    if (shift === "ALMOCO") setOrderLunch(created);
+    else setOrderDinner(created);
+
+    return created;
+  }
+
+  async function saveShift(shift: Shift) {
     if (!selectedWorksiteId) return;
     if (!contract) {
       setToast("Sem contrato para salvar.");
       return;
     }
 
-    const lateLunch = nowAfterCutoff(contract.cutoff_lunch);
-    const lateDinner = nowAfterCutoff(contract.cutoff_dinner);
-    if ((lateLunch || lateDinner) && contract.allow_after_cutoff === false) {
-      setToast("Atenção: passou do horário limite e esse contrato não permite após o limite.");
+    const late =
+      shift === "ALMOCO"
+        ? nowAfterCutoff(contract.cutoff_lunch)
+        : nowAfterCutoff(contract.cutoff_dinner);
+
+    if (late && contract.allow_after_cutoff === false) {
+      setToast("Atenção: passou do horário e esse contrato não permite após cutoff.");
+      // não bloqueia por enquanto
     }
 
-    setBusy(scope === "ALMOCO" ? "Salvando almoço..." : "Salvando janta...");
+    setBusy(shift === "ALMOCO" ? "Salvando almoço..." : "Salvando janta...");
     setToast(null);
 
-    let orderId = order?.id ?? null;
-
-    if (!orderId) {
-      const ins = await supabase
-        .from("meal_orders")
-        .insert({
-          worksite_id: selectedWorksiteId,
-          restaurant_id: contract.restaurant_id,
-          order_date: dateISO,
-          status: "DRAFT",
-        })
-        .select("id,restaurant_id,status")
-        .single();
-
-      if (ins.error) {
+    try {
+      const order = await ensureOrder(shift);
+      if (!order?.id) {
         setBusy(null);
-        setToast(`Erro criar pedido: ${ins.error.message}`);
+        setToast("Não foi possível criar/obter o pedido.");
         return;
       }
-      orderId = ins.data.id;
-      setOrder({ id: ins.data.id, restaurant_id: ins.data.restaurant_id, status: ins.data.status });
-    } else {
-      const upd = await supabase
-        .from("meal_orders")
-        .update({ restaurant_id: contract.restaurant_id })
-        .eq("id", orderId);
 
-      if (upd.error) {
-        setBusy(null);
-        setToast(`Erro atualizar pedido: ${upd.error.message}`);
-        return;
+      // limpa linhas do pedido desse turno (pedido é separado por shift)
+      const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", order.id);
+      if (del.error) throw new Error(del.error.message);
+
+      const rows: any[] = [];
+      for (const e of employees) {
+        const p = picks[e.id];
+        if (!p) continue;
+        if (shift === "ALMOCO" && p.ALMOCO) rows.push({ meal_order_id: order.id, employee_id: e.id });
+        if (shift === "JANTA" && p.JANTA) rows.push({ meal_order_id: order.id, employee_id: e.id });
       }
-    }
 
-    // apaga SOMENTE o turno salvo
-    const del = await supabase
-      .from("meal_order_lines")
-      .delete()
-      .eq("meal_order_id", orderId)
-      .eq("shift", scope);
+      if (rows.length > 0) {
+        const insLines = await supabase.from("meal_order_lines").insert(rows);
+        if (insLines.error) throw new Error(insLines.error.message);
+      }
 
-    if (del.error) {
       setBusy(null);
-      setToast(`Erro limpar itens (${scope}): ${del.error.message}`);
+      setToast(shift === "ALMOCO" ? "Almoço salvo ✅" : "Janta salva ✅");
+    } catch (e: any) {
+      setBusy(null);
+      setToast(`Erro salvar: ${e?.message ?? "falha"}`);
+    }
+  }
+
+  function buildSummary(shift: Shift) {
+    const ws = worksites.find((w) => w.id === selectedWorksiteId);
+    const wsName = ws ? `${ws.name}${ws.city ? ` - ${ws.city}` : ""}` : selectedWorksiteId;
+
+    const selected = employeesOrdered
+      .filter((e) => (shift === "ALMOCO" ? picks[e.id]?.ALMOCO : picks[e.id]?.JANTA))
+      .map((e) => `- ${e.full_name}${e.is_third_party ? " (terceiro)" : ""}`);
+
+    const qty = selected.length;
+    const cutoff =
+      contract
+        ? `Horário limite: Almoço ${contract.cutoff_lunch ?? "--"} | Janta ${contract.cutoff_dinner ?? "--"}`
+        : "";
+
+    return (
+      `Refeições • ${wsName} • ${dateISO}\n` +
+      `Pedido: ${shift === "ALMOCO" ? "ALMOÇO" : "JANTA"}\n` +
+      `Qtde: ${qty}\n` +
+      (cutoff ? `${cutoff}\n\n` : "\n") +
+      `${shift === "ALMOCO" ? "ALMOÇO" : "JANTA"}:\n` +
+      (selected.length ? selected.join("\n") : "- (ninguém marcado)")
+    );
+  }
+
+  async function copySummary(shift: Shift) {
+    const text = buildSummary(shift);
+    const ok = await copyToClipboard(text);
+    setCopiedBanner(ok ? "Resumo copiado ✅ (cole no WhatsApp)" : "Falha ao copiar 😕");
+    setTimeout(() => setCopiedBanner(null), 2500);
+  }
+
+  async function addEmployee() {
+    const name = newName.trim();
+    if (!name) {
+      setToast("Informe o nome.");
       return;
     }
 
-    const rows: any[] = [];
-    for (const e of employees) {
-      const p = picks[e.id];
-      if (!p) continue;
+    setBusy("Adicionando pessoa...");
+    setToast(null);
 
-      if (scope === "ALMOCO" && p.ALMOCO) {
-        rows.push({ meal_order_id: orderId, employee_id: e.id, shift: "ALMOCO", qty: 1 });
-      }
-      if (scope === "JANTA" && p.JANTA) {
-        rows.push({ meal_order_id: orderId, employee_id: e.id, shift: "JANTA", qty: 1 });
-      }
-    }
-
-    if (rows.length > 0) {
-      const insLines = await supabase.from("meal_order_lines").insert(rows);
-      if (insLines.error) {
-        setBusy(null);
-        setToast(`Erro inserir itens (${scope}): ${insLines.error.message}`);
-        return;
-      }
-    }
+    const ins = await supabase
+      .from("meal_employees")
+      .insert({
+        full_name: name,
+        active: true,
+        is_third_party: newIsThird,
+      })
+      .select("id,full_name,active,is_third_party")
+      .single();
 
     setBusy(null);
-    setToast(scope === "ALMOCO" ? "Almoço salvo ✅" : "Janta salva ✅");
+
+    if (ins.error) {
+      setToast(`Erro adicionar: ${ins.error.message}`);
+      return;
+    }
+
+    const created = ins.data as Employee;
+
+    setEmployees((prev) => {
+      const next = [...prev, created];
+      next.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      return next;
+    });
+
+    setPicks((prev) => ({
+      ...prev,
+      [created.id]: { ALMOCO: false, JANTA: false },
+    }));
+
+    setNewName("");
+    setNewIsThird(false);
+    setShowAdd(false);
+    setToast("Pessoa adicionada ✅");
   }
+
+  // --- UI styles (sem mexer no globals.css)
+  const inputStyle: React.CSSProperties = {
+    width: "100%",
+    borderRadius: 14,
+    border: "1px solid #e5e7eb",
+    padding: "10px 12px",
+    background: "#fff",
+    outline: "none",
+  };
+
+  const btnBase: React.CSSProperties = {
+    borderRadius: 999,
+    border: "1px solid #e5e7eb",
+    padding: "8px 12px",
+    background: "#fff",
+    cursor: "pointer",
+    fontSize: 12,
+    fontWeight: 600,
+  };
+
+  const btnPrimary: React.CSSProperties = {
+    ...btnBase,
+    border: "1px solid rgba(255,75,43,0.25)",
+    background: "rgba(255,75,43,0.95)",
+    color: "#fff",
+  };
+
+  const btnDanger: React.CSSProperties = {
+    ...btnBase,
+    border: "1px solid rgba(255,75,43,0.35)",
+    background: "rgba(255,75,43,0.12)",
+    color: "#7c2d12",
+  };
 
   if (!sessionUserId) {
     return (
       <div className="page-root">
         <div className="page-container">
-          <div className="section-card">
-            <div className="page-header">
-              <div className="brand">
-                <div
-                  className="brand-logo"
-                  style={{ display: "grid", placeItems: "center", fontWeight: 700, color: "var(--gp-accent)" }}
-                >
-                  GP
-                </div>
-                <div>
-                  <div className="brand-text-main">Refeições</div>
-                  <div className="brand-text-sub">Acesso por link no e-mail</div>
-                </div>
+          <div className="section-card" style={{ maxWidth: 520, margin: "0 auto" }}>
+            <div className="section-header">
+              <div>
+                <div className="section-title">Refeições</div>
+                <div className="section-subtitle">Login simples por e-mail (link mágico).</div>
               </div>
             </div>
 
-            <div className="gp-divider" />
-
-            <div className="gp-help" style={{ marginBottom: 10 }}>
-              Digite o e-mail e enviaremos um link de acesso (sem senha).
-            </div>
-
-            <div className="gp-inline">
-              <div style={{ flex: 1, minWidth: 240 }}>
+            <div style={{ display: "grid", gap: 10 }}>
+              <div>
                 <div className="filter-label">E-mail</div>
                 <input
-                  className="gp-input"
+                  style={inputStyle}
                   placeholder="seuemail@empresa.com"
                   value={loginEmail}
                   onChange={(e) => setLoginEmail(e.target.value)}
@@ -601,13 +696,22 @@ export default function RefeicoesPage() {
                 />
               </div>
 
-              <button className="gp-btn gp-btn-primary" onClick={sendMagicLink} disabled={!loginEmail.trim() || !!busy}>
-                {busy ? busy : "Enviar link"}
+              <button
+                style={{ ...btnPrimary, padding: "10px 12px", borderRadius: 14 }}
+                onClick={sendMagicLink}
+                disabled={!loginEmail.trim() || !!busy}
+              >
+                {busy ? busy : "Enviar link de acesso"}
               </button>
-            </div>
 
-            {loginSent && <div className="gp-help" style={{ marginTop: 10 }}>Link enviado ✅ Abra seu e-mail e clique para entrar.</div>}
-            {toast && <div className="state-card" style={{ marginTop: 12 }}>{toast}</div>}
+              {loginSent && (
+                <div style={{ fontSize: 13, color: "#166534" }}>
+                  Link enviado. Abra seu e-mail e clique para entrar.
+                </div>
+              )}
+
+              {toast && <div style={{ fontSize: 13, color: "#991b1b" }}>{toast}</div>}
+            </div>
           </div>
         </div>
       </div>
@@ -617,42 +721,35 @@ export default function RefeicoesPage() {
   return (
     <div className="page-root">
       <div className="page-container">
+        {/* topo */}
         <div className="page-header">
           <div className="brand">
-            <div
-              className="brand-logo"
-              style={{ display: "grid", placeItems: "center", fontWeight: 700, color: "var(--gp-accent)" }}
-            >
-              GP
-            </div>
             <div>
               <div className="brand-text-main">Refeições</div>
-              <div className="brand-text-sub">Controle por obra • pedido por turno</div>
+              <div className="brand-text-sub">Logado: {userEmail || sessionUserId}</div>
             </div>
           </div>
 
           <div className="header-right">
-            <div className="header-pill">
-              <span style={{ opacity: 0.8 }}>Logado:</span> <b>{userEmail || sessionUserId}</b>
-            </div>
-
-            <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8 }}>
-              {busy && <span className="gp-badge">{busy}</span>}
-              <button className="gp-btn gp-btn-ghost" onClick={logout}>
+            <span className="header-pill">
+              <span style={{ opacity: 0.75 }}>Data:</span> <b>{dateISO}</b>
+            </span>
+            <div style={{ marginTop: 8 }}>
+              <button style={btnBase} onClick={logout}>
                 Sair
               </button>
             </div>
           </div>
         </div>
 
+        {/* filtros */}
         <div className="filter-bar">
-          <div style={{ minWidth: 260, flex: 1 }}>
+          <div style={{ minWidth: 280 }}>
             <div className="filter-label">Obra</div>
             <select
-              className="gp-select"
+              style={inputStyle}
               value={selectedWorksiteId}
               onChange={(e) => setSelectedWorksiteId(e.target.value)}
-              disabled={!!busy}
             >
               {worksites.map((w) => (
                 <option key={w.id} value={w.id}>
@@ -662,29 +759,28 @@ export default function RefeicoesPage() {
             </select>
           </div>
 
-          <div style={{ minWidth: 170 }}>
+          <div style={{ minWidth: 180 }}>
             <div className="filter-label">Data</div>
             <input
               type="date"
-              className="gp-input"
+              style={inputStyle}
               value={dateISO}
               onChange={(e) => setDateISO(e.target.value)}
-              disabled={!!busy}
             />
           </div>
 
-          <div style={{ minWidth: 220 }}>
+          <div style={{ minWidth: 240, flex: 1 }}>
             <div className="filter-label">Buscar</div>
             <input
-              className="gp-input"
+              style={inputStyle}
               placeholder="Nome do funcionário..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              disabled={!!busy}
             />
           </div>
         </div>
 
+        {/* cards */}
         <div className="summary-grid">
           <div className="summary-card">
             <div className="summary-label">Totais</div>
@@ -696,7 +792,7 @@ export default function RefeicoesPage() {
 
           <div className="summary-card">
             <div className="summary-label">Horário limite</div>
-            <div className="summary-value" style={{ fontSize: "1.25rem" }}>
+            <div className="summary-value" style={{ fontSize: "1.2rem" }}>
               {contract ? `${contract.cutoff_lunch ?? "--"} / ${contract.cutoff_dinner ?? "--"}` : "-- / --"}
             </div>
             <div className="summary-subvalue">Almoço / Janta</div>
@@ -704,25 +800,82 @@ export default function RefeicoesPage() {
 
           <div className="summary-card">
             <div className="summary-label">Ações rápidas</div>
-            <div className="gp-actions">
-              <button className="gp-btn" onClick={copyYesterday} disabled={!!busy || !selectedWorksiteId}>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button style={btnBase} onClick={copyYesterday} disabled={!!busy}>
                 Copiar ontem
               </button>
-              <button className="gp-btn gp-btn-ghost" onClick={() => copyWhatsappSummary("ALMOCO")} disabled={!!busy}>
+              <button style={btnBase} onClick={() => copySummary("ALMOCO")} disabled={!!busy}>
                 Resumo Almoço
               </button>
-              <button className="gp-btn gp-btn-ghost" onClick={() => copyWhatsappSummary("JANTA")} disabled={!!busy}>
+              <button style={btnBase} onClick={() => copySummary("JANTA")} disabled={!!busy}>
                 Resumo Janta
               </button>
+              <button style={btnBase} onClick={() => setShowAdd((v) => !v)} disabled={!!busy}>
+                {showAdd ? "Fechar" : "Adicionar pessoa"}
+              </button>
             </div>
-            <div className="summary-subvalue" style={{ marginTop: 8 }}>
-              Obra: <b>{worksiteLabel || "--"}</b> • {fmtBR(dateISO)}
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+              {worksites.find((w) => w.id === selectedWorksiteId)?.name ?? ""} • {dateISO}
             </div>
           </div>
         </div>
 
-        {toast && <div className="state-card">{toast}</div>}
+        {/* banner copiado */}
+        {copiedBanner && (
+          <div className="state-card" style={{ borderStyle: "dashed" }}>
+            {copiedBanner}
+          </div>
+        )}
 
+        {/* add pessoa */}
+        {showAdd && (
+          <div className="section-card">
+            <div className="section-header">
+              <div>
+                <div className="section-title">Adicionar pessoa</div>
+                <div className="section-subtitle">Funcionário fixo ou terceiro.</div>
+              </div>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12 }}>
+              <div>
+                <div className="filter-label">Nome completo</div>
+                <input
+                  style={inputStyle}
+                  placeholder="Ex.: João da Silva"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                />
+              </div>
+
+              <div>
+                <div className="filter-label">Tipo</div>
+                <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
+                  <input
+                    type="checkbox"
+                    checked={newIsThird}
+                    onChange={(e) => setNewIsThird(e.target.checked)}
+                  />
+                  <span style={{ fontSize: 13 }}>É terceiro</span>
+                </label>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 12, display: "flex", gap: 10, justifyContent: "flex-end" }}>
+              <button style={btnBase} onClick={() => setShowAdd(false)} disabled={!!busy}>
+                Cancelar
+              </button>
+              <button style={btnPrimary} onClick={addEmployee} disabled={!!busy}>
+                {busy ? busy : "Adicionar"}
+              </button>
+            </div>
+
+            {toast && <div style={{ marginTop: 10, fontSize: 13 }}>{toast}</div>}
+          </div>
+        )}
+
+        {/* marcação */}
         <div className="section-card">
           <div className="section-header">
             <div>
@@ -730,33 +883,38 @@ export default function RefeicoesPage() {
               <div className="section-subtitle">Você salva almoço e janta em momentos diferentes.</div>
             </div>
 
-            <div className="gp-actions">
-              <button className="gp-btn" onClick={() => setAll("ALMOCO", true)} disabled={!!busy}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <button style={btnBase} onClick={() => setAll("ALMOCO", true)} disabled={!!busy}>
                 Todos almoço
               </button>
-              <button className="gp-btn" onClick={() => setAll("JANTA", true)} disabled={!!busy}>
+              <button style={btnBase} onClick={() => setAll("JANTA", true)} disabled={!!busy}>
                 Todos janta
               </button>
-              <button className="gp-btn gp-btn-danger" onClick={clearAll} disabled={!!busy}>
+              <button style={btnDanger} onClick={clearAll} disabled={!!busy}>
                 Limpar
               </button>
-
-              <button className="gp-btn gp-btn-primary" onClick={() => saveShift("ALMOCO")} disabled={!!busy || !selectedWorksiteId}>
-                Salvar Almoço
+              <button style={btnPrimary} onClick={() => saveShift("ALMOCO")} disabled={!!busy || !selectedWorksiteId}>
+                {busy?.includes("almoço") ? busy : "Salvar Almoço"}
               </button>
-              <button className="gp-btn gp-btn-primary" onClick={() => saveShift("JANTA")} disabled={!!busy || !selectedWorksiteId}>
-                Salvar Janta
+              <button style={btnPrimary} onClick={() => saveShift("JANTA")} disabled={!!busy || !selectedWorksiteId}>
+                {busy?.includes("janta") ? busy : "Salvar Janta"}
               </button>
             </div>
           </div>
+
+          {toast && (
+            <div className="state-card" style={{ marginBottom: 12 }}>
+              {toast}
+            </div>
+          )}
 
           <div className="table-wrapper">
             <table className="table">
               <thead>
                 <tr>
                   <th>Funcionário</th>
-                  <th style={{ width: 120 }}>Almoço</th>
-                  <th style={{ width: 120 }}>Janta</th>
+                  <th style={{ width: 140, textAlign: "center" }}>Almoço</th>
+                  <th style={{ width: 140, textAlign: "center" }}>Janta</th>
                 </tr>
               </thead>
               <tbody>
@@ -766,12 +924,45 @@ export default function RefeicoesPage() {
 
                   return (
                     <tr key={e.id}>
-                      <td style={{ whiteSpace: "nowrap" }}>
-                        <span style={{ fontWeight: 600 }}>{e.full_name}</span>{" "}
-                        {isFav && <span className="gp-badge gp-badge-strong">favorito</span>}
+                      <td>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div style={{ fontWeight: 600 }}>{e.full_name}</div>
+
+                          {isFav && (
+                            <span
+                              style={{
+                                fontSize: 11,
+                                padding: "4px 10px",
+                                borderRadius: 999,
+                                background: "#ffe7cc",
+                                border: "1px solid #fed7aa",
+                                color: "#9a3412",
+                                fontWeight: 700,
+                              }}
+                            >
+                              favorito
+                            </span>
+                          )}
+
+                          {e.is_third_party && (
+                            <span
+                              style={{
+                                fontSize: 11,
+                                padding: "4px 10px",
+                                borderRadius: 999,
+                                background: "#e0f2fe",
+                                border: "1px solid #bae6fd",
+                                color: "#075985",
+                                fontWeight: 700,
+                              }}
+                            >
+                              terceiro
+                            </span>
+                          )}
+                        </div>
                       </td>
 
-                      <td>
+                      <td style={{ textAlign: "center" }}>
                         <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                           <input
                             type="checkbox"
@@ -779,15 +970,18 @@ export default function RefeicoesPage() {
                             onChange={(ev) =>
                               setPicks((prev) => ({
                                 ...prev,
-                                [e.id]: { ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }), ALMOCO: ev.target.checked },
+                                [e.id]: {
+                                  ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }),
+                                  ALMOCO: ev.target.checked,
+                                },
                               }))
                             }
                           />
-                          <span>Sim</span>
+                          <span style={{ fontSize: 12, color: "#6b7280" }}>Sim</span>
                         </label>
                       </td>
 
-                      <td>
+                      <td style={{ textAlign: "center" }}>
                         <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
                           <input
                             type="checkbox"
@@ -795,11 +989,14 @@ export default function RefeicoesPage() {
                             onChange={(ev) =>
                               setPicks((prev) => ({
                                 ...prev,
-                                [e.id]: { ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }), JANTA: ev.target.checked },
+                                [e.id]: {
+                                  ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }),
+                                  JANTA: ev.target.checked,
+                                },
                               }))
                             }
                           />
-                          <span>Sim</span>
+                          <span style={{ fontSize: 12, color: "#6b7280" }}>Sim</span>
                         </label>
                       </td>
                     </tr>
@@ -808,7 +1005,7 @@ export default function RefeicoesPage() {
 
                 {employeesOrdered.length === 0 && (
                   <tr>
-                    <td colSpan={3} style={{ padding: 18, color: "var(--gp-muted)" }}>
+                    <td colSpan={3} style={{ padding: 18, textAlign: "center", color: "#6b7280" }}>
                       Nenhum funcionário encontrado.
                     </td>
                   </tr>
@@ -817,12 +1014,12 @@ export default function RefeicoesPage() {
             </table>
           </div>
 
-          {contract && (
-            <div className="gp-help" style={{ marginTop: 12 }}>
-              Observação: passou do horário?{" "}
-              <b>{contract.allow_after_cutoff === false ? "Contrato NÃO permite após o limite." : "Contrato permite após o limite."}</b>
-            </div>
-          )}
+          <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
+            Observação: passou do horário?{" "}
+            {contract?.allow_after_cutoff === false
+              ? "Contrato não permite após o limite."
+              : "Contrato permite após o limite."}
+          </div>
         </div>
       </div>
     </div>
