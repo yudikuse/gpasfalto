@@ -171,41 +171,104 @@ function parseMoneyBR(v: any): number | null {
 }
 
 // FORNECEDOR = o do menor preço considerado (valor_menor)
-function pickFornecedor(r: RawLikeRow) {
-  const clean = (x: any) => String(x ?? "").trim();
+// FILE: app/equipamentos/page.tsx
 
+// FORNECEDOR = o do menor preço considerado
+function pickFornecedor(r: RawLikeRow) {
+  const clean = (s: any) => String(s ?? "").trim();
+
+  // 1) Preferência: fornecedor_vencedor já pronto
   const fv = clean(r.fornecedor_vencedor);
   if (fv) return fv;
 
+  // 2) Se vierem os 3 fornecedores + preços, usa o menor
   const f1 = clean(r.fornecedor_1);
   const f2 = clean(r.fornecedor_2);
   const f3 = clean(r.fornecedor_3);
 
-  const p1 = parseMoneyBR(r.preco_1);
-  const p2 = parseMoneyBR(r.preco_2);
-  const p3 = parseMoneyBR(r.preco_3);
+  const n1 = Number(r.preco_1);
+  const n2 = Number(r.preco_2);
+  const n3 = Number(r.preco_3);
 
-  const vm = parseMoneyBR(r.valor_menor);
-
-  // 1) Se valor_menor existir, tenta casar com o fornecedor do preço que bate
-  if (vm != null) {
-    if (f1 && p1 != null && approxEq(p1, vm)) return f1;
-    if (f2 && p2 != null && approxEq(p2, vm)) return f2;
-    if (f3 && p3 != null && approxEq(p3, vm)) return f3;
-  }
-
-  // 2) Senão, escolhe o menor entre os preços disponíveis
   const candidates: { f: string; p: number }[] = [];
-  if (f1 && p1 != null) candidates.push({ f: f1, p: p1 });
-  if (f2 && p2 != null) candidates.push({ f: f2, p: p2 });
-  if (f3 && p3 != null) candidates.push({ f: f3, p: p3 });
+  if (f1 && Number.isFinite(n1)) candidates.push({ f: f1, p: n1 });
+  if (f2 && Number.isFinite(n2)) candidates.push({ f: f2, p: n2 });
+  if (f3 && Number.isFinite(n3)) candidates.push({ f: f3, p: n3 });
 
   if (candidates.length) {
     candidates.sort((a, b) => a.p - b.p);
     return candidates[0].f || "—";
   }
 
-  // 3) fallback final (se tiver fornecedor mas preço veio vazio / não parseou)
+  // 3) Se não tem colunas preenchidas, tenta extrair do texto_original
+  // Ex.: "Center tintas: R$ 75,00" ou "Fornecedor X: R$ 1.234,56"
+  const txt = clean(r.texto_original);
+  if (txt) {
+    const parseBRL = (v: string) => {
+      // "1.234,56" -> 1234.56
+      const s = v.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, "");
+      const n = Number(s);
+      return Number.isFinite(n) ? n : null;
+    };
+
+    const badNames = new Set([
+      "TOTAL",
+      "VALOR",
+      "FRETE",
+      "DESCONTO",
+      "OBRA",
+      "CODIGO",
+      "CÓDIGO",
+      "OPERADOR",
+      "HORIMETRO",
+      "HORÍMETRO",
+      "AUTORIZAR",
+      "REVISAO",
+      "REVISÃO",
+      "MATERIAL",
+      "QUANTIDADE",
+      "LOCAL",
+    ]);
+
+    const extracted: { f: string; p: number }[] = [];
+
+    // padrão: "<nome>: R$ <valor>"
+    const re1 = /([^|\n:]{2,80}?)\s*:\s*R\$\s*([\d.]+,\d{2})/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re1.exec(txt))) {
+      const name = String(m[1] ?? "").trim().replace(/\s{2,}/g, " ");
+      const price = parseBRL(String(m[2] ?? ""));
+      if (!name || price == null) continue;
+
+      const nameUp = name.toUpperCase();
+      if (badNames.has(nameUp)) continue;
+      // evita pegar coisas muito curtas tipo "R$:" ou lixo
+      if (name.length < 3) continue;
+
+      extracted.push({ f: name, p: price });
+    }
+
+    // padrão alternativo: "R$ <valor> - <nome>"
+    const re2 = /R\$\s*([\d.]+,\d{2})\s*-\s*([A-Za-zÀ-ÿ0-9][^|\n]{2,80})/gi;
+    while ((m = re2.exec(txt))) {
+      const price = parseBRL(String(m[1] ?? ""));
+      const name = String(m[2] ?? "").trim().replace(/\s{2,}/g, " ");
+      if (!name || price == null) continue;
+
+      const nameUp = name.toUpperCase();
+      if (badNames.has(nameUp)) continue;
+      if (name.length < 3) continue;
+
+      extracted.push({ f: name, p: price });
+    }
+
+    if (extracted.length) {
+      extracted.sort((a, b) => a.p - b.p);
+      return extracted[0].f || "—";
+    }
+  }
+
+  // 4) fallback final (se tiver fornecedor mas preço veio vazio)
   return f1 || f2 || f3 || "—";
 }
 
