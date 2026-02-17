@@ -56,7 +56,6 @@ function isoLocalAddDays(iso: string, days: number) {
 
 function parseHHMM(t: string | null) {
   if (!t) return null;
-  // aceita "09:30" ou "09:30:00"
   const parts = t.split(":");
   if (parts.length < 2) return null;
   const hh = Number(parts[0]);
@@ -72,6 +71,13 @@ function nowAfterCutoff(cutoff: string | null) {
   const hh = now.getHours();
   const mm = now.getMinutes();
   return hh > c.hh || (hh === c.hh && mm > c.mm);
+}
+
+function fmtBR(iso: string) {
+  // iso yyyy-mm-dd
+  const [y, m, d] = iso.split("-").map(Number);
+  if (!y || !m || !d) return iso;
+  return `${String(d).padStart(2, "0")}/${String(m).padStart(2, "0")}/${y}`;
 }
 
 export default function RefeicoesPage() {
@@ -160,13 +166,28 @@ export default function RefeicoesPage() {
       setWorksites(ws);
       setEmployees(emps);
 
-      // seleciona a primeira obra automaticamente
       if (!selectedWorksiteId && ws.length > 0) setSelectedWorksiteId(ws[0].id);
 
       setBusy(null);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionUserId]);
+
+  // garante que todo funcionário tenha chave no picks (evita “sumir” seleção)
+  useEffect(() => {
+    if (!employees.length) return;
+    setPicks((prev) => {
+      let changed = false;
+      const next: Record<string, Pick> = { ...prev };
+      for (const e of employees) {
+        if (!next[e.id]) {
+          next[e.id] = { ALMOCO: false, JANTA: false };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [employees]);
 
   // whenever worksite/date changes, load favorites + contract + order + lines
   useEffect(() => {
@@ -190,7 +211,7 @@ export default function RefeicoesPage() {
       }
       setFavoritesIds(new Set((favRes.data ?? []).map((r: any) => r.employee_id)));
 
-      // contrato (pega o mais recente com start_date <= data)
+      // contrato (mais recente com start_date <= data)
       const ctRes = await supabase
         .from("meal_contracts")
         .select("id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date")
@@ -208,7 +229,11 @@ export default function RefeicoesPage() {
       if (!ct) {
         setContract(null);
         setOrder(null);
-        setPicks({});
+        setPicks((prev) => {
+          const next = { ...prev };
+          for (const k of Object.keys(next)) next[k] = { ALMOCO: false, JANTA: false };
+          return next;
+        });
         setBusy(null);
         setToast("Sem contrato para essa obra/data.");
         return;
@@ -254,9 +279,9 @@ export default function RefeicoesPage() {
 
         const lines = (lRes.data ?? []) as OrderLine[];
         const map: Record<string, Pick> = {};
-        for (const e of employees) {
-          map[e.id] = { ALMOCO: false, JANTA: false };
-        }
+
+        for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
+
         for (const ln of lines) {
           if (!map[ln.employee_id]) map[ln.employee_id] = { ALMOCO: false, JANTA: false };
           if (ln.shift === "ALMOCO") map[ln.employee_id].ALMOCO = (ln.qty ?? 0) > 0;
@@ -272,8 +297,13 @@ export default function RefeicoesPage() {
 
       setBusy(null);
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionUserId, selectedWorksiteId, dateISO]);
+  }, [sessionUserId, selectedWorksiteId, dateISO, employees]);
+
+  const worksiteLabel = useMemo(() => {
+    const w = worksites.find((x) => x.id === selectedWorksiteId);
+    if (!w) return "";
+    return `${w.name}${w.city ? ` - ${w.city}` : ""}`;
+  }, [worksites, selectedWorksiteId]);
 
   const employeesOrdered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -388,7 +418,47 @@ export default function RefeicoesPage() {
     setPicks(map);
 
     setBusy(null);
-    setToast("Copiado do dia anterior.");
+    setToast("Copiado do dia anterior ✅");
+  }
+
+  async function copyWhatsappSummary() {
+    const almocoNames: string[] = [];
+    const jantaNames: string[] = [];
+
+    for (const e of employeesOrdered) {
+      const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
+      if (p.ALMOCO) almocoNames.push(e.full_name);
+      if (p.JANTA) jantaNames.push(e.full_name);
+    }
+
+    const lines: string[] = [];
+    lines.push(`Refeições • ${worksiteLabel || "Obra"} • ${fmtBR(dateISO)}`);
+    lines.push(`Almoço: ${totals.almoco} | Janta: ${totals.janta}`);
+
+    if (contract) {
+      lines.push(
+        `Horário limite: Almoço ${contract.cutoff_lunch ?? "--"} | Janta ${contract.cutoff_dinner ?? "--"}`
+      );
+    }
+
+    lines.push("");
+    lines.push("ALMOÇO:");
+    if (almocoNames.length) almocoNames.forEach((n) => lines.push(`- ${n}`));
+    else lines.push("- (nenhum)");
+
+    lines.push("");
+    lines.push("JANTA:");
+    if (jantaNames.length) jantaNames.forEach((n) => lines.push(`- ${n}`));
+    else lines.push("- (nenhum)");
+
+    const txt = lines.join("\n");
+
+    try {
+      await navigator.clipboard.writeText(txt);
+      setToast("Resumo copiado ✅ (cole no WhatsApp)");
+    } catch {
+      setToast("Não consegui copiar automaticamente. Tente em outro navegador/dispositivo.");
+    }
   }
 
   async function save() {
@@ -398,18 +468,16 @@ export default function RefeicoesPage() {
       return;
     }
 
-    // regra simples de aviso (não bloqueia)
     const lateLunch = nowAfterCutoff(contract.cutoff_lunch);
     const lateDinner = nowAfterCutoff(contract.cutoff_dinner);
     if ((lateLunch || lateDinner) && contract.allow_after_cutoff === false) {
-      setToast("Atenção: passou do horário e esse contrato não permite após cutoff.");
+      setToast("Atenção: passou do horário limite e esse contrato não permite após o limite.");
       // não bloqueia nesta 1ª versão
     }
 
     setBusy("Salvando...");
     setToast(null);
 
-    // 1) cria/atualiza pedido do dia
     let orderId = order?.id ?? null;
 
     if (!orderId) {
@@ -434,9 +502,7 @@ export default function RefeicoesPage() {
     } else {
       const upd = await supabase
         .from("meal_orders")
-        .update({
-          restaurant_id: contract.restaurant_id,
-        })
+        .update({ restaurant_id: contract.restaurant_id })
         .eq("id", orderId);
 
       if (upd.error) {
@@ -446,7 +512,6 @@ export default function RefeicoesPage() {
       }
     }
 
-    // 2) apaga linhas e recria (simples e seguro nesta fase)
     const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
     if (del.error) {
       setBusy(null);
@@ -475,40 +540,68 @@ export default function RefeicoesPage() {
     setToast("Salvo ✅");
   }
 
+  // ===== UI =====
+
   if (!sessionUserId) {
     return (
-      <div className="min-h-screen bg-neutral-50 px-4 py-8">
-        <div className="mx-auto max-w-md rounded-2xl bg-white p-5 shadow">
-          <h1 className="text-xl font-semibold">Refeições</h1>
-          <p className="mt-1 text-sm text-neutral-600">
-            Login simples por e-mail (link mágico).
-          </p>
+      <div className="page-root">
+        <div className="page-container">
+          <div className="section-card">
+            <div className="page-header">
+              <div className="brand">
+                <div
+                  className="brand-logo"
+                  style={{
+                    display: "grid",
+                    placeItems: "center",
+                    fontWeight: 700,
+                    color: "var(--gp-accent)",
+                  }}
+                >
+                  GP
+                </div>
+                <div>
+                  <div className="brand-text-main">Refeições</div>
+                  <div className="brand-text-sub">Acesso por link no e-mail</div>
+                </div>
+              </div>
+            </div>
 
-          <div className="mt-4 space-y-2">
-            <label className="text-sm font-medium">E-mail</label>
-            <input
-              className="w-full rounded-xl border px-3 py-2 outline-none focus:ring"
-              placeholder="seuemail@empresa.com"
-              value={loginEmail}
-              onChange={(e) => setLoginEmail(e.target.value)}
-              inputMode="email"
-              autoComplete="email"
-            />
-            <button
-              className="w-full rounded-xl bg-black px-4 py-2 text-white disabled:opacity-50"
-              onClick={sendMagicLink}
-              disabled={!loginEmail.trim() || !!busy}
-            >
-              {busy ? busy : "Enviar link de acesso"}
-            </button>
+            <div className="gp-divider" />
+
+            <div className="gp-help" style={{ marginBottom: 10 }}>
+              Digite o e-mail e enviaremos um link de acesso (sem senha).
+            </div>
+
+            <div className="gp-inline">
+              <div style={{ flex: 1, minWidth: 240 }}>
+                <div className="filter-label">E-mail</div>
+                <input
+                  className="gp-input"
+                  placeholder="seuemail@empresa.com"
+                  value={loginEmail}
+                  onChange={(e) => setLoginEmail(e.target.value)}
+                  inputMode="email"
+                  autoComplete="email"
+                />
+              </div>
+
+              <button className="gp-btn gp-btn-primary" onClick={sendMagicLink} disabled={!loginEmail.trim() || !!busy}>
+                {busy ? busy : "Enviar link"}
+              </button>
+            </div>
 
             {loginSent && (
-              <p className="text-sm text-green-700">
-                Link enviado. Abra seu e-mail e clique para entrar.
-              </p>
+              <div className="gp-help" style={{ marginTop: 10 }}>
+                Link enviado ✅ Abra seu e-mail e clique para entrar.
+              </div>
             )}
 
-            {toast && <p className="text-sm text-red-700">{toast}</p>}
+            {toast && (
+              <div className="state-card" style={{ marginTop: 12 }}>
+                {toast}
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -516,177 +609,215 @@ export default function RefeicoesPage() {
   }
 
   return (
-    <div className="min-h-screen bg-neutral-50 px-3 py-4">
-      <div className="mx-auto max-w-2xl space-y-3">
-        <div className="rounded-2xl bg-white p-4 shadow">
-          <div className="flex items-start justify-between gap-3">
-            <div>
-              <h1 className="text-xl font-semibold">Refeições</h1>
-              <p className="text-xs text-neutral-600">
-                Logado: {userEmail || sessionUserId}
-              </p>
-            </div>
-            <button
-              className="rounded-xl border px-3 py-2 text-sm"
-              onClick={logout}
+    <div className="page-root">
+      <div className="page-container">
+        <div className="page-header">
+          <div className="brand">
+            <div
+              className="brand-logo"
+              style={{
+                display: "grid",
+                placeItems: "center",
+                fontWeight: 700,
+                color: "var(--gp-accent)",
+              }}
             >
-              Sair
-            </button>
-          </div>
-
-          <div className="mt-3 grid grid-cols-1 gap-2 md:grid-cols-3">
-            <div>
-              <label className="text-sm font-medium">Obra</label>
-              <select
-                className="mt-1 w-full rounded-xl border px-3 py-2"
-                value={selectedWorksiteId}
-                onChange={(e) => setSelectedWorksiteId(e.target.value)}
-              >
-                {worksites.map((w) => (
-                  <option key={w.id} value={w.id}>
-                    {w.name} {w.city ? `- ${w.city}` : ""}
-                  </option>
-                ))}
-              </select>
+              GP
             </div>
-
             <div>
-              <label className="text-sm font-medium">Data</label>
-              <input
-                type="date"
-                className="mt-1 w-full rounded-xl border px-3 py-2"
-                value={dateISO}
-                onChange={(e) => setDateISO(e.target.value)}
-              />
-            </div>
-
-            <div className="rounded-xl border bg-neutral-50 p-3">
-              <div className="text-xs text-neutral-600">Totais</div>
-              <div className="mt-1 flex items-center gap-3 text-sm">
-                <span><b>Almoço:</b> {totals.almoco}</span>
-                <span><b>Janta:</b> {totals.janta}</span>
-              </div>
-              {contract && (
-                <div className="mt-1 text-xs text-neutral-600">
-                  Cutoff: Almoço {contract.cutoff_lunch ?? "--"} • Janta {contract.cutoff_dinner ?? "--"}
-                </div>
-              )}
+              <div className="brand-text-main">Refeições</div>
+              <div className="brand-text-sub">Controle por obra • pronto pra produção</div>
             </div>
           </div>
 
-          <div className="mt-3 flex flex-wrap gap-2">
-            <button
-              className="rounded-xl border px-3 py-2 text-sm"
-              onClick={copyYesterday}
-              disabled={!!busy}
-            >
-              Copiar ontem
-            </button>
-            <button
-              className="rounded-xl border px-3 py-2 text-sm"
-              onClick={() => setAll("ALMOCO", true)}
-              disabled={!!busy}
-            >
-              Todos almoço
-            </button>
-            <button
-              className="rounded-xl border px-3 py-2 text-sm"
-              onClick={() => setAll("JANTA", true)}
-              disabled={!!busy}
-            >
-              Todos janta
-            </button>
-            <button
-              className="rounded-xl border px-3 py-2 text-sm"
-              onClick={clearAll}
-              disabled={!!busy}
-            >
-              Limpar
-            </button>
-            <button
-              className="rounded-xl bg-black px-4 py-2 text-sm text-white disabled:opacity-50"
-              onClick={save}
-              disabled={!!busy || !selectedWorksiteId}
-            >
-              {busy ? busy : "Salvar"}
-            </button>
-          </div>
-
-          {toast && (
-            <div className="mt-3 rounded-xl border bg-white p-3 text-sm">
-              {toast}
+          <div className="header-right">
+            <div className="header-pill">
+              <span style={{ opacity: 0.8 }}>Logado:</span>{" "}
+              <b>{userEmail || sessionUserId}</b>
             </div>
-          )}
+
+            <div style={{ marginTop: 10, display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              {busy && <span className="gp-badge">{busy}</span>}
+              <button className="gp-btn gp-btn-ghost" onClick={logout}>
+                Sair
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div className="rounded-2xl bg-white p-4 shadow">
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-base font-semibold">Equipe</h2>
+        <div className="filter-bar">
+          <div style={{ minWidth: 260, flex: 1 }}>
+            <div className="filter-label">Obra</div>
+            <select
+              className="gp-select"
+              value={selectedWorksiteId}
+              onChange={(e) => setSelectedWorksiteId(e.target.value)}
+              disabled={!!busy}
+            >
+              {worksites.map((w) => (
+                <option key={w.id} value={w.id}>
+                  {w.name} {w.city ? `- ${w.city}` : ""}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div style={{ minWidth: 170 }}>
+            <div className="filter-label">Data</div>
             <input
-              className="w-44 rounded-xl border px-3 py-2 text-sm outline-none focus:ring"
-              placeholder="Buscar..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              type="date"
+              className="gp-input"
+              value={dateISO}
+              onChange={(e) => setDateISO(e.target.value)}
+              disabled={!!busy}
             />
           </div>
 
-          <div className="mt-3 divide-y">
-            {employeesOrdered.map((e) => {
-              const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
-              const isFav = favoritesIds.has(e.id);
-
-              return (
-                <div key={e.id} className="flex items-center justify-between py-3">
-                  <div className="min-w-0">
-                    <div className="truncate text-sm font-medium">
-                      {e.full_name}{" "}
-                      {isFav && (
-                        <span className="ml-1 rounded-full bg-yellow-100 px-2 py-0.5 text-xs text-yellow-800">
-                          favorito
-                        </span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-4">
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={p.ALMOCO}
-                        onChange={(ev) =>
-                          setPicks((prev) => ({
-                            ...prev,
-                            [e.id]: { ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }), ALMOCO: ev.target.checked },
-                          }))
-                        }
-                      />
-                      <span>Almoço</span>
-                    </label>
-
-                    <label className="flex items-center gap-2 text-sm">
-                      <input
-                        type="checkbox"
-                        checked={p.JANTA}
-                        onChange={(ev) =>
-                          setPicks((prev) => ({
-                            ...prev,
-                            [e.id]: { ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }), JANTA: ev.target.checked },
-                          }))
-                        }
-                      />
-                      <span>Janta</span>
-                    </label>
-                  </div>
-                </div>
-              );
-            })}
-
-            {employeesOrdered.length === 0 && (
-              <div className="py-6 text-center text-sm text-neutral-600">
-                Nenhum funcionário encontrado.
-              </div>
-            )}
+          <div style={{ minWidth: 220 }}>
+            <div className="filter-label">Buscar</div>
+            <input
+              className="gp-input"
+              placeholder="Nome do funcionário..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              disabled={!!busy}
+            />
           </div>
+        </div>
+
+        <div className="summary-grid">
+          <div className="summary-card">
+            <div className="summary-label">Totais</div>
+            <div className="summary-value">
+              {totals.almoco} / {totals.janta}
+            </div>
+            <div className="summary-subvalue">Almoço / Janta</div>
+          </div>
+
+          <div className="summary-card">
+            <div className="summary-label">Horário limite</div>
+            <div className="summary-value" style={{ fontSize: "1.25rem" }}>
+              {contract ? `${contract.cutoff_lunch ?? "--"} / ${contract.cutoff_dinner ?? "--"}` : "-- / --"}
+            </div>
+            <div className="summary-subvalue">Almoço / Janta</div>
+          </div>
+
+          <div className="summary-card">
+            <div className="summary-label">Ações rápidas</div>
+            <div className="gp-actions">
+              <button className="gp-btn" onClick={copyYesterday} disabled={!!busy || !selectedWorksiteId}>
+                Copiar ontem
+              </button>
+              <button className="gp-btn gp-btn-ghost" onClick={copyWhatsappSummary} disabled={!!busy}>
+                Copiar resumo WhatsApp
+              </button>
+            </div>
+            <div className="summary-subvalue" style={{ marginTop: 8 }}>
+              Obra: <b>{worksiteLabel || "--"}</b> • {fmtBR(dateISO)}
+            </div>
+          </div>
+        </div>
+
+        {toast && <div className="state-card">{toast}</div>}
+
+        <div className="section-card">
+          <div className="section-header">
+            <div>
+              <div className="section-title">Marcação</div>
+              <div className="section-subtitle">
+                Marque almoço/janta por funcionário e clique em <b>Salvar</b>.
+              </div>
+            </div>
+
+            <div className="gp-actions">
+              <button className="gp-btn" onClick={() => setAll("ALMOCO", true)} disabled={!!busy}>
+                Todos almoço
+              </button>
+              <button className="gp-btn" onClick={() => setAll("JANTA", true)} disabled={!!busy}>
+                Todos janta
+              </button>
+              <button className="gp-btn gp-btn-danger" onClick={clearAll} disabled={!!busy}>
+                Limpar
+              </button>
+              <button className="gp-btn gp-btn-primary" onClick={save} disabled={!!busy || !selectedWorksiteId}>
+                {busy ? busy : "Salvar"}
+              </button>
+            </div>
+          </div>
+
+          <div className="table-wrapper">
+            <table className="table">
+              <thead>
+                <tr>
+                  <th>Funcionário</th>
+                  <th style={{ width: 120 }}>Almoço</th>
+                  <th style={{ width: 120 }}>Janta</th>
+                </tr>
+              </thead>
+              <tbody>
+                {employeesOrdered.map((e) => {
+                  const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
+                  const isFav = favoritesIds.has(e.id);
+
+                  return (
+                    <tr key={e.id}>
+                      <td style={{ whiteSpace: "nowrap" }}>
+                        <span style={{ fontWeight: 600 }}>{e.full_name}</span>{" "}
+                        {isFav && <span className="gp-badge gp-badge-strong">favorito</span>}
+                      </td>
+
+                      <td>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={p.ALMOCO}
+                            onChange={(ev) =>
+                              setPicks((prev) => ({
+                                ...prev,
+                                [e.id]: { ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }), ALMOCO: ev.target.checked },
+                              }))
+                            }
+                          />
+                          <span>Sim</span>
+                        </label>
+                      </td>
+
+                      <td>
+                        <label style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                          <input
+                            type="checkbox"
+                            checked={p.JANTA}
+                            onChange={(ev) =>
+                              setPicks((prev) => ({
+                                ...prev,
+                                [e.id]: { ...(prev[e.id] ?? { ALMOCO: false, JANTA: false }), JANTA: ev.target.checked },
+                              }))
+                            }
+                          />
+                          <span>Sim</span>
+                        </label>
+                      </td>
+                    </tr>
+                  );
+                })}
+
+                {employeesOrdered.length === 0 && (
+                  <tr>
+                    <td colSpan={3} style={{ padding: 18, color: "var(--gp-muted)" }}>
+                      Nenhum funcionário encontrado.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {contract && (
+            <div className="gp-help" style={{ marginTop: 12 }}>
+              Observação: passou do horário?{" "}
+              <b>{contract.allow_after_cutoff === false ? "Contrato NÃO permite após o limite." : "Contrato permite após o limite."}</b>
+            </div>
+          )}
         </div>
       </div>
     </div>
