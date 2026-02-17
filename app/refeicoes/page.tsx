@@ -23,8 +23,8 @@ type Employee = {
 type Contract = {
   id: string;
   restaurant_id: string;
-  cutoff_lunch: string | null; // "09:30:00"
-  cutoff_dinner: string | null; // "15:30:00"
+  cutoff_lunch: string | null;
+  cutoff_dinner: string | null;
   allow_after_cutoff: boolean | null;
 };
 
@@ -77,7 +77,6 @@ async function copyToClipboard(text: string) {
     await navigator.clipboard.writeText(text);
     return true;
   } catch {
-    // fallback
     try {
       const ta = document.createElement("textarea");
       ta.value = text;
@@ -111,7 +110,6 @@ export default function RefeicoesPage() {
 
   const [contract, setContract] = useState<Contract | null>(null);
 
-  // pedidos separados por turno
   const [orderLunch, setOrderLunch] = useState<Order | null>(null);
   const [orderDinner, setOrderDinner] = useState<Order | null>(null);
 
@@ -122,12 +120,10 @@ export default function RefeicoesPage() {
 
   const [copiedBanner, setCopiedBanner] = useState<string | null>(null);
 
-  // adicionar pessoa/terceiro
   const [showAdd, setShowAdd] = useState<boolean>(false);
   const [newName, setNewName] = useState<string>("");
   const [newIsThird, setNewIsThird] = useState<boolean>(false);
 
-  // bootstrap auth
   useEffect(() => {
     let mounted = true;
 
@@ -153,7 +149,6 @@ export default function RefeicoesPage() {
     };
   }, []);
 
-  // load worksites + employees after login
   useEffect(() => {
     if (!sessionUserId) return;
 
@@ -193,7 +188,6 @@ export default function RefeicoesPage() {
 
       if (!selectedWorksiteId && ws.length > 0) setSelectedWorksiteId(ws[0].id);
 
-      // init picks
       const map: Record<string, Pick> = {};
       for (const e of emps) map[e.id] = { ALMOCO: false, JANTA: false };
       setPicks(map);
@@ -203,7 +197,6 @@ export default function RefeicoesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionUserId]);
 
-  // load favorites + contract + orders (lunch/dinner) whenever worksite/date changes
   useEffect(() => {
     if (!sessionUserId) return;
     if (!selectedWorksiteId) return;
@@ -213,7 +206,6 @@ export default function RefeicoesPage() {
       setBusy("Carregando pedido...");
       setToast(null);
 
-      // favoritos da obra
       const favRes = await supabase
         .from("meal_worksite_favorites")
         .select("employee_id")
@@ -226,12 +218,9 @@ export default function RefeicoesPage() {
       }
       setFavoritesIds(new Set((favRes.data ?? []).map((r: any) => r.employee_id)));
 
-      // contrato (mais recente start_date <= data)
       const ctRes = await supabase
         .from("meal_contracts")
-        .select(
-          "id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date"
-        )
+        .select("id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date")
         .eq("worksite_id", selectedWorksiteId)
         .lte("start_date", dateISO)
         .order("start_date", { ascending: false })
@@ -265,13 +254,12 @@ export default function RefeicoesPage() {
       };
       setContract(nextContract);
 
-      // busca pedidos do dia (separados por shift)
       async function fetchOrder(shift: Shift) {
         const oRes = await supabase
           .from("meal_orders")
           .select("id,restaurant_id,status,shift")
           .eq("worksite_id", selectedWorksiteId)
-          .eq("order_date", dateISO)
+          .eq("meal_date", dateISO) // <-- aqui
           .eq("shift", shift)
           .order("created_at", { ascending: false })
           .limit(1);
@@ -297,7 +285,6 @@ export default function RefeicoesPage() {
       setOrderLunch(lunch.order);
       setOrderDinner(dinner.order);
 
-      // carrega linhas e monta picks
       const map: Record<string, Pick> = {};
       for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
 
@@ -318,10 +305,7 @@ export default function RefeicoesPage() {
       }
 
       try {
-        await Promise.all([
-          applyLines(lunch.order, "ALMOCO"),
-          applyLines(dinner.order, "JANTA"),
-        ]);
+        await Promise.all([applyLines(lunch.order, "ALMOCO"), applyLines(dinner.order, "JANTA")]);
       } catch (e: any) {
         setBusy(null);
         setToast(`Erro itens: ${e?.message ?? "falha ao carregar itens"}`);
@@ -335,11 +319,8 @@ export default function RefeicoesPage() {
 
   const employeesOrdered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    const filtered = employees.filter((e) =>
-      q ? e.full_name.toLowerCase().includes(q) : true
-    );
+    const filtered = employees.filter((e) => (q ? e.full_name.toLowerCase().includes(q) : true));
 
-    // favoritos primeiro; depois terceiros por último (fica mais limpo)
     const fav: Employee[] = [];
     const normal: Employee[] = [];
     const third: Employee[] = [];
@@ -373,9 +354,7 @@ export default function RefeicoesPage() {
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {
-        emailRedirectTo: `${
-          process.env.NEXT_PUBLIC_SITE_URL ?? window.location.origin
-        }/refeicoes`,
+        emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL ?? window.location.origin}/refeicoes`,
       },
     });
 
@@ -419,7 +398,7 @@ export default function RefeicoesPage() {
         .from("meal_orders")
         .select("id")
         .eq("worksite_id", selectedWorksiteId)
-        .eq("order_date", y)
+        .eq("meal_date", y) // <-- aqui
         .eq("shift", shift)
         .order("created_at", { ascending: false })
         .limit(1);
@@ -440,10 +419,7 @@ export default function RefeicoesPage() {
     }
 
     try {
-      const [oidLunch, oidDinner] = await Promise.all([
-        getOrderId("ALMOCO"),
-        getOrderId("JANTA"),
-      ]);
+      const [oidLunch, oidDinner] = await Promise.all([getOrderId("ALMOCO"), getOrderId("JANTA")]);
 
       if (!oidLunch && !oidDinner) {
         setBusy(null);
@@ -451,10 +427,7 @@ export default function RefeicoesPage() {
         return;
       }
 
-      const [setLunch, setDinner] = await Promise.all([
-        getLines(oidLunch),
-        getLines(oidDinner),
-      ]);
+      const [setLunch, setDinner] = await Promise.all([getLines(oidLunch), getLines(oidDinner)]);
 
       const map: Record<string, Pick> = {};
       for (const e of employees) {
@@ -475,7 +448,6 @@ export default function RefeicoesPage() {
 
     const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
     if (existing?.id) {
-      // garante restaurant_id atualizado
       const upd = await supabase
         .from("meal_orders")
         .update({ restaurant_id: contract.restaurant_id })
@@ -490,7 +462,7 @@ export default function RefeicoesPage() {
       .insert({
         worksite_id: selectedWorksiteId,
         restaurant_id: contract.restaurant_id,
-        order_date: dateISO,
+        meal_date: dateISO, // <-- aqui (ERA order_date)
         shift,
         status: "DRAFT",
       })
@@ -521,7 +493,6 @@ export default function RefeicoesPage() {
 
     if (late && contract.allow_after_cutoff === false) {
       setToast("Atenção: passou do horário e esse contrato não permite após cutoff.");
-      // não bloqueia por enquanto
     }
 
     setBusy(shift === "ALMOCO" ? "Salvando almoço..." : "Salvando janta...");
@@ -535,7 +506,6 @@ export default function RefeicoesPage() {
         return;
       }
 
-      // limpa linhas do pedido desse turno (pedido é separado por shift)
       const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", order.id);
       if (del.error) throw new Error(del.error.message);
 
@@ -569,10 +539,9 @@ export default function RefeicoesPage() {
       .map((e) => `- ${e.full_name}${e.is_third_party ? " (terceiro)" : ""}`);
 
     const qty = selected.length;
-    const cutoff =
-      contract
-        ? `Horário limite: Almoço ${contract.cutoff_lunch ?? "--"} | Janta ${contract.cutoff_dinner ?? "--"}`
-        : "";
+    const cutoff = contract
+      ? `Horário limite: Almoço ${contract.cutoff_lunch ?? "--"} | Janta ${contract.cutoff_dinner ?? "--"}`
+      : "";
 
     return (
       `Refeições • ${wsName} • ${dateISO}\n` +
@@ -637,7 +606,6 @@ export default function RefeicoesPage() {
     setToast("Pessoa adicionada ✅");
   }
 
-  // --- UI styles (sem mexer no globals.css)
   const inputStyle: React.CSSProperties = {
     width: "100%",
     borderRadius: 14,
@@ -721,7 +689,6 @@ export default function RefeicoesPage() {
   return (
     <div className="page-root">
       <div className="page-container">
-        {/* topo */}
         <div className="page-header">
           <div className="brand">
             <div>
@@ -742,7 +709,6 @@ export default function RefeicoesPage() {
           </div>
         </div>
 
-        {/* filtros */}
         <div className="filter-bar">
           <div style={{ minWidth: 280 }}>
             <div className="filter-label">Obra</div>
@@ -780,7 +746,6 @@ export default function RefeicoesPage() {
           </div>
         </div>
 
-        {/* cards */}
         <div className="summary-grid">
           <div className="summary-card">
             <div className="summary-label">Totais</div>
@@ -821,14 +786,12 @@ export default function RefeicoesPage() {
           </div>
         </div>
 
-        {/* banner copiado */}
         {copiedBanner && (
           <div className="state-card" style={{ borderStyle: "dashed" }}>
             {copiedBanner}
           </div>
         )}
 
-        {/* add pessoa */}
         {showAdd && (
           <div className="section-card">
             <div className="section-header">
@@ -875,7 +838,6 @@ export default function RefeicoesPage() {
           </div>
         )}
 
-        {/* marcação */}
         <div className="section-card">
           <div className="section-header">
             <div>
