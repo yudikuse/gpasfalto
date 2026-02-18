@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
 type Shift = "ALMOCO" | "JANTA";
+type ViewMode = "ALMOCO" | "JANTA" | "AMBOS";
 
 type Worksite = {
   id: string;
@@ -33,10 +34,11 @@ type Order = {
   restaurant_id: string;
   status: string | null;
   shift: Shift;
+  created_at?: string | null;
+  updated_at?: string | null;
 };
 
 type Pick = { ALMOCO: boolean; JANTA: boolean };
-type ViewMode = "AMBOS" | "ALMOCO" | "JANTA";
 
 function isoLocalToday() {
   const d = new Date();
@@ -73,6 +75,15 @@ function nowAfterCutoff(cutoff: string | null) {
   return hh > c.hh || (hh === c.hh && mm > c.mm);
 }
 
+function fmtHHMMFromISO(ts?: string | null) {
+  if (!ts) return "";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return "";
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
 async function copyToClipboard(text: string) {
   try {
     await navigator.clipboard.writeText(text);
@@ -94,20 +105,33 @@ async function copyToClipboard(text: string) {
   }
 }
 
-function friendlyError(msg: string) {
-  const m = (msg ?? "").toLowerCase();
-  if (m.includes("meal_audit") && m.includes("row-level security")) {
-    return "Permissão bloqueada (RLS) na tabela meal_audit. Ajuste a policy/trigger de auditoria para permitir inserts no audit.";
-  }
-  if (m.includes("meal_date") && m.includes("null")) {
-    return "meal_date está vindo nulo. Confirme se a inserção do pedido está enviando meal_date corretamente.";
-  }
-  return msg;
+function shiftLabel(shift: Shift) {
+  return shift === "ALMOCO" ? "Almoço" : "Janta";
 }
 
-function wsTitle(ws: Worksite | undefined) {
-  if (!ws) return "";
-  return `${ws.name}${ws.city ? ` - ${ws.city}` : ""}`;
+function shiftEmoji(shift: Shift) {
+  return shift === "ALMOCO" ? "🍽️" : "🌙";
+}
+
+function shiftTone(shift: Shift) {
+  // lunch: green-ish, dinner: blue-ish
+  return shift === "ALMOCO"
+    ? {
+        bgOn: "rgba(16,185,129,0.12)",
+        bdOn: "rgba(16,185,129,0.35)",
+        txOn: "#065f46",
+        btnOn: "rgba(16,185,129,0.18)",
+        btnBd: "rgba(16,185,129,0.45)",
+        btnTx: "#065f46",
+      }
+    : {
+        bgOn: "rgba(59,130,246,0.10)",
+        bdOn: "rgba(59,130,246,0.35)",
+        txOn: "#1d4ed8",
+        btnOn: "rgba(59,130,246,0.14)",
+        btnBd: "rgba(59,130,246,0.45)",
+        btnTx: "#1d4ed8",
+      };
 }
 
 export default function RefeicoesPage() {
@@ -131,9 +155,13 @@ export default function RefeicoesPage() {
   const [orderDinner, setOrderDinner] = useState<Order | null>(null);
 
   const [picks, setPicks] = useState<Record<string, Pick>>({});
-  const [savedTotals, setSavedTotals] = useState<{ almoco: number; janta: number }>({
-    almoco: 0,
-    janta: 0,
+  const [savedSets, setSavedSets] = useState<{ ALMOCO: Set<string>; JANTA: Set<string> }>({
+    ALMOCO: new Set(),
+    JANTA: new Set(),
+  });
+  const [savedAt, setSavedAt] = useState<{ ALMOCO: string | null; JANTA: string | null }>({
+    ALMOCO: null,
+    JANTA: null,
   });
 
   const [busy, setBusy] = useState<string | null>(null);
@@ -146,11 +174,13 @@ export default function RefeicoesPage() {
   const [newName, setNewName] = useState<string>("");
   const [newIsThird, setNewIsThird] = useState<boolean>(false);
 
-  // UI helpers
-  const [viewMode, setViewMode] = useState<ViewMode>("AMBOS");
-  const [onlySelected, setOnlySelected] = useState<boolean>(false);
+  // new UI states
+  const [viewMode, setViewMode] = useState<ViewMode>("ALMOCO");
+  const [showOnlyMarked, setShowOnlyMarked] = useState<boolean>(false);
+  const [showTools, setShowTools] = useState<boolean>(false);
 
-  // auth bootstrap
+  const activeShift: Shift = viewMode === "JANTA" ? "JANTA" : "ALMOCO";
+
   useEffect(() => {
     let mounted = true;
 
@@ -176,7 +206,6 @@ export default function RefeicoesPage() {
     };
   }, []);
 
-  // load base lists after login
   useEffect(() => {
     if (!sessionUserId) return;
 
@@ -185,11 +214,7 @@ export default function RefeicoesPage() {
       setToast(null);
 
       const [wsRes, empRes] = await Promise.all([
-        supabase
-          .from("meal_worksites")
-          .select("id,name,city,active")
-          .eq("active", true)
-          .order("name", { ascending: true }),
+        supabase.from("meal_worksites").select("id,name,city,active").eq("active", true).order("name", { ascending: true }),
         supabase
           .from("meal_employees")
           .select("id,full_name,active,is_third_party")
@@ -199,12 +224,12 @@ export default function RefeicoesPage() {
 
       if (wsRes.error) {
         setBusy(null);
-        setToast(`Erro obras: ${friendlyError(wsRes.error.message)}`);
+        setToast(`Erro obras: ${wsRes.error.message}`);
         return;
       }
       if (empRes.error) {
         setBusy(null);
-        setToast(`Erro funcionários: ${friendlyError(empRes.error.message)}`);
+        setToast(`Erro funcionários: ${empRes.error.message}`);
         return;
       }
 
@@ -220,12 +245,14 @@ export default function RefeicoesPage() {
       for (const e of emps) map[e.id] = { ALMOCO: false, JANTA: false };
       setPicks(map);
 
+      setSavedSets({ ALMOCO: new Set(), JANTA: new Set() });
+      setSavedAt({ ALMOCO: null, JANTA: null });
+
       setBusy(null);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionUserId]);
 
-  // whenever worksite/date changes, load favorites + contract + orders + lines (and saved totals)
   useEffect(() => {
     if (!sessionUserId) return;
     if (!selectedWorksiteId) return;
@@ -235,7 +262,6 @@ export default function RefeicoesPage() {
       setBusy("Carregando pedido...");
       setToast(null);
 
-      // favoritos da obra
       const favRes = await supabase
         .from("meal_worksite_favorites")
         .select("employee_id")
@@ -243,12 +269,11 @@ export default function RefeicoesPage() {
 
       if (favRes.error) {
         setBusy(null);
-        setToast(`Erro favoritos: ${friendlyError(favRes.error.message)}`);
+        setToast(`Erro favoritos: ${favRes.error.message}`);
         return;
       }
       setFavoritesIds(new Set((favRes.data ?? []).map((r: any) => r.employee_id)));
 
-      // contrato (mais recente com start_date <= data)
       const ctRes = await supabase
         .from("meal_contracts")
         .select("id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date")
@@ -259,7 +284,7 @@ export default function RefeicoesPage() {
 
       if (ctRes.error) {
         setBusy(null);
-        setToast(`Erro contrato: ${friendlyError(ctRes.error.message)}`);
+        setToast(`Erro contrato: ${ctRes.error.message}`);
         return;
       }
 
@@ -268,11 +293,13 @@ export default function RefeicoesPage() {
         setContract(null);
         setOrderLunch(null);
         setOrderDinner(null);
-        setSavedTotals({ almoco: 0, janta: 0 });
 
         const empty: Record<string, Pick> = {};
         for (const e of employees) empty[e.id] = { ALMOCO: false, JANTA: false };
         setPicks(empty);
+
+        setSavedSets({ ALMOCO: new Set(), JANTA: new Set() });
+        setSavedAt({ ALMOCO: null, JANTA: null });
 
         setBusy(null);
         setToast("Sem contrato para essa obra/data.");
@@ -291,7 +318,7 @@ export default function RefeicoesPage() {
       async function fetchOrder(shift: Shift) {
         const oRes = await supabase
           .from("meal_orders")
-          .select("id,restaurant_id,status,shift")
+          .select("id,restaurant_id,status,shift,created_at,updated_at")
           .eq("worksite_id", selectedWorksiteId)
           .eq("meal_date", dateISO)
           .eq("shift", shift)
@@ -300,6 +327,12 @@ export default function RefeicoesPage() {
 
         if (oRes.error) return { error: oRes.error, order: null as Order | null };
         const o = (oRes.data?.[0] ?? null) as Order | null;
+
+        // Se algum status de cancelamento existir e tiver sido usado no seu banco:
+        if (o?.status && String(o.status).toUpperCase() === "CANCELLED") {
+          return { error: null, order: null as Order | null };
+        }
+
         return { error: null, order: o };
       }
 
@@ -307,12 +340,12 @@ export default function RefeicoesPage() {
 
       if (lunch.error) {
         setBusy(null);
-        setToast(`Erro pedido almoço: ${friendlyError(lunch.error.message)}`);
+        setToast(`Erro pedido almoço: ${lunch.error.message}`);
         return;
       }
       if (dinner.error) {
         setBusy(null);
-        setToast(`Erro pedido janta: ${friendlyError(dinner.error.message)}`);
+        setToast(`Erro pedido janta: ${dinner.error.message}`);
         return;
       }
 
@@ -322,45 +355,40 @@ export default function RefeicoesPage() {
       const map: Record<string, Pick> = {};
       for (const e of employees) map[e.id] = { ALMOCO: false, JANTA: false };
 
-      async function applyLines(order: Order | null, shift: Shift) {
-        if (!order?.id) return 0;
+      const savedLunch = new Set<string>();
+      const savedDinner = new Set<string>();
 
-        const lRes = await supabase
-          .from("meal_order_lines")
-          .select("employee_id")
-          .eq("meal_order_id", order.id);
+      async function applyLines(order: Order | null, shift: Shift) {
+        if (!order?.id) return;
+        const lRes = await supabase.from("meal_order_lines").select("employee_id").eq("meal_order_id", order.id);
 
         if (lRes.error) throw new Error(lRes.error.message);
-
         const rows = (lRes.data ?? []) as any[];
-        let count = 0;
-
         for (const r of rows) {
           const empId = r.employee_id as string;
           if (!map[empId]) map[empId] = { ALMOCO: false, JANTA: false };
           map[empId][shift] = true;
-          count++;
+          if (shift === "ALMOCO") savedLunch.add(empId);
+          else savedDinner.add(empId);
         }
-
-        return count;
       }
 
-      let cntLunch = 0;
-      let cntDinner = 0;
-
       try {
-        [cntLunch, cntDinner] = await Promise.all([
-          applyLines(lunch.order, "ALMOCO"),
-          applyLines(dinner.order, "JANTA"),
-        ]);
+        await Promise.all([applyLines(lunch.order, "ALMOCO"), applyLines(dinner.order, "JANTA")]);
       } catch (e: any) {
         setBusy(null);
-        setToast(`Erro itens: ${friendlyError(e?.message ?? "falha ao carregar itens")}`);
+        setToast(`Erro itens: ${e?.message ?? "falha ao carregar itens"}`);
         return;
       }
 
       setPicks(map);
-      setSavedTotals({ almoco: cntLunch, janta: cntDinner });
+      setSavedSets({ ALMOCO: savedLunch, JANTA: savedDinner });
+
+      setSavedAt({
+        ALMOCO: lunch.order?.updated_at ?? lunch.order?.created_at ?? null,
+        JANTA: dinner.order?.updated_at ?? dinner.order?.created_at ?? null,
+      });
+
       setBusy(null);
     })();
   }, [sessionUserId, selectedWorksiteId, dateISO, employees]);
@@ -382,7 +410,7 @@ export default function RefeicoesPage() {
     return [...fav, ...normal, ...third];
   }, [employees, favoritesIds, search]);
 
-  const totalsEditing = useMemo(() => {
+  const totalsNow = useMemo(() => {
     let almoco = 0;
     let janta = 0;
     for (const empId of Object.keys(picks)) {
@@ -392,42 +420,41 @@ export default function RefeicoesPage() {
     return { almoco, janta };
   }, [picks]);
 
-  const dirty =
-    savedTotals.almoco !== totalsEditing.almoco || savedTotals.janta !== totalsEditing.janta;
+  const totalsSaved = useMemo(() => {
+    return {
+      almoco: savedSets.ALMOCO.size,
+      janta: savedSets.JANTA.size,
+      lunchSaved: !!orderLunch?.id,
+      dinnerSaved: !!orderDinner?.id,
+    };
+  }, [savedSets, orderLunch, orderDinner]);
 
-  const listLunch = useMemo(
-    () => employeesOrdered.filter((e) => !!picks[e.id]?.ALMOCO),
-    [employeesOrdered, picks]
-  );
-  const listDinner = useMemo(
-    () => employeesOrdered.filter((e) => !!picks[e.id]?.JANTA),
-    [employeesOrdered, picks]
-  );
+  const activeSelectedNames = useMemo(() => {
+    const list = employeesOrdered
+      .filter((e) => (viewMode === "AMBOS" ? (picks[e.id]?.ALMOCO || picks[e.id]?.JANTA) : picks[e.id]?.[activeShift]))
+      .map((e) => e.full_name);
+    return list;
+  }, [employeesOrdered, picks, viewMode, activeShift]);
 
-  const employeesView = useMemo(() => {
-    let arr = employeesOrdered;
+  const employeesVisible = useMemo(() => {
+    let list = employeesOrdered;
 
-    if (onlySelected) {
-      arr = arr.filter((e) => {
-        const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
-        if (viewMode === "ALMOCO") return p.ALMOCO;
-        if (viewMode === "JANTA") return p.JANTA;
-        return p.ALMOCO || p.JANTA;
-      });
-    } else {
-      // se estiver em modo ALMOCO/JANTA, ainda mostra todo mundo, mas o destaque fica no shift escolhido
-      // (isso evita “sumir” funcionário e errar por esquecimento)
+    if (showOnlyMarked) {
+      if (viewMode === "AMBOS") {
+        list = list.filter((e) => picks[e.id]?.ALMOCO || picks[e.id]?.JANTA);
+      } else {
+        list = list.filter((e) => picks[e.id]?.[activeShift]);
+      }
     }
 
-    return arr;
-  }, [employeesOrdered, picks, onlySelected, viewMode]);
+    return list;
+  }, [employeesOrdered, showOnlyMarked, viewMode, picks, activeShift]);
 
-  function togglePick(empId: string, shift: Shift) {
-    setPicks((prev) => {
-      const cur = prev[empId] ?? { ALMOCO: false, JANTA: false };
-      const next = { ...cur, [shift]: !cur[shift] };
-      return { ...prev, [empId]: next };
-    });
+  function isShiftLocked(shift: Shift) {
+    if (!contract) return true;
+    const cutoff = shift === "ALMOCO" ? contract.cutoff_lunch : contract.cutoff_dinner;
+    const late = nowAfterCutoff(cutoff);
+    return late && contract.allow_after_cutoff === false;
   }
 
   async function sendMagicLink() {
@@ -445,7 +472,7 @@ export default function RefeicoesPage() {
     });
 
     setBusy(null);
-    if (error) setToast(`Erro login: ${friendlyError(error.message)}`);
+    if (error) setToast(`Erro login: ${error.message}`);
     else setLoginSent(true);
   }
 
@@ -453,12 +480,33 @@ export default function RefeicoesPage() {
     await supabase.auth.signOut();
   }
 
-  function setAll(shift: Shift, value: boolean) {
+  function togglePick(empId: string, shift: Shift) {
+    setPicks((prev) => {
+      const cur = prev[empId] ?? { ALMOCO: false, JANTA: false };
+      return {
+        ...prev,
+        [empId]: { ...cur, [shift]: !cur[shift] },
+      };
+    });
+  }
+
+  function setAllShift(shift: Shift, value: boolean) {
     setPicks((prev) => {
       const next = { ...prev };
       for (const e of employees) {
         const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
         next[e.id] = { ...cur, [shift]: value };
+      }
+      return next;
+    });
+  }
+
+  function clearShift(shift: Shift) {
+    setPicks((prev) => {
+      const next: Record<string, Pick> = { ...prev };
+      for (const e of employees) {
+        const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
+        next[e.id] = { ...cur, [shift]: false };
       }
       return next;
     });
@@ -470,6 +518,19 @@ export default function RefeicoesPage() {
       for (const key of Object.keys(next)) next[key] = { ALMOCO: false, JANTA: false };
       return next;
     });
+  }
+
+  function restoreSaved(shift: Shift) {
+    const set = shift === "ALMOCO" ? savedSets.ALMOCO : savedSets.JANTA;
+    setPicks((prev) => {
+      const next: Record<string, Pick> = { ...prev };
+      for (const e of employees) {
+        const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
+        next[e.id] = { ...cur, [shift]: set.has(e.id) };
+      }
+      return next;
+    });
+    setToast(`${shiftLabel(shift)} restaurado do salvo ✅`);
   }
 
   async function copyYesterday() {
@@ -495,11 +556,7 @@ export default function RefeicoesPage() {
 
     async function getLines(orderId: string | null) {
       if (!orderId) return new Set<string>();
-      const lRes = await supabase
-        .from("meal_order_lines")
-        .select("employee_id")
-        .eq("meal_order_id", orderId);
-
+      const lRes = await supabase.from("meal_order_lines").select("employee_id").eq("meal_order_id", orderId);
       if (lRes.error) throw new Error(lRes.error.message);
       return new Set((lRes.data ?? []).map((r: any) => r.employee_id as string));
     }
@@ -522,10 +579,10 @@ export default function RefeicoesPage() {
 
       setPicks(map);
       setBusy(null);
-      setToast("Copiado do dia anterior.");
+      setToast("Copiado do dia anterior ✅");
     } catch (e: any) {
       setBusy(null);
-      setToast(`Erro copiar: ${friendlyError(e?.message ?? "falha")}`);
+      setToast(`Erro copiar: ${e?.message ?? "falha"}`);
     }
   }
 
@@ -534,11 +591,7 @@ export default function RefeicoesPage() {
 
     const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
     if (existing?.id) {
-      const upd = await supabase
-        .from("meal_orders")
-        .update({ restaurant_id: contract.restaurant_id })
-        .eq("id", existing.id);
-
+      const upd = await supabase.from("meal_orders").update({ restaurant_id: contract.restaurant_id }).eq("id", existing.id);
       if (upd.error) throw new Error(upd.error.message);
       return existing;
     }
@@ -552,7 +605,7 @@ export default function RefeicoesPage() {
         shift,
         status: "DRAFT",
       })
-      .select("id,restaurant_id,status,shift")
+      .select("id,restaurant_id,status,shift,created_at,updated_at")
       .single();
 
     if (ins.error) throw new Error(ins.error.message);
@@ -572,13 +625,9 @@ export default function RefeicoesPage() {
       return;
     }
 
-    const late =
-      shift === "ALMOCO"
-        ? nowAfterCutoff(contract.cutoff_lunch)
-        : nowAfterCutoff(contract.cutoff_dinner);
-
-    if (late && contract.allow_after_cutoff === false) {
-      setToast("Atenção: passou do horário e esse contrato não permite após cutoff.");
+    if (isShiftLocked(shift)) {
+      setToast(`Passou do horário e este contrato não permite alterar ${shiftLabel(shift).toLowerCase()}.`);
+      return;
     }
 
     setBusy(shift === "ALMOCO" ? "Salvando almoço..." : "Salvando janta...");
@@ -608,60 +657,79 @@ export default function RefeicoesPage() {
         if (insLines.error) throw new Error(insLines.error.message);
       }
 
-      setSavedTotals((prev) =>
-        shift === "ALMOCO" ? { ...prev, almoco: rows.length } : { ...prev, janta: rows.length }
-      );
+      // atualiza "salvo" localmente para bater o olho
+      const nextSet = new Set<string>();
+      for (const e of employees) {
+        const p = picks[e.id];
+        if (!p) continue;
+        if (shift === "ALMOCO" && p.ALMOCO) nextSet.add(e.id);
+        if (shift === "JANTA" && p.JANTA) nextSet.add(e.id);
+      }
+
+      setSavedSets((prev) => ({ ...prev, [shift]: nextSet }));
+      setSavedAt((prev) => ({ ...prev, [shift]: new Date().toISOString() }));
 
       setBusy(null);
-      setToast(shift === "ALMOCO" ? "Almoço salvo ✅" : "Janta salva ✅");
+      setToast(`${shiftLabel(shift)} salvo ✅`);
     } catch (e: any) {
       setBusy(null);
-      setToast(`Erro salvar: ${friendlyError(e?.message ?? "falha")}`);
+      setToast(`Erro salvar: ${e?.message ?? "falha"}`);
     }
   }
 
   async function cancelShift(shift: Shift) {
-    const ord = shift === "ALMOCO" ? orderLunch : orderDinner;
-
-    if (!ord?.id) {
-      setToast(shift === "ALMOCO" ? "Não há almoço salvo para cancelar." : "Não há janta salva para cancelar.");
+    if (!selectedWorksiteId) return;
+    if (!contract) {
+      setToast("Sem contrato.");
       return;
     }
+
+    if (isShiftLocked(shift)) {
+      setToast(`Passou do horário e este contrato não permite cancelar ${shiftLabel(shift).toLowerCase()}.`);
+      return;
+    }
+
+    const order = shift === "ALMOCO" ? orderLunch : orderDinner;
+    if (!order?.id) {
+      setToast(`Não há ${shiftLabel(shift).toLowerCase()} salvo para cancelar.`);
+      return;
+    }
+
+    const ok = window.confirm(`Cancelar ${shiftLabel(shift)} deste dia/obra?`);
+    if (!ok) return;
 
     setBusy(shift === "ALMOCO" ? "Cancelando almoço..." : "Cancelando janta...");
     setToast(null);
 
     try {
-      const delLines = await supabase.from("meal_order_lines").delete().eq("meal_order_id", ord.id);
+      const delLines = await supabase.from("meal_order_lines").delete().eq("meal_order_id", order.id);
       if (delLines.error) throw new Error(delLines.error.message);
 
-      const delOrder = await supabase.from("meal_orders").delete().eq("id", ord.id);
-      if (delOrder.error) throw new Error(delOrder.error.message);
+      // tenta marcar cancelado (se existir no enum), senão deleta o pedido
+      const upd = await supabase.from("meal_orders").update({ status: "CANCELLED" }).eq("id", order.id);
+      if (upd.error) {
+        const delOrder = await supabase.from("meal_orders").delete().eq("id", order.id);
+        if (delOrder.error) throw new Error(delOrder.error.message);
+      }
 
-      setPicks((prev) => {
-        const next: Record<string, Pick> = { ...prev };
-        for (const k of Object.keys(next)) {
-          next[k] = { ...next[k], [shift]: false };
-        }
-        return next;
-      });
-
+      // limpa estado local
+      clearShift(shift);
+      setSavedSets((prev) => ({ ...prev, [shift]: new Set() }));
+      setSavedAt((prev) => ({ ...prev, [shift]: null }));
       if (shift === "ALMOCO") setOrderLunch(null);
       else setOrderDinner(null);
 
-      setSavedTotals((prev) => (shift === "ALMOCO" ? { ...prev, almoco: 0 } : { ...prev, janta: 0 }));
-
       setBusy(null);
-      setToast(shift === "ALMOCO" ? "Almoço cancelado ✅" : "Janta cancelada ✅");
+      setToast(`${shiftLabel(shift)} cancelado ✅`);
     } catch (e: any) {
       setBusy(null);
-      setToast(`Erro cancelar: ${friendlyError(e?.message ?? "falha")}`);
+      setToast(`Erro cancelar: ${e?.message ?? "falha"}`);
     }
   }
 
   function buildSummary(shift: Shift) {
     const ws = worksites.find((w) => w.id === selectedWorksiteId);
-    const wsName = ws ? wsTitle(ws) : selectedWorksiteId;
+    const wsName = ws ? `${ws.name}${ws.city ? ` - ${ws.city}` : ""}` : selectedWorksiteId;
 
     const selected = employeesOrdered
       .filter((e) => (shift === "ALMOCO" ? picks[e.id]?.ALMOCO : picks[e.id]?.JANTA))
@@ -712,7 +780,7 @@ export default function RefeicoesPage() {
     setBusy(null);
 
     if (ins.error) {
-      setToast(`Erro adicionar: ${friendlyError(ins.error.message)}`);
+      setToast(`Erro adicionar: ${ins.error.message}`);
       return;
     }
 
@@ -735,7 +803,6 @@ export default function RefeicoesPage() {
     setToast("Pessoa adicionada ✅");
   }
 
-  // ---- styles / buttons
   const inputStyle: CSSProperties = {
     width: "100%",
     borderRadius: 14,
@@ -748,56 +815,54 @@ export default function RefeicoesPage() {
   const btnBase: CSSProperties = {
     borderRadius: 999,
     border: "1px solid #e5e7eb",
-    padding: "8px 12px",
+    padding: "10px 12px",
     background: "#fff",
     cursor: "pointer",
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: 700,
+  };
+
+  const btnGhost: CSSProperties = {
+    ...btnBase,
+    background: "rgba(255,255,255,0.7)",
   };
 
   const btnDanger: CSSProperties = {
     ...btnBase,
-    border: "1px solid rgba(255,75,43,0.35)",
-    background: "rgba(255,75,43,0.10)",
-    color: "#7c2d12",
+    border: "1px solid rgba(239,68,68,0.35)",
+    background: "rgba(239,68,68,0.10)",
+    color: "#7f1d1d",
   };
 
-  const btnLunch: CSSProperties = {
+  const btnPrimaryLunch: CSSProperties = {
     ...btnBase,
-    border: "1px solid rgba(16,185,129,0.25)",
-    background: "rgba(16,185,129,0.95)",
+    border: "1px solid rgba(16,185,129,0.45)",
+    background: "rgba(16,185,129,0.85)",
     color: "#fff",
   };
 
-  const btnDinner: CSSProperties = {
+  const btnPrimaryDinner: CSSProperties = {
     ...btnBase,
-    border: "1px solid rgba(59,130,246,0.25)",
-    background: "rgba(59,130,246,0.95)",
+    border: "1px solid rgba(59,130,246,0.45)",
+    background: "rgba(59,130,246,0.85)",
     color: "#fff",
   };
 
-  const btnCancel: CSSProperties = {
-    ...btnBase,
-    border: "1px solid rgba(124,45,18,0.20)",
-    background: "rgba(124,45,18,0.06)",
-    color: "#7c2d12",
-  };
+  const isBusy = !!busy;
 
-  const segBtn: CSSProperties = {
-    ...btnBase,
-    padding: "8px 10px",
-    borderRadius: 999,
-  };
+  const wsTitle = useMemo(() => {
+    const ws = worksites.find((w) => w.id === selectedWorksiteId);
+    if (!ws) return "";
+    return `${ws.name}${ws.city ? ` - ${ws.city}` : ""}`;
+  }, [worksites, selectedWorksiteId]);
 
-  // ---- rendering helpers
-  function rowTone(p: Pick) {
-    if (p.ALMOCO && p.JANTA) return "tone-both";
-    if (p.ALMOCO) return "tone-lunch";
-    if (p.JANTA) return "tone-dinner";
-    return "tone-none";
-  }
+  const cutoffText = useMemo(() => {
+    if (!contract) return "-- / --";
+    return `${contract.cutoff_lunch ?? "--"} / ${contract.cutoff_dinner ?? "--"}`;
+  }, [contract]);
 
-  const selectedWs = worksites.find((w) => w.id === selectedWorksiteId);
+  const mismatchLunch = totalsNow.almoco !== totalsSaved.almoco;
+  const mismatchDinner = totalsNow.janta !== totalsSaved.janta;
 
   if (!sessionUserId) {
     return (
@@ -825,19 +890,14 @@ export default function RefeicoesPage() {
               </div>
 
               <button
-                style={{ ...btnLunch, padding: "10px 12px", borderRadius: 14 }}
+                style={{ ...btnPrimaryDinner, padding: "12px 12px", borderRadius: 14 }}
                 onClick={sendMagicLink}
-                disabled={!loginEmail.trim() || !!busy}
+                disabled={!loginEmail.trim() || isBusy}
               >
                 {busy ? busy : "Enviar link de acesso"}
               </button>
 
-              {loginSent && (
-                <div style={{ fontSize: 13, color: "#166534" }}>
-                  Link enviado. Abra seu e-mail e clique para entrar.
-                </div>
-              )}
-
+              {loginSent && <div style={{ fontSize: 13, color: "#166534" }}>Link enviado. Abra seu e-mail e clique para entrar.</div>}
               {toast && <div style={{ fontSize: 13, color: "#991b1b" }}>{toast}</div>}
             </div>
           </div>
@@ -848,9 +908,265 @@ export default function RefeicoesPage() {
 
   return (
     <div className="page-root">
-      <div className="page-container">
-        {/* header */}
-        <div className="page-header">
+      <style jsx>{`
+        .appPadBottom {
+          padding-bottom: 98px;
+        }
+        .topWrap {
+          display: grid;
+          gap: 12px;
+        }
+        .filtersCard {
+          border-radius: 22px;
+          border: 1px solid rgba(229, 231, 235, 0.9);
+          background: rgba(255, 255, 255, 0.85);
+          padding: 14px;
+        }
+        .filtersGrid {
+          display: grid;
+          grid-template-columns: 1.2fr 0.8fr;
+          gap: 10px;
+          align-items: end;
+        }
+        .filtersGrid2 {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
+          margin-top: 10px;
+        }
+        .cardsRow {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+        .miniRow {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
+        }
+        .bigCard {
+          border-radius: 22px;
+          border: 1px solid rgba(229, 231, 235, 0.9);
+          background: rgba(255, 255, 255, 0.85);
+          padding: 14px;
+          box-shadow: 0 12px 30px rgba(0, 0, 0, 0.05);
+        }
+        .cardTitle {
+          font-size: 12px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: rgba(107, 114, 128, 0.9);
+          font-weight: 800;
+        }
+        .cardNum {
+          font-size: 38px;
+          font-weight: 900;
+          line-height: 1;
+          margin-top: 8px;
+        }
+        .cardSub {
+          margin-top: 8px;
+          font-size: 12px;
+          color: rgba(107, 114, 128, 0.95);
+          font-weight: 700;
+        }
+        .badgeRow {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          margin-top: 8px;
+        }
+        .pill {
+          font-size: 12px;
+          font-weight: 800;
+          border-radius: 999px;
+          padding: 6px 10px;
+          border: 1px solid rgba(229, 231, 235, 0.95);
+          background: rgba(255, 255, 255, 0.8);
+        }
+        .pillOn {
+          border-color: rgba(17, 24, 39, 0.15);
+          background: rgba(17, 24, 39, 0.04);
+        }
+        .seg {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          align-items: center;
+        }
+        .segBtn {
+          border-radius: 999px;
+          padding: 10px 12px;
+          border: 1px solid rgba(229, 231, 235, 0.95);
+          background: rgba(255, 255, 255, 0.9);
+          font-weight: 900;
+          font-size: 13px;
+        }
+        .segBtnOnLunch {
+          border-color: rgba(16, 185, 129, 0.45);
+          background: rgba(16, 185, 129, 0.12);
+          color: #065f46;
+        }
+        .segBtnOnDinner {
+          border-color: rgba(59, 130, 246, 0.45);
+          background: rgba(59, 130, 246, 0.12);
+          color: #1d4ed8;
+        }
+        .segBtnOnBoth {
+          border-color: rgba(17, 24, 39, 0.20);
+          background: rgba(17, 24, 39, 0.06);
+          color: #111827;
+        }
+
+        .markedStrip {
+          display: flex;
+          gap: 8px;
+          flex-wrap: nowrap;
+          overflow: auto;
+          padding-bottom: 6px;
+          margin-top: 10px;
+        }
+        .nameChip {
+          white-space: nowrap;
+          border-radius: 999px;
+          padding: 7px 10px;
+          font-size: 12px;
+          font-weight: 900;
+          border: 1px solid rgba(229, 231, 235, 0.95);
+          background: rgba(255, 255, 255, 0.8);
+        }
+
+        .listWrap {
+          margin-top: 10px;
+          display: grid;
+          gap: 10px;
+        }
+
+        .empCard {
+          border-radius: 18px;
+          border: 1px solid rgba(229, 231, 235, 0.95);
+          background: rgba(255, 255, 255, 0.92);
+          padding: 12px;
+          box-shadow: 0 10px 24px rgba(0, 0, 0, 0.04);
+        }
+        .empHead {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+        .empName {
+          font-weight: 950;
+          font-size: 16px;
+          letter-spacing: 0.01em;
+        }
+        .empBadges {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+          justify-content: flex-end;
+        }
+        .empBadge {
+          font-size: 11px;
+          padding: 5px 9px;
+          border-radius: 999px;
+          font-weight: 900;
+          border: 1px solid rgba(229, 231, 235, 0.95);
+          background: rgba(255, 255, 255, 0.85);
+        }
+        .empBadgeFav {
+          background: rgba(251, 146, 60, 0.14);
+          border-color: rgba(251, 146, 60, 0.35);
+          color: #9a3412;
+        }
+        .empBadgeThird {
+          background: rgba(14, 165, 233, 0.10);
+          border-color: rgba(14, 165, 233, 0.30);
+          color: #075985;
+        }
+        .empBadgeOtherOnLunch {
+          background: rgba(16, 185, 129, 0.12);
+          border-color: rgba(16, 185, 129, 0.35);
+          color: #065f46;
+        }
+        .empBadgeOtherOnDinner {
+          background: rgba(59, 130, 246, 0.12);
+          border-color: rgba(59, 130, 246, 0.35);
+          color: #1d4ed8;
+        }
+
+        .empActionCol {
+          display: grid;
+          gap: 10px;
+        }
+        .bigActionBtn {
+          width: 100%;
+          border-radius: 16px;
+          padding: 14px 12px;
+          font-weight: 950;
+          font-size: 16px;
+          border: 1px solid rgba(229, 231, 235, 0.95);
+          background: rgba(255, 255, 255, 0.9);
+          cursor: pointer;
+        }
+
+        .bottomBar {
+          position: fixed;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 30;
+          background: rgba(255, 255, 255, 0.92);
+          border-top: 1px solid rgba(229, 231, 235, 0.95);
+          backdrop-filter: blur(8px);
+        }
+        .bottomInner {
+          max-width: 1100px;
+          margin: 0 auto;
+          padding: 10px 14px;
+          display: grid;
+          gap: 10px;
+        }
+        .bottomRow {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+        .bottomRow3 {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 10px;
+        }
+        .hintText {
+          font-size: 12px;
+          color: rgba(107, 114, 128, 0.9);
+          font-weight: 700;
+        }
+
+        @media (min-width: 900px) {
+          .topWrap {
+            grid-template-columns: 1.2fr 0.8fr;
+            align-items: start;
+          }
+          .filtersCard {
+            position: sticky;
+            top: 12px;
+          }
+          .cardsRow {
+            grid-template-columns: 1fr 1fr;
+          }
+          .miniRow {
+            grid-template-columns: 1fr 1fr;
+          }
+          .bottomInner {
+            padding: 12px 18px;
+          }
+        }
+      `}</style>
+
+      <div className="page-container appPadBottom">
+        <div className="page-header" style={{ marginBottom: 10 }}>
           <div className="brand">
             <div>
               <div className="brand-text-main">Refeições</div>
@@ -863,737 +1179,505 @@ export default function RefeicoesPage() {
               <span style={{ opacity: 0.75 }}>Data:</span> <b>{dateISO}</b>
             </span>
             <div style={{ marginTop: 8 }}>
-              <button style={btnBase} onClick={logout}>
+              <button style={btnGhost} onClick={logout}>
                 Sair
               </button>
             </div>
           </div>
         </div>
 
-        {/* filters */}
-        <div className="filter-bar">
-          <div style={{ minWidth: 280 }}>
-            <div className="filter-label">Obra</div>
-            <select
-              style={inputStyle}
-              value={selectedWorksiteId}
-              onChange={(e) => setSelectedWorksiteId(e.target.value)}
-            >
-              {worksites.map((w) => (
-                <option key={w.id} value={w.id}>
-                  {wsTitle(w)}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div style={{ minWidth: 180 }}>
-            <div className="filter-label">Data</div>
-            <input
-              type="date"
-              style={inputStyle}
-              value={dateISO}
-              onChange={(e) => setDateISO(e.target.value)}
-            />
-          </div>
-
-          <div style={{ minWidth: 240, flex: 1 }}>
-            <div className="filter-label">Buscar</div>
-            <input
-              style={inputStyle}
-              placeholder="Nome do funcionário..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
-        </div>
-
-        {/* summary */}
-        <div className="summary-grid">
-          <div className="summary-card">
-            <div className="summary-label">Totais do dia</div>
-
-            <div className="big-counts">
-              <div className="big-pill lunch">
-                <div className="big-pill-title">ALMOÇO</div>
-                <div className="big-pill-value">{savedTotals.almoco}</div>
-                <div className="big-pill-sub">{orderLunch?.id ? "salvo" : "não salvo"}</div>
-              </div>
-
-              <div className="big-pill dinner">
-                <div className="big-pill-title">JANTA</div>
-                <div className="big-pill-value">{savedTotals.janta}</div>
-                <div className="big-pill-sub">{orderDinner?.id ? "salvo" : "não salvo"}</div>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 8, fontSize: 12, color: "#6b7280" }}>
-              Já pedido (salvo) • bater o olho e conferir rápido
-            </div>
-
-            {dirty && (
-              <div className="edit-warning">
-                Em edição agora: <b>{totalsEditing.almoco}</b> almoço • <b>{totalsEditing.janta}</b> janta
-              </div>
-            )}
-          </div>
-
-          <div className="summary-card">
-            <div className="summary-label">Horário limite</div>
-            <div className="summary-value" style={{ fontSize: "1.2rem" }}>
-              {contract ? `${contract.cutoff_lunch ?? "--"} / ${contract.cutoff_dinner ?? "--"}` : "-- / --"}
-            </div>
-            <div className="summary-subvalue">Almoço / Janta</div>
-          </div>
-
-          <div className="summary-card">
-            <div className="summary-label">Ações rápidas</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              <button style={btnBase} onClick={copyYesterday} disabled={!!busy}>
-                Copiar ontem
-              </button>
-              <button style={btnBase} onClick={() => copySummary("ALMOCO")} disabled={!!busy}>
-                Resumo Almoço
-              </button>
-              <button style={btnBase} onClick={() => copySummary("JANTA")} disabled={!!busy}>
-                Resumo Janta
-              </button>
-              <button style={btnBase} onClick={() => setShowAdd((v) => !v)} disabled={!!busy}>
-                {showAdd ? "Fechar" : "Adicionar pessoa"}
-              </button>
-            </div>
-
-            <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-              {wsTitle(selectedWs)} • {dateISO}
-            </div>
-          </div>
-        </div>
-
-        {copiedBanner && (
-          <div className="state-card" style={{ borderStyle: "dashed" }}>
-            {copiedBanner}
-          </div>
-        )}
-
-        {/* quick visual list (who is eating) */}
-        <div className="quick-grid">
-          <div className="quick-card lunch">
-            <div className="quick-title">Almoço (marcados agora)</div>
-            <div className="quick-count">{listLunch.length}</div>
-            <div className="quick-list">
-              {listLunch.length ? (
-                listLunch.map((e) => (
-                  <div key={e.id} className="quick-item">
-                    <span className="dot lunch" />
-                    <span className="quick-name">{e.full_name}</span>
-                    {e.is_third_party && <span className="mini-tag third">terceiro</span>}
-                    {favoritesIds.has(e.id) && <span className="mini-tag fav">fav</span>}
-                  </div>
-                ))
-              ) : (
-                <div className="quick-empty">— ninguém marcado —</div>
-              )}
-            </div>
-          </div>
-
-          <div className="quick-card dinner">
-            <div className="quick-title">Janta (marcados agora)</div>
-            <div className="quick-count">{listDinner.length}</div>
-            <div className="quick-list">
-              {listDinner.length ? (
-                listDinner.map((e) => (
-                  <div key={e.id} className="quick-item">
-                    <span className="dot dinner" />
-                    <span className="quick-name">{e.full_name}</span>
-                    {e.is_third_party && <span className="mini-tag third">terceiro</span>}
-                    {favoritesIds.has(e.id) && <span className="mini-tag fav">fav</span>}
-                  </div>
-                ))
-              ) : (
-                <div className="quick-empty">— ninguém marcado —</div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        {/* add person */}
-        {showAdd && (
-          <div className="section-card">
-            <div className="section-header">
+        <div className="topWrap">
+          {/* FILTERS */}
+          <div className="filtersCard">
+            <div className="filtersGrid">
               <div>
-                <div className="section-title">Adicionar pessoa</div>
-                <div className="section-subtitle">Funcionário fixo ou terceiro.</div>
+                <div className="filter-label">Obra</div>
+                <select style={inputStyle} value={selectedWorksiteId} onChange={(e) => setSelectedWorksiteId(e.target.value)}>
+                  {worksites.map((w) => (
+                    <option key={w.id} value={w.id}>
+                      {w.name} {w.city ? `- ${w.city}` : ""}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <div className="filter-label">Data</div>
+                <input type="date" style={inputStyle} value={dateISO} onChange={(e) => setDateISO(e.target.value)} />
               </div>
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 220px", gap: 12 }}>
+            <div className="filtersGrid2">
               <div>
-                <div className="filter-label">Nome completo</div>
+                <div className="filter-label">Buscar</div>
                 <input
                   style={inputStyle}
-                  placeholder="Ex.: João da Silva"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
+                  placeholder="Nome do funcionário..."
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
                 />
               </div>
 
-              <div>
-                <div className="filter-label">Tipo</div>
-                <label style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
-                  <input
-                    type="checkbox"
-                    checked={newIsThird}
-                    onChange={(e) => setNewIsThird(e.target.checked)}
-                  />
-                  <span style={{ fontSize: 13 }}>É terceiro</span>
-                </label>
-              </div>
-            </div>
-
-            <div style={{ marginTop: 12, display: "flex", gap: 10, justifyContent: "flex-end" }}>
-              <button style={btnBase} onClick={() => setShowAdd(false)} disabled={!!busy}>
-                Cancelar
-              </button>
-              <button style={btnLunch} onClick={addEmployee} disabled={!!busy}>
-                {busy ? busy : "Adicionar"}
-              </button>
-            </div>
-
-            {toast && <div style={{ marginTop: 10, fontSize: 13 }}>{toast}</div>}
-          </div>
-        )}
-
-        {/* main */}
-        <div className="section-card">
-          <div className="section-header">
-            <div>
-              <div className="section-title">Marcação</div>
-              <div className="section-subtitle">
-                Visual pensado pro celular: botões grandes e cores por turno.
-              </div>
-            </div>
-
-            <div className="top-actions">
               <div className="seg">
                 <button
-                  style={segBtn}
-                  className={viewMode === "AMBOS" ? "seg-on" : "seg-off"}
+                  className={`segBtn ${viewMode === "ALMOCO" ? "segBtnOnLunch" : ""}`}
+                  onClick={() => setViewMode("ALMOCO")}
+                  disabled={isBusy}
+                >
+                  {shiftEmoji("ALMOCO")} Almoço
+                </button>
+                <button
+                  className={`segBtn ${viewMode === "JANTA" ? "segBtnOnDinner" : ""}`}
+                  onClick={() => setViewMode("JANTA")}
+                  disabled={isBusy}
+                >
+                  {shiftEmoji("JANTA")} Janta
+                </button>
+                <button
+                  className={`segBtn ${viewMode === "AMBOS" ? "segBtnOnBoth" : ""}`}
                   onClick={() => setViewMode("AMBOS")}
-                  disabled={!!busy}
+                  disabled={isBusy}
+                  title="Modo ambos turnos (use só se precisar)"
                 >
                   Ambos
                 </button>
-                <button
-                  style={segBtn}
-                  className={viewMode === "ALMOCO" ? "seg-on lunch" : "seg-off"}
-                  onClick={() => setViewMode("ALMOCO")}
-                  disabled={!!busy}
-                >
-                  Almoço
-                </button>
-                <button
-                  style={segBtn}
-                  className={viewMode === "JANTA" ? "seg-on dinner" : "seg-off"}
-                  onClick={() => setViewMode("JANTA")}
-                  disabled={!!busy}
-                >
-                  Janta
+              </div>
+
+              <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                <label style={{ display: "inline-flex", gap: 10, alignItems: "center" }}>
+                  <input type="checkbox" checked={showOnlyMarked} onChange={(e) => setShowOnlyMarked(e.target.checked)} />
+                  <span style={{ fontSize: 13, fontWeight: 800, color: "#111827" }}>Mostrar só marcados</span>
+                </label>
+
+                <button style={btnGhost} onClick={() => setShowTools((v) => !v)} disabled={isBusy}>
+                  {showTools ? "Fechar ferramentas" : "Ferramentas"}
                 </button>
               </div>
 
-              <label className="only-selected">
-                <input
-                  type="checkbox"
-                  checked={onlySelected}
-                  onChange={(e) => setOnlySelected(e.target.checked)}
-                  disabled={!!busy}
-                />
-                <span>Mostrar só marcados</span>
-              </label>
+              {showTools && (
+                <div className="bigCard" style={{ padding: 12, boxShadow: "none" }}>
+                  <div className="cardTitle">Ações rápidas</div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 10 }}>
+                    <button style={btnGhost} onClick={copyYesterday} disabled={isBusy}>
+                      Copiar ontem
+                    </button>
+                    <button style={btnGhost} onClick={() => copySummary("ALMOCO")} disabled={isBusy}>
+                      Resumo Almoço
+                    </button>
+                    <button style={btnGhost} onClick={() => copySummary("JANTA")} disabled={isBusy}>
+                      Resumo Janta
+                    </button>
+                    <button style={btnGhost} onClick={() => setShowAdd((v) => !v)} disabled={isBusy}>
+                      {showAdd ? "Fechar" : "Adicionar pessoa"}
+                    </button>
+                    <button style={btnGhost} onClick={() => restoreSaved("ALMOCO")} disabled={isBusy || !orderLunch?.id}>
+                      Restaurar salvo (Almoço)
+                    </button>
+                    <button style={btnGhost} onClick={() => restoreSaved("JANTA")} disabled={isBusy || !orderDinner?.id}>
+                      Restaurar salvo (Janta)
+                    </button>
+                    <button style={btnDanger} onClick={clearAll} disabled={isBusy}>
+                      Limpar tudo
+                    </button>
+                  </div>
 
-              <div className="btns">
-                <button style={btnBase} onClick={() => setAll("ALMOCO", true)} disabled={!!busy}>
-                  Todos almoço
-                </button>
-                <button style={btnBase} onClick={() => setAll("JANTA", true)} disabled={!!busy}>
-                  Todos janta
-                </button>
-                <button style={btnDanger} onClick={clearAll} disabled={!!busy}>
-                  Limpar
-                </button>
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280", fontWeight: 800 }}>
+                    {wsTitle} • {dateISO}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
 
-                <button
-                  style={btnCancel}
-                  onClick={() => cancelShift("ALMOCO")}
-                  disabled={!!busy || !orderLunch?.id}
-                  title={!orderLunch?.id ? "Não há almoço salvo" : "Cancela o almoço salvo"}
-                >
-                  Cancelar Almoço
-                </button>
+          {/* DASH / TOTALS */}
+          <div className="topWrapRight" style={{ display: "grid", gap: 12 }}>
+            <div className="cardsRow">
+              {/* Lunch card */}
+              <div
+                className="bigCard"
+                style={{
+                  borderColor: viewMode === "ALMOCO" ? "rgba(16,185,129,0.45)" : "rgba(229,231,235,0.95)",
+                  background: viewMode === "ALMOCO" ? "rgba(16,185,129,0.06)" : "rgba(255,255,255,0.85)",
+                }}
+              >
+                <div className="cardTitle">ALMOÇO</div>
+                <div className="cardNum" style={{ color: "#065f46" }}>
+                  {totalsNow.almoco}
+                </div>
+                <div className="cardSub">
+                  Marcados agora{" "}
+                  {mismatchLunch && orderLunch?.id ? (
+                    <span style={{ color: "#b45309", fontWeight: 900 }}>• difere do salvo</span>
+                  ) : null}
+                </div>
 
-                <button
-                  style={btnCancel}
-                  onClick={() => cancelShift("JANTA")}
-                  disabled={!!busy || !orderDinner?.id}
-                  title={!orderDinner?.id ? "Não há janta salva" : "Cancela a janta salva"}
-                >
-                  Cancelar Janta
-                </button>
-
-                <button
-                  style={btnLunch}
-                  onClick={() => saveShift("ALMOCO")}
-                  disabled={!!busy || !selectedWorksiteId}
-                >
-                  {busy?.includes("almoço") ? busy : "Salvar Almoço"}
-                </button>
-
-                <button
-                  style={btnDinner}
-                  onClick={() => saveShift("JANTA")}
-                  disabled={!!busy || !selectedWorksiteId}
-                >
-                  {busy?.includes("janta") ? busy : "Salvar Janta"}
-                </button>
+                <div className="badgeRow">
+                  <span className="pill pillOn" style={{ borderColor: "rgba(16,185,129,0.35)", background: "rgba(16,185,129,0.10)", color: "#065f46" }}>
+                    Salvo: {totalsSaved.almoco} {totalsSaved.lunchSaved ? "✅" : "—"}
+                    {savedAt.ALMOCO ? ` • ${fmtHHMMFromISO(savedAt.ALMOCO)}` : ""}
+                  </span>
+                  {isShiftLocked("ALMOCO") && (
+                    <span className="pill" style={{ borderColor: "rgba(239,68,68,0.35)", background: "rgba(239,68,68,0.08)", color: "#7f1d1d" }}>
+                      Fechado (cutoff)
+                    </span>
+                  )}
+                </div>
               </div>
+
+              {/* Dinner card */}
+              <div
+                className="bigCard"
+                style={{
+                  borderColor: viewMode === "JANTA" ? "rgba(59,130,246,0.45)" : "rgba(229,231,235,0.95)",
+                  background: viewMode === "JANTA" ? "rgba(59,130,246,0.06)" : "rgba(255,255,255,0.85)",
+                }}
+              >
+                <div className="cardTitle">JANTA</div>
+                <div className="cardNum" style={{ color: "#1d4ed8" }}>
+                  {totalsNow.janta}
+                </div>
+                <div className="cardSub">
+                  Marcados agora{" "}
+                  {mismatchDinner && orderDinner?.id ? (
+                    <span style={{ color: "#b45309", fontWeight: 900 }}>• difere do salvo</span>
+                  ) : null}
+                </div>
+
+                <div className="badgeRow">
+                  <span className="pill pillOn" style={{ borderColor: "rgba(59,130,246,0.35)", background: "rgba(59,130,246,0.10)", color: "#1d4ed8" }}>
+                    Salvo: {totalsSaved.janta} {totalsSaved.dinnerSaved ? "✅" : "—"}
+                    {savedAt.JANTA ? ` • ${fmtHHMMFromISO(savedAt.JANTA)}` : ""}
+                  </span>
+                  {isShiftLocked("JANTA") && (
+                    <span className="pill" style={{ borderColor: "rgba(239,68,68,0.35)", background: "rgba(239,68,68,0.08)", color: "#7f1d1d" }}>
+                      Fechado (cutoff)
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="miniRow">
+              <div className="bigCard" style={{ padding: 14 }}>
+                <div className="cardTitle">HORÁRIO LIMITE</div>
+                <div style={{ marginTop: 8, fontSize: 22, fontWeight: 950, color: "#111827" }}>{cutoffText}</div>
+                <div className="cardSub">Almoço / Janta</div>
+                <div className="hintText" style={{ marginTop: 10 }}>
+                  {contract?.allow_after_cutoff === false
+                    ? "Este contrato NÃO permite salvar/cancelar após o limite."
+                    : "Este contrato permite alterações após o limite."}
+                </div>
+              </div>
+
+              <div className="bigCard" style={{ padding: 14 }}>
+                <div className="cardTitle">CONFIRA (bate o olho)</div>
+                <div className="hintText" style={{ marginTop: 8 }}>
+                  {viewMode === "AMBOS"
+                    ? `Marcados (almoço ou janta): ${activeSelectedNames.length}`
+                    : `Marcados ${shiftLabel(activeShift).toLowerCase()}: ${activeSelectedNames.length}`}
+                </div>
+                <div className="markedStrip">
+                  {activeSelectedNames.length === 0 ? (
+                    <span className="nameChip" style={{ opacity: 0.75 }}>
+                      — ninguém marcado —
+                    </span>
+                  ) : (
+                    activeSelectedNames.slice(0, 12).map((n) => (
+                      <span key={n} className="nameChip">
+                        {n}
+                      </span>
+                    ))
+                  )}
+                  {activeSelectedNames.length > 12 && (
+                    <span className="nameChip" style={{ opacity: 0.75 }}>
+                      +{activeSelectedNames.length - 12}
+                    </span>
+                  )}
+                </div>
+
+                {copiedBanner && (
+                  <div className="state-card" style={{ borderStyle: "dashed", marginTop: 10 }}>
+                    {copiedBanner}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {showAdd && (
+              <div className="bigCard">
+                <div className="cardTitle">ADICIONAR PESSOA</div>
+                <div style={{ display: "grid", gap: 10, marginTop: 10 }}>
+                  <div>
+                    <div className="filter-label">Nome completo</div>
+                    <input
+                      style={inputStyle}
+                      placeholder="Ex.: João da Silva"
+                      value={newName}
+                      onChange={(e) => setNewName(e.target.value)}
+                    />
+                  </div>
+
+                  <label style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                    <input type="checkbox" checked={newIsThird} onChange={(e) => setNewIsThird(e.target.checked)} />
+                    <span style={{ fontSize: 13, fontWeight: 900 }}>É terceiro</span>
+                  </label>
+
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <button style={btnGhost} onClick={() => setShowAdd(false)} disabled={isBusy}>
+                      Cancelar
+                    </button>
+                    <button style={btnPrimaryDinner} onClick={addEmployee} disabled={isBusy}>
+                      {busy ? busy : "Adicionar"}
+                    </button>
+                  </div>
+
+                  {toast && <div style={{ fontSize: 13, color: "#991b1b" }}>{toast}</div>}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* LIST */}
+        <div style={{ marginTop: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 16, fontWeight: 950, color: "#111827" }}>Marcação</div>
+              <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 800 }}>
+                {viewMode === "AMBOS"
+                  ? "Modo ambos (use só se precisar)."
+                  : `Você está marcando: ${shiftLabel(activeShift).toUpperCase()} (um turno por vez).`}
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              {viewMode === "AMBOS" ? (
+                <>
+                  <button style={btnGhost} onClick={() => setAllShift("ALMOCO", true)} disabled={isBusy}>
+                    Todos almoço
+                  </button>
+                  <button style={btnGhost} onClick={() => setAllShift("JANTA", true)} disabled={isBusy}>
+                    Todos janta
+                  </button>
+                  <button style={btnDanger} onClick={clearAll} disabled={isBusy}>
+                    Limpar
+                  </button>
+                </>
+              ) : (
+                <>
+                  <button style={btnGhost} onClick={() => setAllShift(activeShift, true)} disabled={isBusy || isShiftLocked(activeShift)}>
+                    Todos {shiftLabel(activeShift).toLowerCase()}
+                  </button>
+                  <button style={btnDanger} onClick={() => clearShift(activeShift)} disabled={isBusy || isShiftLocked(activeShift)}>
+                    Limpar {shiftLabel(activeShift).toLowerCase()}
+                  </button>
+                </>
+              )}
             </div>
           </div>
 
           {toast && (
-            <div className="state-card" style={{ marginBottom: 12 }}>
+            <div className="state-card" style={{ marginTop: 10 }}>
               {toast}
             </div>
           )}
 
-          <div className="list-head">
-            <div className="lh-name">Funcionário</div>
-            {(viewMode === "AMBOS" || viewMode === "ALMOCO") && (
-              <div className="lh-shift lunch">ALMOÇO</div>
-            )}
-            {(viewMode === "AMBOS" || viewMode === "JANTA") && (
-              <div className="lh-shift dinner">JANTA</div>
-            )}
-          </div>
-
-          <div className="meal-list">
-            {employeesView.map((e) => {
+          <div className="listWrap">
+            {employeesVisible.map((e) => {
               const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
               const isFav = favoritesIds.has(e.id);
 
+              const toneLunch = shiftTone("ALMOCO");
+              const toneDinner = shiftTone("JANTA");
+
+              const isOnLunch = p.ALMOCO;
+              const isOnDinner = p.JANTA;
+
+              // card background based on current view
+              const cardBg =
+                viewMode === "AMBOS"
+                  ? isOnLunch && isOnDinner
+                    ? "rgba(17,24,39,0.03)"
+                    : isOnLunch
+                    ? toneLunch.bgOn
+                    : isOnDinner
+                    ? toneDinner.bgOn
+                    : "rgba(255,255,255,0.92)"
+                  : activeShift === "ALMOCO"
+                  ? isOnLunch
+                    ? toneLunch.bgOn
+                    : "rgba(255,255,255,0.92)"
+                  : isOnDinner
+                  ? toneDinner.bgOn
+                  : "rgba(255,255,255,0.92)";
+
+              const cardBd =
+                viewMode === "AMBOS"
+                  ? isOnLunch && isOnDinner
+                    ? "rgba(17,24,39,0.14)"
+                    : isOnLunch
+                    ? toneLunch.bdOn
+                    : isOnDinner
+                    ? toneDinner.bdOn
+                    : "rgba(229,231,235,0.95)"
+                  : activeShift === "ALMOCO"
+                  ? isOnLunch
+                    ? toneLunch.bdOn
+                    : "rgba(229,231,235,0.95)"
+                  : isOnDinner
+                  ? toneDinner.bdOn
+                  : "rgba(229,231,235,0.95)";
+
+              function bigBtnStyle(shift: Shift, isOn: boolean): CSSProperties {
+                const tone = shiftTone(shift);
+                return {
+                  borderRadius: 16,
+                  padding: "14px 12px",
+                  width: "100%",
+                  fontSize: 16,
+                  fontWeight: 950,
+                  border: `1px solid ${isOn ? tone.btnBd : "rgba(229,231,235,0.95)"}`,
+                  background: isOn ? tone.btnOn : "rgba(255,255,255,0.92)",
+                  color: isOn ? tone.btnTx : "#111827",
+                  cursor: "pointer",
+                };
+              }
+
+              const lockedLunch = isShiftLocked("ALMOCO");
+              const lockedDinner = isShiftLocked("JANTA");
+
               return (
-                <div key={e.id} className={`meal-row ${rowTone(p)}`}>
-                  <div className="mr-name">
-                    <div className="name-line">
-                      <span className={`emp-name ${p.ALMOCO || p.JANTA ? "has-meal" : "no-meal"}`}>
-                        {e.full_name}
-                      </span>
+                <div key={e.id} className="empCard" style={{ background: cardBg, borderColor: cardBd }}>
+                  <div className="empHead">
+                    <div className="empName">{e.full_name}</div>
+                    <div className="empBadges">
+                      {isFav && <span className="empBadge empBadgeFav">favorito</span>}
+                      {e.is_third_party && <span className="empBadge empBadgeThird">terceiro</span>}
 
-                      {isFav && <span className="tag fav">favorito</span>}
-                      {e.is_third_party && <span className="tag third">terceiro</span>}
-
-                      {p.ALMOCO && <span className="mini-flag lunch">ALMOÇO</span>}
-                      {p.JANTA && <span className="mini-flag dinner">JANTA</span>}
+                      {/* pequeno “status do outro turno” pra não confundir */}
+                      {viewMode === "ALMOCO" && isOnDinner && <span className="empBadge empBadgeOtherOnDinner">Janta ✓</span>}
+                      {viewMode === "JANTA" && isOnLunch && <span className="empBadge empBadgeOtherOnLunch">Almoço ✓</span>}
                     </div>
                   </div>
 
-                  {(viewMode === "AMBOS" || viewMode === "ALMOCO") && (
-                    <div className="mr-shift">
+                  <div className="empActionCol">
+                    {viewMode === "AMBOS" ? (
+                      <>
+                        <button
+                          className="bigActionBtn"
+                          style={bigBtnStyle("ALMOCO", isOnLunch)}
+                          onClick={() => togglePick(e.id, "ALMOCO")}
+                          disabled={isBusy || lockedLunch}
+                        >
+                          {isOnLunch ? "✓ Almoço" : "+ Almoço"}
+                        </button>
+                        <button
+                          className="bigActionBtn"
+                          style={bigBtnStyle("JANTA", isOnDinner)}
+                          onClick={() => togglePick(e.id, "JANTA")}
+                          disabled={isBusy || lockedDinner}
+                        >
+                          {isOnDinner ? "✓ Janta" : "+ Janta"}
+                        </button>
+                        {(lockedLunch || lockedDinner) && (
+                          <div className="hintText">Fechado por cutoff (contrato não permite após limite).</div>
+                        )}
+                      </>
+                    ) : (
                       <button
-                        className={`pill-toggle lunch ${p.ALMOCO ? "on" : "off"}`}
-                        onClick={() => togglePick(e.id, "ALMOCO")}
-                        disabled={!!busy}
-                        aria-label={`Almoço ${e.full_name}`}
+                        className="bigActionBtn"
+                        style={bigBtnStyle(activeShift, p[activeShift])}
+                        onClick={() => togglePick(e.id, activeShift)}
+                        disabled={isBusy || isShiftLocked(activeShift)}
                       >
-                        {p.ALMOCO ? "✓ Vai almoçar" : "+ Almoço"}
+                        {p[activeShift] ? `✓ ${shiftLabel(activeShift)}` : `+ ${shiftLabel(activeShift)}`}
                       </button>
-                    </div>
-                  )}
-
-                  {(viewMode === "AMBOS" || viewMode === "JANTA") && (
-                    <div className="mr-shift">
-                      <button
-                        className={`pill-toggle dinner ${p.JANTA ? "on" : "off"}`}
-                        onClick={() => togglePick(e.id, "JANTA")}
-                        disabled={!!busy}
-                        aria-label={`Janta ${e.full_name}`}
-                      >
-                        {p.JANTA ? "✓ Vai jantar" : "+ Janta"}
-                      </button>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               );
             })}
 
-            {employeesView.length === 0 && (
-              <div style={{ padding: 18, textAlign: "center", color: "#6b7280" }}>
-                Nenhum funcionário encontrado.
+            {employeesVisible.length === 0 && (
+              <div className="bigCard" style={{ textAlign: "center" }}>
+                <div style={{ fontWeight: 900, color: "#111827" }}>Nenhum funcionário encontrado.</div>
+                <div className="hintText" style={{ marginTop: 6 }}>
+                  Tente limpar a busca ou desmarcar “Mostrar só marcados”.
+                </div>
               </div>
             )}
           </div>
+        </div>
+      </div>
 
-          <div style={{ marginTop: 10, fontSize: 12, color: "#6b7280" }}>
-            Observação: passou do horário?{" "}
-            {contract?.allow_after_cutoff === false
-              ? "Contrato não permite após o limite."
-              : "Contrato permite após o limite."}
+      {/* BOTTOM BAR (thumb-friendly) */}
+      <div className="bottomBar">
+        <div className="bottomInner">
+          {viewMode === "AMBOS" ? (
+            <>
+              <div className="bottomRow3">
+                <button style={btnDanger} onClick={() => cancelShift("ALMOCO")} disabled={isBusy || !orderLunch?.id || isShiftLocked("ALMOCO")}>
+                  Cancelar Almoço
+                </button>
+                <button style={btnDanger} onClick={() => cancelShift("JANTA")} disabled={isBusy || !orderDinner?.id || isShiftLocked("JANTA")}>
+                  Cancelar Janta
+                </button>
+                <button style={btnDanger} onClick={clearAll} disabled={isBusy}>
+                  Limpar
+                </button>
+              </div>
+              <div className="bottomRow">
+                <button style={btnPrimaryLunch} onClick={() => saveShift("ALMOCO")} disabled={isBusy || !selectedWorksiteId || !contract || isShiftLocked("ALMOCO")}>
+                  {busy?.includes("almoço") ? busy : "Salvar Almoço"}
+                </button>
+                <button style={btnPrimaryDinner} onClick={() => saveShift("JANTA")} disabled={isBusy || !selectedWorksiteId || !contract || isShiftLocked("JANTA")}>
+                  {busy?.includes("janta") ? busy : "Salvar Janta"}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="bottomRow3">
+                <button
+                  style={btnDanger}
+                  onClick={() => cancelShift(activeShift)}
+                  disabled={isBusy || (activeShift === "ALMOCO" ? !orderLunch?.id : !orderDinner?.id) || isShiftLocked(activeShift)}
+                >
+                  Cancelar {shiftLabel(activeShift)}
+                </button>
+                <button style={btnDanger} onClick={() => clearShift(activeShift)} disabled={isBusy || isShiftLocked(activeShift)}>
+                  Limpar
+                </button>
+                <button
+                  style={btnGhost}
+                  onClick={() => restoreSaved(activeShift)}
+                  disabled={isBusy || (activeShift === "ALMOCO" ? !orderLunch?.id : !orderDinner?.id)}
+                >
+                  Restaurar salvo
+                </button>
+              </div>
+
+              <div className="bottomRow">
+                <button
+                  style={activeShift === "ALMOCO" ? btnPrimaryLunch : btnPrimaryDinner}
+                  onClick={() => saveShift(activeShift)}
+                  disabled={isBusy || !selectedWorksiteId || !contract || isShiftLocked(activeShift)}
+                >
+                  {busy ? busy : `Salvar ${shiftLabel(activeShift)}`}
+                </button>
+
+                <button style={btnGhost} onClick={() => copySummary(activeShift)} disabled={isBusy}>
+                  Copiar resumo
+                </button>
+              </div>
+            </>
+          )}
+
+          <div className="hintText">
+            {wsTitle ? `${wsTitle} • ` : ""}
+            {dateISO}
           </div>
         </div>
-
-        {/* local styles for THIS page (responsive + clear colors) */}
-        <style jsx>{`
-          .big-counts {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 6px;
-          }
-          .big-pill {
-            border-radius: 16px;
-            padding: 12px 12px;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-          }
-          .big-pill.lunch {
-            border-color: rgba(16, 185, 129, 0.25);
-            background: rgba(16, 185, 129, 0.06);
-          }
-          .big-pill.dinner {
-            border-color: rgba(59, 130, 246, 0.25);
-            background: rgba(59, 130, 246, 0.06);
-          }
-          .big-pill-title {
-            font-size: 11px;
-            letter-spacing: 0.06em;
-            font-weight: 900;
-            color: #374151;
-          }
-          .big-pill-value {
-            font-size: 30px;
-            font-weight: 900;
-            line-height: 1.1;
-            margin-top: 2px;
-          }
-          .big-pill-sub {
-            font-size: 12px;
-            margin-top: 2px;
-            color: #6b7280;
-            font-weight: 700;
-            text-transform: lowercase;
-          }
-          .edit-warning {
-            margin-top: 10px;
-            font-size: 12px;
-            color: #6b7280;
-            border-top: 1px dashed #e5e7eb;
-            padding-top: 10px;
-          }
-
-          .quick-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 12px;
-            margin-top: 12px;
-            margin-bottom: 12px;
-          }
-          .quick-card {
-            border-radius: 18px;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-            padding: 12px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.04);
-          }
-          .quick-card.lunch {
-            border-color: rgba(16, 185, 129, 0.25);
-            background: rgba(16, 185, 129, 0.05);
-          }
-          .quick-card.dinner {
-            border-color: rgba(59, 130, 246, 0.25);
-            background: rgba(59, 130, 246, 0.05);
-          }
-          .quick-title {
-            font-weight: 900;
-            font-size: 13px;
-            color: #111827;
-          }
-          .quick-count {
-            font-size: 26px;
-            font-weight: 900;
-            margin-top: 4px;
-          }
-          .quick-list {
-            margin-top: 10px;
-            max-height: 160px;
-            overflow: auto;
-            padding-right: 6px;
-          }
-          .quick-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            padding: 6px 0;
-            border-top: 1px dashed rgba(229,231,235,0.9);
-          }
-          .quick-item:first-child {
-            border-top: none;
-          }
-          .quick-empty {
-            margin-top: 10px;
-            color: #6b7280;
-            font-size: 13px;
-            font-weight: 700;
-          }
-          .dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 999px;
-            flex: 0 0 10px;
-          }
-          .dot.lunch { background: rgba(16,185,129,0.95); }
-          .dot.dinner { background: rgba(59,130,246,0.95); }
-          .quick-name {
-            font-weight: 800;
-            color: #111827;
-            font-size: 13px;
-          }
-          .mini-tag {
-            font-size: 10px;
-            font-weight: 900;
-            padding: 2px 8px;
-            border-radius: 999px;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-            color: #374151;
-          }
-          .mini-tag.third {
-            border-color: rgba(59,130,246,0.25);
-            background: rgba(59,130,246,0.07);
-            color: #075985;
-          }
-          .mini-tag.fav {
-            border-color: rgba(251,146,60,0.25);
-            background: rgba(251,146,60,0.10);
-            color: #9a3412;
-          }
-
-          .top-actions {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-            align-items: center;
-          }
-          .seg {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            align-items: center;
-          }
-          .seg-on {
-            border-color: rgba(17,24,39,0.25);
-            background: rgba(17,24,39,0.06);
-          }
-          .seg-on.lunch {
-            border-color: rgba(16,185,129,0.35);
-            background: rgba(16,185,129,0.10);
-          }
-          .seg-on.dinner {
-            border-color: rgba(59,130,246,0.35);
-            background: rgba(59,130,246,0.10);
-          }
-          .only-selected {
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-            padding: 8px 12px;
-            border-radius: 999px;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-            font-weight: 800;
-            font-size: 12px;
-            color: #374151;
-            cursor: pointer;
-            user-select: none;
-          }
-          .btns {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            justify-content: flex-end;
-          }
-
-          .list-head {
-            display: grid;
-            grid-template-columns: 1fr 180px 180px;
-            gap: 10px;
-            padding: 8px 10px;
-            border-radius: 14px;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-            font-size: 12px;
-            font-weight: 900;
-            color: #6b7280;
-            margin-bottom: 10px;
-          }
-          .lh-name { padding-left: 6px; }
-          .lh-shift {
-            text-align: center;
-            border-radius: 999px;
-            padding: 6px 10px;
-            border: 1px solid #e5e7eb;
-          }
-          .lh-shift.lunch {
-            border-color: rgba(16,185,129,0.25);
-            background: rgba(16,185,129,0.06);
-            color: #065f46;
-          }
-          .lh-shift.dinner {
-            border-color: rgba(59,130,246,0.25);
-            background: rgba(59,130,246,0.06);
-            color: #1d4ed8;
-          }
-
-          .meal-list {
-            display: grid;
-            gap: 10px;
-          }
-          .meal-row {
-            display: grid;
-            grid-template-columns: 1fr 180px 180px;
-            gap: 10px;
-            padding: 10px 10px;
-            border-radius: 16px;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-          }
-
-          .tone-none {
-            background: #fff;
-          }
-          .tone-lunch {
-            border-color: rgba(16,185,129,0.30);
-            background: rgba(16,185,129,0.05);
-          }
-          .tone-dinner {
-            border-color: rgba(59,130,246,0.30);
-            background: rgba(59,130,246,0.05);
-          }
-          .tone-both {
-            border-color: rgba(139,92,246,0.30);
-            background: rgba(139,92,246,0.05);
-          }
-
-          .mr-name { display: flex; align-items: center; padding-left: 6px; }
-          .name-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-          .emp-name {
-            font-weight: 900;
-            color: #111827;
-            font-size: 14px;
-          }
-          .emp-name.no-meal {
-            color: #6b7280;
-            font-weight: 800;
-          }
-          .tag {
-            font-size: 11px;
-            padding: 4px 10px;
-            border-radius: 999px;
-            font-weight: 900;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-          }
-          .tag.fav {
-            background: rgba(251,146,60,0.12);
-            border-color: rgba(251,146,60,0.25);
-            color: #9a3412;
-          }
-          .tag.third {
-            background: rgba(59,130,246,0.10);
-            border-color: rgba(59,130,246,0.25);
-            color: #075985;
-          }
-          .mini-flag {
-            font-size: 10px;
-            font-weight: 900;
-            padding: 3px 8px;
-            border-radius: 999px;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-            letter-spacing: 0.04em;
-          }
-          .mini-flag.lunch {
-            border-color: rgba(16,185,129,0.30);
-            background: rgba(16,185,129,0.10);
-            color: #065f46;
-          }
-          .mini-flag.dinner {
-            border-color: rgba(59,130,246,0.30);
-            background: rgba(59,130,246,0.10);
-            color: #1d4ed8;
-          }
-
-          .mr-shift { display: flex; justify-content: center; align-items: center; }
-          .pill-toggle {
-            width: 100%;
-            border-radius: 999px;
-            padding: 10px 12px;
-            font-weight: 900;
-            border: 1px solid #e5e7eb;
-            background: #fff;
-            cursor: pointer;
-            font-size: 12px;
-            text-align: center;
-            user-select: none;
-          }
-          .pill-toggle:disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-          }
-          .pill-toggle.lunch.on {
-            background: rgba(16,185,129,0.95);
-            border-color: rgba(16,185,129,0.35);
-            color: #fff;
-          }
-          .pill-toggle.lunch.off {
-            background: rgba(16,185,129,0.06);
-            border-color: rgba(16,185,129,0.20);
-            color: #065f46;
-          }
-          .pill-toggle.dinner.on {
-            background: rgba(59,130,246,0.95);
-            border-color: rgba(59,130,246,0.35);
-            color: #fff;
-          }
-          .pill-toggle.dinner.off {
-            background: rgba(59,130,246,0.06);
-            border-color: rgba(59,130,246,0.20);
-            color: #1d4ed8;
-          }
-
-          /* MOBILE: tudo vira “card” com botões grandes e empilhados */
-          @media (max-width: 820px) {
-            .quick-grid {
-              grid-template-columns: 1fr;
-            }
-            .list-head {
-              display: none;
-            }
-            .meal-row {
-              grid-template-columns: 1fr;
-              gap: 10px;
-            }
-            .mr-shift {
-              justify-content: stretch;
-            }
-            .pill-toggle {
-              padding: 12px 14px;
-              font-size: 13px;
-            }
-            .big-counts {
-              grid-template-columns: 1fr 1fr;
-            }
-          }
-        `}</style>
       </div>
     </div>
   );
