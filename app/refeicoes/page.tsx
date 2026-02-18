@@ -2,13 +2,18 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type MealShift = "LUNCH" | "DINNER";
-type ViewShift = "LUNCH" | "DINNER" | "BOTH";
+type Shift = "ALMOCO" | "JANTA";
+type Mode = Shift | "AMBOS";
 
-type Worksite = { id: string; name: string; city: string | null; active: boolean | null };
-type Employee = { id: string; full_name: string; active: boolean | null; is_third_party: boolean | null };
+type Worksite = {
+  id: string;
+  name: string;
+  city: string | null;
+  active: boolean | null;
+};
 
 type Contract = {
   id: string;
@@ -19,111 +24,198 @@ type Contract = {
   cutoff_lunch: string | null; // time
   cutoff_dinner: string | null; // time
   allow_after_cutoff: boolean | null;
+  price_lunch: number | null;
+  price_dinner: number | null;
 };
 
-type MealOrder = {
+type Employee = {
   id: string;
-  shift: MealShift;
-  status: string;
-  worksite_id: string;
-  restaurant_id: string;
-  meal_date: string; // date
-  cutoff_at: string | null; // timestamptz
+  full_name: string;
+  active: boolean | null;
+  is_third_party: boolean | null;
 };
 
-type MealOrderLine = {
-  id: string;
-  meal_order_id: string;
-  employee_id: string | null;
-  visitor_name: string | null;
-  included: boolean | null;
+type SavedSnapshot = {
+  orderId: string | null;
+  employeeIds: string[];
+  visitors: string[];
 };
 
-function isoToday() {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
 }
 
-function dateBRFromISO(iso: string) {
+function isoTodayLocal(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function formatBRFromISO(iso: string) {
+  // iso: YYYY-MM-DD
   const [y, m, d] = iso.split("-");
-  if (!y || !m || !d) return iso;
   return `${d}/${m}/${y}`;
 }
 
-function normalizeTimeHHMM(t: string | null) {
-  if (!t) return null;
-  // Supabase "time" geralmente vem "09:30:00"
-  const m = String(t).match(/^(\d{2}):(\d{2})/);
-  if (!m) return null;
-  return `${m[1]}:${m[2]}`;
+function isSameISODate(a: string, b: string) {
+  return a === b;
 }
 
-function cutoffToISO(dateISO: string, hhmm: string) {
-  // interpreta como local e converte pra ISO (UTC) pro timestamptz
-  const dt = new Date(`${dateISO}T${hhmm}:00`);
+function addDaysISO(iso: string, delta: number) {
+  const [y, m, d] = iso.split("-").map(Number);
+  const dt = new Date(y, m - 1, d);
+  dt.setDate(dt.getDate() + delta);
+  return `${dt.getFullYear()}-${pad2(dt.getMonth() + 1)}-${pad2(dt.getDate())}`;
+}
+
+function timeHHMM(t: string | null) {
+  if (!t) return "--:--";
+  // "09:30:00" -> "09:30"
+  const parts = String(t).split(":");
+  if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
+  return String(t);
+}
+
+function buildCutoffAtISO(mealDateISO: string, cutoffTime: string | null) {
+  // returns ISO string (UTC) for timestamptz insert/update
+  if (!cutoffTime) return null;
+  const [y, m, d] = mealDateISO.split("-").map(Number);
+  const parts = String(cutoffTime).split(":").map((x) => Number(x));
+  const hh = parts[0] ?? 0;
+  const mm = parts[1] ?? 0;
+  const ss = parts[2] ?? 0;
+  const dt = new Date(y, m - 1, d, hh, mm, ss); // local time
   return dt.toISOString();
 }
 
-function nowHHMM() {
-  const d = new Date();
-  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+function uniq(arr: string[]) {
+  return Array.from(new Set(arr));
 }
 
-function cmpHHMM(a: string, b: string) {
-  // retorna -1/0/1 comparando "HH:MM"
-  if (a === b) return 0;
-  return a < b ? -1 : 1;
+function segBtnStyle(active: boolean, tone: "neutral" | "lunch" | "dinner"): CSSProperties {
+  const base: CSSProperties = {
+    borderRadius: 999,
+    border: "1px solid #e5e7eb",
+    background: "#ffffff",
+    padding: "8px 12px",
+    fontSize: 14,
+    fontWeight: 800,
+    cursor: "pointer",
+    lineHeight: 1,
+    userSelect: "none",
+  };
+
+  if (!active) return base;
+
+  if (tone === "lunch") {
+    return {
+      ...base,
+      border: "1px solid #86efac",
+      background: "#ecfdf5",
+      color: "#166534",
+    };
+  }
+  if (tone === "dinner") {
+    return {
+      ...base,
+      border: "1px solid #93c5fd",
+      background: "#eff6ff",
+      color: "#1d4ed8",
+    };
+  }
+
+  return {
+    ...base,
+    border: "1px solid #cbd5e1",
+    background: "#f8fafc",
+    color: "#0f172a",
+  };
+}
+
+function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost", disabled?: boolean): CSSProperties {
+  const base: CSSProperties = {
+    width: "100%",
+    borderRadius: 14,
+    padding: "14px 14px",
+    fontSize: 16,
+    fontWeight: 900,
+    cursor: disabled ? "not-allowed" : "pointer",
+    opacity: disabled ? 0.65 : 1,
+    border: "1px solid transparent",
+  };
+
+  if (kind === "primaryLunch") {
+    return {
+      ...base,
+      background: "#22c55e",
+      color: "#fff",
+      borderColor: "#16a34a",
+      boxShadow: "0 12px 26px rgba(34, 197, 94, 0.18)",
+    };
+  }
+  if (kind === "primaryDinner") {
+    return {
+      ...base,
+      background: "#2563eb",
+      color: "#fff",
+      borderColor: "#1d4ed8",
+      boxShadow: "0 12px 26px rgba(37, 99, 235, 0.18)",
+    };
+  }
+  if (kind === "danger") {
+    return {
+      ...base,
+      background: "#fff",
+      color: "#991b1b",
+      borderColor: "#fecaca",
+    };
+  }
+  return {
+    ...base,
+    background: "#fff",
+    color: "#0f172a",
+    borderColor: "#e5e7eb",
+  };
 }
 
 export default function RefeicoesPage() {
+  const router = useRouter();
+
   const [userEmail, setUserEmail] = useState<string>("");
-  const [userId, setUserId] = useState<string>("");
-
-  const [loading, setLoading] = useState(true);
-  const [busy, setBusy] = useState(false);
-
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
 
   const [worksites, setWorksites] = useState<Worksite[]>([]);
   const [worksiteId, setWorksiteId] = useState<string>("");
 
-  const [mealDate, setMealDate] = useState<string>(isoToday());
+  const [mealDate, setMealDate] = useState<string>(isoTodayLocal());
 
   const [contract, setContract] = useState<Contract | null>(null);
-  const [cutLunch, setCutLunch] = useState<string | null>(null);
-  const [cutDinner, setCutDinner] = useState<string | null>(null);
-  const [allowAfter, setAllowAfter] = useState<boolean>(false);
+  const [canOverrideCutoff, setCanOverrideCutoff] = useState<boolean>(false);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [favorites, setFavorites] = useState<Set<string>>(new Set());
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
 
-  const [search, setSearch] = useState("");
+  const [query, setQuery] = useState("");
   const [onlyMarked, setOnlyMarked] = useState(false);
 
-  const [viewShift, setViewShift] = useState<ViewShift>(() => {
-    // padrão: almoço até 11h, depois janta
-    const hhmm = nowHHMM();
-    return cmpHHMM(hhmm, "11:00") <= 0 ? "LUNCH" : "DINNER";
+  const [mode, setMode] = useState<Mode>("ALMOCO");
+
+  const [selectedLunch, setSelectedLunch] = useState<Set<string>>(new Set());
+  const [selectedDinner, setSelectedDinner] = useState<Set<string>>(new Set());
+  const [visitorsLunch, setVisitorsLunch] = useState<string[]>([]);
+  const [visitorsDinner, setVisitorsDinner] = useState<string[]>([]);
+
+  const [saved, setSaved] = useState<Record<Shift, SavedSnapshot>>({
+    ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
+    JANTA: { orderId: null, employeeIds: [], visitors: [] },
   });
 
-  // Seleção "marcados agora" (draft local)
-  const [draftLunch, setDraftLunch] = useState<Set<string>>(new Set());
-  const [draftDinner, setDraftDinner] = useState<Set<string>>(new Set());
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
+  const [canceling, setCanceling] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
 
-  // "salvo" vindo do banco
-  const [savedLunch, setSavedLunch] = useState<Set<string>>(new Set());
-  const [savedDinner, setSavedDinner] = useState<Set<string>>(new Set());
-  const [savedVisitorsLunch, setSavedVisitorsLunch] = useState<number>(0);
-  const [savedVisitorsDinner, setSavedVisitorsDinner] = useState<number>(0);
+  const [error, setError] = useState<string | null>(null);
+  const [okMsg, setOkMsg] = useState<string | null>(null);
 
-  const [orderLunch, setOrderLunch] = useState<MealOrder | null>(null);
-  const [orderDinner, setOrderDinner] = useState<MealOrder | null>(null);
-
-  const styles = {
+  const styles: Record<string, CSSProperties> = {
     label: {
       fontSize: 12,
       fontWeight: 800,
@@ -132,7 +224,7 @@ export default function RefeicoesPage() {
       letterSpacing: "0.08em",
       display: "block",
       marginBottom: 6,
-    } as CSSProperties,
+    },
     input: {
       width: "100%",
       borderRadius: 14,
@@ -142,643 +234,660 @@ export default function RefeicoesPage() {
       outline: "none",
       background: "#ffffff",
       color: "var(--gp-text)",
-    } as CSSProperties,
-    pill: {
-      borderRadius: 999,
-      border: "1px solid #e5e7eb",
-      padding: "8px 12px",
-      background: "#fff",
-      fontWeight: 800,
-      fontSize: 13,
-      color: "#0f172a",
-      whiteSpace: "nowrap",
-    } as CSSProperties,
-    btnPrimary: {
-      width: "100%",
-      borderRadius: 14,
-      border: "1px solid #1d4ed8",
-      background: busy ? "#94a3b8" : "#2563eb",
-      color: "#fff",
-      fontWeight: 900,
-      padding: "14px 14px",
-      cursor: busy ? "not-allowed" : "pointer",
-      fontSize: 16,
-      boxShadow: busy ? "none" : "0 16px 30px rgba(37,99,235,0.18)",
-    } as CSSProperties,
-    btnDanger: {
-      width: "100%",
-      borderRadius: 14,
-      border: "1px solid #fecaca",
-      background: "#fef2f2",
-      color: "#991b1b",
-      fontWeight: 900,
-      padding: "14px 14px",
-      cursor: busy ? "not-allowed" : "pointer",
-      fontSize: 16,
-    } as CSSProperties,
-    btnGhost: {
+    },
+    select: {
       width: "100%",
       borderRadius: 14,
       border: "1px solid #e5e7eb",
-      background: "#ffffff",
-      color: "#0f172a",
-      fontWeight: 900,
-      padding: "12px 14px",
-      cursor: busy ? "not-allowed" : "pointer",
-      fontSize: 14,
-    } as CSSProperties,
-    hint: { fontSize: 12, color: "var(--gp-muted-soft)", marginTop: 6 } as CSSProperties,
-  };
-
-  const segBtnStyle = (active: boolean): CSSProperties => ({
-    borderRadius: 999,
-    border: active ? "1px solid #cbd5e1" : "1px solid #e5e7eb",
-    padding: "8px 12px",
-    background: active ? "#f8fafc" : "#fff",
-    fontWeight: 900,
-    fontSize: 13,
-    color: "#0f172a",
-    cursor: "pointer",
-  });
-
-  const employeeRowStyle = (selected: boolean, tone: MealShift): CSSProperties => {
-    const bg = selected ? (tone === "LUNCH" ? "#ecfdf5" : "#eff6ff") : "#ffffff";
-    const bd = selected ? (tone === "LUNCH" ? "#86efac" : "#93c5fd") : "#e5e7eb";
-    return {
-      borderRadius: 16,
-      border: `1px solid ${bd}`,
-      background: bg,
       padding: "12px 12px",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "space-between",
-      gap: 10,
-      cursor: "pointer",
-      userSelect: "none",
-    };
+      fontSize: 16,
+      outline: "none",
+      background: "#ffffff",
+      color: "var(--gp-text)",
+    },
+    hint: { fontSize: 12, color: "var(--gp-muted-soft)" },
   };
 
-  async function loadSessionAndWorksites() {
+  const totals = useMemo(() => {
+    const lunch = selectedLunch.size + visitorsLunch.length;
+    const dinner = selectedDinner.size + visitorsDinner.length;
+    return { lunch, dinner, all: lunch + dinner };
+  }, [selectedLunch, selectedDinner, visitorsLunch, visitorsDinner]);
+
+  const savedCounts = useMemo(() => {
+    const l = (saved.ALMOCO.employeeIds?.length || 0) + (saved.ALMOCO.visitors?.length || 0);
+    const j = (saved.JANTA.employeeIds?.length || 0) + (saved.JANTA.visitors?.length || 0);
+    return { lunch: l, dinner: j };
+  }, [saved]);
+
+  const limits = useMemo(() => {
+    const lunch = timeHHMM(contract?.cutoff_lunch ?? null);
+    const dinner = timeHHMM(contract?.cutoff_dinner ?? null);
+    return { lunch, dinner };
+  }, [contract]);
+
+  // default mode: almoço até 11h, depois janta (somente se a data for hoje)
+  useEffect(() => {
+    const today = isoTodayLocal();
+    if (!isSameISODate(mealDate, today)) {
+      setMode("ALMOCO");
+      return;
+    }
+    const now = new Date();
+    const hh = now.getHours();
+    const mm = now.getMinutes();
+    const after11 = hh > 11 || (hh === 11 && mm >= 0);
+    setMode(after11 ? "JANTA" : "ALMOCO");
+  }, [mealDate]);
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    router.push("/");
+  }
+
+  async function loadUser() {
+    const { data } = await supabase.auth.getUser();
+    const u = data?.user;
+    setUserEmail(u?.email || "");
+    return u?.id || null;
+  }
+
+  async function loadWorksites() {
+    const { data, error } = await supabase
+      .from("meal_worksites")
+      .select("id,name,city,active")
+      .eq("active", true)
+      .order("name", { ascending: true });
+
+    if (error) throw error;
+    const rows = (data || []) as Worksite[];
+    setWorksites(rows);
+    if (!worksiteId && rows[0]?.id) setWorksiteId(rows[0].id);
+  }
+
+  async function loadEmployeesAndFavorites(wid: string) {
+    const [empRes, favRes] = await Promise.all([
+      supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name"),
+      supabase.from("meal_worksite_favorites").select("employee_id").eq("worksite_id", wid),
+    ]);
+
+    if (empRes.error) throw empRes.error;
+    if (favRes.error) throw favRes.error;
+
+    const emps = (empRes.data || []) as Employee[];
+    const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
+
+    // favoritos primeiro
+    emps.sort((a, b) => {
+      const af = favIds.has(a.id) ? 1 : 0;
+      const bf = favIds.has(b.id) ? 1 : 0;
+      if (af !== bf) return bf - af;
+      return a.full_name.localeCompare(b.full_name, "pt-BR");
+    });
+
+    setFavoriteIds(favIds);
+    setEmployees(emps);
+  }
+
+  async function loadContract(wid: string, dateISO: string) {
+    // contrato vigente: start_date <= date e (end_date null ou >= date)
+    const q = supabase
+      .from("meal_contracts")
+      .select(
+        "id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner"
+      )
+      .eq("worksite_id", wid)
+      .lte("start_date", dateISO)
+      .order("start_date", { ascending: false })
+      .limit(1);
+
+    // end_date filter (se existir)
+    const { data, error } = await q.or(`end_date.is.null,end_date.gte.${dateISO}`).maybeSingle();
+    if (error) throw error;
+
+    setContract((data as any) ?? null);
+    return (data as any) as Contract | null;
+  }
+
+  async function loadOverride(wid: string, userId: string | null) {
+    if (!userId) {
+      setCanOverrideCutoff(false);
+      return;
+    }
+    const { data, error } = await supabase
+      .from("meal_worksite_members")
+      .select("can_override_cutoff")
+      .eq("worksite_id", wid)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      setCanOverrideCutoff(false);
+      return;
+    }
+    setCanOverrideCutoff(Boolean((data as any)?.can_override_cutoff));
+  }
+
+  async function fetchSavedForShift(wid: string, rid: string, dateISO: string, shift: Shift): Promise<SavedSnapshot> {
+    const { data: order, error: e1 } = await supabase
+      .from("meal_orders")
+      .select("id")
+      .eq("worksite_id", wid)
+      .eq("restaurant_id", rid)
+      .eq("meal_date", dateISO)
+      .eq("shift", shift) // ✅ enum PT-BR
+      .limit(1)
+      .maybeSingle();
+
+    if (e1) throw e1;
+
+    const orderId = (order as any)?.id ? String((order as any).id) : null;
+    if (!orderId) return { orderId: null, employeeIds: [], visitors: [] };
+
+    const { data: lines, error: e2 } = await supabase
+      .from("meal_order_lines")
+      .select("employee_id,visitor_name,included")
+      .eq("meal_order_id", orderId)
+      .eq("included", true);
+
+    if (e2) throw e2;
+
+    const empIds = uniq(
+      (lines || [])
+        .map((r: any) => (r.employee_id ? String(r.employee_id) : ""))
+        .filter(Boolean)
+    );
+    const visitors = uniq(
+      (lines || [])
+        .map((r: any) => (r.visitor_name ? String(r.visitor_name) : ""))
+        .filter(Boolean)
+    );
+
+    return { orderId, employeeIds: empIds, visitors };
+  }
+
+  async function refreshSaved() {
+    setError(null);
+    setOkMsg(null);
+
+    if (!worksiteId || !contract?.restaurant_id) {
+      setSaved({
+        ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
+        JANTA: { orderId: null, employeeIds: [], visitors: [] },
+      });
+      return;
+    }
+
+    const rid = contract.restaurant_id;
+
+    const [l, j] = await Promise.all([
+      fetchSavedForShift(worksiteId, rid, mealDate, "ALMOCO"),
+      fetchSavedForShift(worksiteId, rid, mealDate, "JANTA"),
+    ]);
+
+    setSaved({ ALMOCO: l, JANTA: j });
+  }
+
+  async function bootstrap() {
     setLoading(true);
     setError(null);
-    setInfo(null);
     try {
-      const { data: auth } = await supabase.auth.getUser();
-      const u = auth?.user;
-      if (!u) {
-        setError("Você não está logado.");
-        setLoading(false);
-        return;
+      const userId = await loadUser();
+      await loadWorksites();
+      // worksiteId pode ser setado acima (primeiro da lista), então a segunda etapa roda no useEffect abaixo
+      if (worksiteId) {
+        await loadOverride(worksiteId, userId);
       }
-      setUserEmail(u.email || "");
-      setUserId(u.id);
-
-      // worksites do usuário via meal_worksite_members (user_id)
-      const mem = await supabase
-        .from("meal_worksite_members")
-        .select("worksite_id")
-        .eq("user_id", u.id);
-
-      if (mem.error) throw new Error(mem.error.message);
-
-      const ids = (mem.data || []).map((r: any) => r.worksite_id).filter(Boolean);
-      if (!ids.length) {
-        setWorksites([]);
-        setWorksiteId("");
-        setLoading(false);
-        return;
-      }
-
-      const ws = await supabase
-        .from("meal_worksites")
-        .select("id,name,city,active")
-        .in("id", ids)
-        .order("name", { ascending: true });
-
-      if (ws.error) throw new Error(ws.error.message);
-
-      const list = (ws.data || []) as Worksite[];
-      setWorksites(list);
-
-      // seleciona o 1º ativo por padrão
-      const first = list.find((x) => x.active !== false) || list[0];
-      setWorksiteId(first?.id || "");
     } catch (e: any) {
-      setError(e?.message || "Falha ao carregar sessão/obras.");
+      setError(e?.message || "Falha ao carregar.");
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadEmployees() {
-    try {
-      // meal_employees NÃO tem worksite_id (é global). Só filtra active.
-      const r = await supabase
-        .from("meal_employees")
-        .select("id,full_name,active,is_third_party")
-        .eq("active", true)
-        .order("full_name", { ascending: true });
-
-      if (r.error) throw new Error(r.error.message);
-      setEmployees((r.data || []) as Employee[]);
-    } catch (e: any) {
-      setError(e?.message || "Falha ao carregar funcionários.");
-    }
-  }
-
-  async function loadContractAndSaved() {
-    if (!worksiteId || !mealDate) return;
-
-    setError(null);
-    setInfo(null);
-
-    try {
-      // contrato ativo na data
-      const c = await supabase
-        .from("meal_contracts")
-        .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff")
-        .eq("worksite_id", worksiteId)
-        .lte("start_date", mealDate)
-        .gte("end_date", mealDate)
-        .order("start_date", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (c.error) throw new Error(c.error.message);
-
-      const con = (c.data as Contract | null) || null;
-      setContract(con);
-
-      const cl = normalizeTimeHHMM(con?.cutoff_lunch || null);
-      const cd = normalizeTimeHHMM(con?.cutoff_dinner || null);
-      setCutLunch(cl);
-      setCutDinner(cd);
-      setAllowAfter(Boolean(con?.allow_after_cutoff));
-
-      // favoritos por obra
-      const fav = await supabase
-        .from("meal_worksite_favorites")
-        .select("employee_id")
-        .eq("worksite_id", worksiteId);
-
-      if (fav.error) throw new Error(fav.error.message);
-
-      const favSet = new Set<string>((fav.data || []).map((x: any) => x.employee_id).filter(Boolean));
-      setFavorites(favSet);
-
-      // pedidos salvos (LUNCH/DINNER)
-      const o = await supabase
-        .from("meal_orders")
-        .select("id,shift,status,worksite_id,restaurant_id,meal_date,cutoff_at")
-        .eq("worksite_id", worksiteId)
-        .eq("meal_date", mealDate)
-        .in("shift", ["LUNCH", "DINNER"])
-        .order("created_at", { ascending: false });
-
-      if (o.error) throw new Error(o.error.message);
-
-      const orders = (o.data || []) as MealOrder[];
-      const lunch = orders.find((x) => x.shift === "LUNCH") || null;
-      const dinner = orders.find((x) => x.shift === "DINNER") || null;
-      setOrderLunch(lunch);
-      setOrderDinner(dinner);
-
-      const ids = orders.map((x) => x.id);
-      if (!ids.length) {
-        setSavedLunch(new Set());
-        setSavedDinner(new Set());
-        setSavedVisitorsLunch(0);
-        setSavedVisitorsDinner(0);
-        return;
-      }
-
-      const lines = await supabase
-        .from("meal_order_lines")
-        .select("id,meal_order_id,employee_id,visitor_name,included")
-        .in("meal_order_id", ids);
-
-      if (lines.error) throw new Error(lines.error.message);
-
-      const byOrder = new Map<string, MealOrderLine[]>();
-      for (const ln of (lines.data || []) as MealOrderLine[]) {
-        const arr = byOrder.get(ln.meal_order_id) || [];
-        arr.push(ln);
-        byOrder.set(ln.meal_order_id, arr);
-      }
-
-      const build = (ord: MealOrder | null) => {
-        const set = new Set<string>();
-        let visitors = 0;
-        if (!ord) return { set, visitors };
-        const arr = byOrder.get(ord.id) || [];
-        for (const ln of arr) {
-          if (ln.included === false) continue;
-          if (ln.employee_id) set.add(ln.employee_id);
-          else if (ln.visitor_name) visitors += 1;
-        }
-        return { set, visitors };
-      };
-
-      const a = build(lunch);
-      const b = build(dinner);
-
-      setSavedLunch(a.set);
-      setSavedDinner(b.set);
-      setSavedVisitorsLunch(a.visitors);
-      setSavedVisitorsDinner(b.visitors);
-
-      // também sincroniza o draft na 1ª carga (pra começar “batendo” com salvo)
-      setDraftLunch(new Set(a.set));
-      setDraftDinner(new Set(b.set));
-    } catch (e: any) {
-      setError(e?.message || "Falha ao carregar contrato/salvos.");
-    }
-  }
-
   useEffect(() => {
-    loadSessionAndWorksites();
-    loadEmployees();
+    bootstrap();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // quando muda obra/data: recarrega contrato, favoritos, funcionários e saved
   useEffect(() => {
-    loadContractAndSaved();
+    (async () => {
+      if (!worksiteId) return;
+      setLoading(true);
+      setError(null);
+      setOkMsg(null);
+
+      try {
+        const { data } = await supabase.auth.getUser();
+        const userId = data?.user?.id ?? null;
+
+        await loadEmployeesAndFavorites(worksiteId);
+        const c = await loadContract(worksiteId, mealDate);
+        await loadOverride(worksiteId, userId);
+
+        // reset seleção local (não apaga saved)
+        setSelectedLunch(new Set());
+        setSelectedDinner(new Set());
+        setVisitorsLunch([]);
+        setVisitorsDinner([]);
+
+        if (c?.restaurant_id) {
+          await refreshSaved();
+        } else {
+          setSaved({
+            ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
+            JANTA: { orderId: null, employeeIds: [], visitors: [] },
+          });
+        }
+      } catch (e: any) {
+        setError(e?.message || "Falha ao carregar dados.");
+      } finally {
+        setLoading(false);
+      }
+    })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [worksiteId, mealDate]);
 
-  const filteredEmployees = useMemo(() => {
-    const q = search.trim().toLowerCase();
-
-    const isMarked = (id: string) => {
-      if (viewShift === "LUNCH") return draftLunch.has(id);
-      if (viewShift === "DINNER") return draftDinner.has(id);
-      return draftLunch.has(id) || draftDinner.has(id);
-    };
-
-    return employees
-      .filter((e) => (q ? e.full_name.toLowerCase().includes(q) : true))
-      .filter((e) => (onlyMarked ? isMarked(e.id) : true))
-      .sort((a, b) => {
-        const af = favorites.has(a.id) ? 1 : 0;
-        const bf = favorites.has(b.id) ? 1 : 0;
-        if (af !== bf) return bf - af;
-        return a.full_name.localeCompare(b.full_name);
-      });
-  }, [employees, search, onlyMarked, favorites, draftLunch, draftDinner, viewShift]);
-
-  const counts = useMemo(() => {
-    const draftL = draftLunch.size;
-    const draftD = draftDinner.size;
-    const savedL = savedLunch.size + savedVisitorsLunch;
-    const savedD = savedDinner.size + savedVisitorsDinner;
-    return { draftL, draftD, savedL, savedD };
-  }, [draftLunch, draftDinner, savedLunch, savedDinner, savedVisitorsLunch, savedVisitorsDinner]);
-
-  function toggleEmployee(id: string) {
-    setError(null);
-    setInfo(null);
-
-    if (viewShift === "LUNCH") {
-      setDraftLunch((prev) => {
+  function toggleEmployee(shift: Shift, employeeId: string) {
+    if (shift === "ALMOCO") {
+      setSelectedLunch((prev) => {
         const n = new Set(prev);
-        n.has(id) ? n.delete(id) : n.add(id);
+        if (n.has(employeeId)) n.delete(employeeId);
+        else n.add(employeeId);
         return n;
       });
-      return;
-    }
-
-    if (viewShift === "DINNER") {
-      setDraftDinner((prev) => {
+    } else {
+      setSelectedDinner((prev) => {
         const n = new Set(prev);
-        n.has(id) ? n.delete(id) : n.add(id);
+        if (n.has(employeeId)) n.delete(employeeId);
+        else n.add(employeeId);
         return n;
       });
+    }
+  }
+
+  function clearSelection(target: Mode) {
+    if (target === "ALMOCO") {
+      setSelectedLunch(new Set());
+      setVisitorsLunch([]);
+      return;
+    }
+    if (target === "JANTA") {
+      setSelectedDinner(new Set());
+      setVisitorsDinner([]);
+      return;
+    }
+    setSelectedLunch(new Set());
+    setSelectedDinner(new Set());
+    setVisitorsLunch([]);
+    setVisitorsDinner([]);
+  }
+
+  function restoreSaved(target: Mode) {
+    if (target === "ALMOCO") {
+      setSelectedLunch(new Set(saved.ALMOCO.employeeIds || []));
+      setVisitorsLunch(saved.ALMOCO.visitors || []);
+      return;
+    }
+    if (target === "JANTA") {
+      setSelectedDinner(new Set(saved.JANTA.employeeIds || []));
+      setVisitorsDinner(saved.JANTA.visitors || []);
+      return;
+    }
+    setSelectedLunch(new Set(saved.ALMOCO.employeeIds || []));
+    setVisitorsLunch(saved.ALMOCO.visitors || []);
+    setSelectedDinner(new Set(saved.JANTA.employeeIds || []));
+    setVisitorsDinner(saved.JANTA.visitors || []);
+  }
+
+  async function copyYesterday(target: Mode) {
+    setError(null);
+    setOkMsg(null);
+
+    if (!worksiteId || !contract?.restaurant_id) {
+      setError("Sem contrato ativo para esta obra (restaurant_id não encontrado).");
       return;
     }
 
-    // BOTH: alterna em ambos (rápido pra marcar o cara pros 2 turnos)
-    setDraftLunch((prev) => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-    setDraftDinner((prev) => {
-      const n = new Set(prev);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
-  }
+    const rid = contract.restaurant_id;
+    const y = addDaysISO(mealDate, -1);
 
-  function restoreSaved() {
-    setDraftLunch(new Set(savedLunch));
-    setDraftDinner(new Set(savedDinner));
-    setInfo("Restaurado do salvo.");
-  }
-
-  function clearDraft() {
-    if (viewShift === "LUNCH") setDraftLunch(new Set());
-    else if (viewShift === "DINNER") setDraftDinner(new Set());
-    else {
-      setDraftLunch(new Set());
-      setDraftDinner(new Set());
-    }
-    setInfo("Limpo.");
-  }
-
-  function canSaveShift(shift: MealShift) {
-    if (!contract) return { ok: false, reason: "Sem contrato ativo para esta obra/data." };
-
-    // trava por cutoff apenas se for hoje e allow_after_cutoff = false
-    if (allowAfter) return { ok: true, reason: "" };
-    if (mealDate !== isoToday()) return { ok: true, reason: "" };
-
-    const hhmm = nowHHMM();
-    const cutoff = shift === "LUNCH" ? cutLunch : cutDinner;
-    if (!cutoff) return { ok: true, reason: "" };
-
-    if (cmpHHMM(hhmm, cutoff) === 1) {
-      return { ok: false, reason: `Passou do limite de ${shift === "LUNCH" ? "almoço" : "janta"} (${cutoff}).` };
-    }
-    return { ok: true, reason: "" };
-  }
-
-  async function ensureOrder(shift: MealShift): Promise<MealOrder> {
-    if (!contract) throw new Error("Sem contrato ativo.");
-
-    // tenta pegar existente
-    const existing = await supabase
-      .from("meal_orders")
-      .select("id,shift,status,worksite_id,restaurant_id,meal_date,cutoff_at")
-      .eq("worksite_id", worksiteId)
-      .eq("meal_date", mealDate)
-      .eq("shift", shift)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (existing.error) throw new Error(existing.error.message);
-
-    if (existing.data) {
-      const ord = existing.data as MealOrder;
-      if (String(ord.status || "").toUpperCase() !== "DRAFT") {
-        throw new Error("Este pedido não está mais em DRAFT (já foi enviado/confirmado).");
-      }
-      return ord;
-    }
-
-    const cutoff = shift === "LUNCH" ? cutLunch : cutDinner;
-    const cutoff_at = cutoff ? cutoffToISO(mealDate, cutoff) : null;
-
-    const ins = await supabase
-      .from("meal_orders")
-      .insert({
-        worksite_id: worksiteId,
-        restaurant_id: contract.restaurant_id,
-        meal_date: mealDate,
-        order_date: mealDate, // igual ao seu audit
-        shift,
-        status: "DRAFT",
-        cutoff_at,
-      })
-      .select("id,shift,status,worksite_id,restaurant_id,meal_date,cutoff_at")
-      .single();
-
-    if (ins.error) throw new Error(ins.error.message);
-    return ins.data as MealOrder;
-  }
-
-  async function saveShift(shift: MealShift) {
-    setError(null);
-    setInfo(null);
-
-    const chk = canSaveShift(shift);
-    if (!chk.ok) {
-      setError(chk.reason);
-      return;
-    }
-
-    const selected = shift === "LUNCH" ? draftLunch : draftDinner;
-
-    setBusy(true);
     try {
-      const ord = await ensureOrder(shift);
-
-      // apaga linhas anteriores e recria (simples e confiável)
-      const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", ord.id);
-      if (del.error) throw new Error(del.error.message);
-
-      const rows = Array.from(selected).map((employee_id) => ({
-        meal_order_id: ord.id,
-        employee_id,
-        included: true,
-        note: null,
-        is_exception: false,
-        exception_reason: null,
-      }));
-
-      if (rows.length) {
-        const ins = await supabase.from("meal_order_lines").insert(rows);
-        if (ins.error) throw new Error(ins.error.message);
+      if (target === "ALMOCO") {
+        const snap = await fetchSavedForShift(worksiteId, rid, y, "ALMOCO");
+        setSelectedLunch(new Set(snap.employeeIds || []));
+        setVisitorsLunch(snap.visitors || []);
+        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para ALMOÇO.`);
+        return;
       }
-
-      setInfo(`Salvo ${shift === "LUNCH" ? "Almoço" : "Janta"} (${rows.length}).`);
-
-      // recarrega salvos
-      await loadContractAndSaved();
-    } catch (e: any) {
-      setError(e?.message || "Falha ao salvar.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function cancelShift(shift: MealShift) {
-    setError(null);
-    setInfo(null);
-
-    const ord = shift === "LUNCH" ? orderLunch : orderDinner;
-    if (!ord) {
-      // nada salvo: só limpa o draft
-      if (shift === "LUNCH") setDraftLunch(new Set());
-      else setDraftDinner(new Set());
-      setInfo("Nada salvo para cancelar.");
-      return;
-    }
-
-    setBusy(true);
-    try {
-      if (String(ord.status || "").toUpperCase() !== "DRAFT") {
-        throw new Error("Este pedido não está mais em DRAFT (já foi enviado/confirmado).");
-      }
-
-      // ✅ cancelamento = DELETE do pedido/linhas (vai pro audit como DELETE)
-      const dl = await supabase.from("meal_order_lines").delete().eq("meal_order_id", ord.id);
-      if (dl.error) throw new Error(dl.error.message);
-
-      const doo = await supabase.from("meal_orders").delete().eq("id", ord.id);
-      if (doo.error) throw new Error(doo.error.message);
-
-      if (shift === "LUNCH") setDraftLunch(new Set());
-      else setDraftDinner(new Set());
-
-      setInfo(`Cancelado ${shift === "LUNCH" ? "Almoço" : "Janta"}.`);
-
-      await loadContractAndSaved();
-    } catch (e: any) {
-      setError(e?.message || "Falha ao cancelar.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function copyYesterday() {
-    if (!worksiteId) return;
-    setError(null);
-    setInfo(null);
-
-    const d = new Date(mealDate + "T00:00:00");
-    d.setDate(d.getDate() - 1);
-    const yISO = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-
-    setBusy(true);
-    try {
-      const o = await supabase
-        .from("meal_orders")
-        .select("id,shift,status,worksite_id,restaurant_id,meal_date,cutoff_at")
-        .eq("worksite_id", worksiteId)
-        .eq("meal_date", yISO)
-        .in("shift", ["LUNCH", "DINNER"]);
-
-      if (o.error) throw new Error(o.error.message);
-
-      const orders = (o.data || []) as MealOrder[];
-      const ids = orders.map((x) => x.id);
-      if (!ids.length) {
-        setInfo("Ontem não tem pedido salvo.");
+      if (target === "JANTA") {
+        const snap = await fetchSavedForShift(worksiteId, rid, y, "JANTA");
+        setSelectedDinner(new Set(snap.employeeIds || []));
+        setVisitorsDinner(snap.visitors || []);
+        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para JANTA.`);
         return;
       }
 
-      const lines = await supabase
-        .from("meal_order_lines")
-        .select("meal_order_id,employee_id,included,visitor_name")
-        .in("meal_order_id", ids);
+      const [l, j] = await Promise.all([
+        fetchSavedForShift(worksiteId, rid, y, "ALMOCO"),
+        fetchSavedForShift(worksiteId, rid, y, "JANTA"),
+      ]);
 
-      if (lines.error) throw new Error(lines.error.message);
-
-      const byOrder = new Map<string, MealOrderLine[]>();
-      for (const ln of (lines.data || []) as any[]) {
-        const arr = byOrder.get(ln.meal_order_id) || [];
-        arr.push(ln);
-        byOrder.set(ln.meal_order_id, arr);
-      }
-
-      const getSet = (shift: MealShift) => {
-        const ord = orders.find((x) => x.shift === shift);
-        const set = new Set<string>();
-        if (!ord) return set;
-        const arr = byOrder.get(ord.id) || [];
-        for (const ln of arr) {
-          if (ln.included === false) continue;
-          if (ln.employee_id) set.add(ln.employee_id);
-        }
-        return set;
-      };
-
-      setDraftLunch(getSet("LUNCH"));
-      setDraftDinner(getSet("DINNER"));
-      setInfo("Copiado de ontem (apenas funcionários).");
+      setSelectedLunch(new Set(l.employeeIds || []));
+      setVisitorsLunch(l.visitors || []);
+      setSelectedDinner(new Set(j.employeeIds || []));
+      setVisitorsDinner(j.visitors || []);
+      setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para ALMOÇO + JANTA.`);
     } catch (e: any) {
       setError(e?.message || "Falha ao copiar ontem.");
+    }
+  }
+
+  async function addVisitor(targetShift: Shift) {
+    const name = window.prompt("Nome do visitante (sem cadastro):")?.trim();
+    if (!name) return;
+
+    if (targetShift === "ALMOCO") {
+      setVisitorsLunch((p) => uniq([...p, name]));
+    } else {
+      setVisitorsDinner((p) => uniq([...p, name]));
+    }
+  }
+
+  async function saveShift(shift: Shift) {
+    setError(null);
+    setOkMsg(null);
+
+    if (!worksiteId) return setError("Selecione a obra."), undefined;
+    if (!contract?.restaurant_id) return setError("Sem contrato ativo para esta obra."), undefined;
+
+    const rid = contract.restaurant_id;
+
+    const selectedIds = shift === "ALMOCO" ? Array.from(selectedLunch) : Array.from(selectedDinner);
+    const visitors = shift === "ALMOCO" ? visitorsLunch : visitorsDinner;
+
+    const total = selectedIds.length + visitors.length;
+    if (total <= 0) return setError("Nenhuma refeição marcada para salvar."), undefined;
+
+    setSaving((p) => ({ ...p, [shift]: true }));
+
+    try {
+      const { data: ud } = await supabase.auth.getUser();
+      const userId = ud?.user?.id ?? null;
+
+      // cutoff check
+      const cutoffTime = shift === "ALMOCO" ? contract.cutoff_lunch : contract.cutoff_dinner;
+      const cutoffAtISO = buildCutoffAtISO(mealDate, cutoffTime);
+      const allowAfter = Boolean(contract.allow_after_cutoff);
+      const now = new Date();
+
+      if (cutoffAtISO && !allowAfter && !canOverrideCutoff) {
+        const cutoffAt = new Date(cutoffAtISO);
+        if (isSameISODate(mealDate, isoTodayLocal()) && now.getTime() > cutoffAt.getTime()) {
+          throw new Error(`Fora do horário limite (${shift === "ALMOCO" ? limits.lunch : limits.dinner}).`);
+        }
+      }
+
+      // find existing order
+      const { data: existing, error: e1 } = await supabase
+        .from("meal_orders")
+        .select("id")
+        .eq("worksite_id", worksiteId)
+        .eq("restaurant_id", rid)
+        .eq("meal_date", mealDate)
+        .eq("shift", shift) // ✅ enum PT-BR
+        .limit(1)
+        .maybeSingle();
+
+      if (e1) throw e1;
+
+      let orderId = (existing as any)?.id ? String((existing as any).id) : null;
+
+      if (!orderId) {
+        const ins = await supabase
+          .from("meal_orders")
+          .insert({
+            worksite_id: worksiteId,
+            restaurant_id: rid,
+            meal_date: mealDate,
+            shift, // ✅ "ALMOCO" | "JANTA"
+            status: "DRAFT", // ✅ bate com seu audit
+            cutoff_at: cutoffAtISO,
+            created_by: userId,
+            updated_by: userId,
+            order_date: mealDate,
+          })
+          .select("id")
+          .single();
+
+        if (ins.error) throw ins.error;
+        orderId = String((ins.data as any)?.id);
+      } else {
+        // replace lines
+        const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
+        if (del.error) throw del.error;
+
+        // update cutoff/updated_by
+        const up = await supabase
+          .from("meal_orders")
+          .update({
+            cutoff_at: cutoffAtISO,
+            updated_by: userId,
+          })
+          .eq("id", orderId);
+
+        if (up.error) throw up.error;
+      }
+
+      const rows: any[] = [];
+
+      for (const eid of selectedIds) {
+        rows.push({
+          meal_order_id: orderId,
+          employee_id: eid,
+          included: true,
+          created_by: userId,
+          updated_by: userId,
+        });
+      }
+      for (const v of visitors) {
+        rows.push({
+          meal_order_id: orderId,
+          visitor_name: v,
+          included: true,
+          created_by: userId,
+          updated_by: userId,
+        });
+      }
+
+      const insLines = await supabase.from("meal_order_lines").insert(rows);
+      if (insLines.error) throw insLines.error;
+
+      await refreshSaved();
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo com sucesso (${total}).`);
+    } catch (e: any) {
+      setError(e?.message || "Erro ao salvar.");
     } finally {
-      setBusy(false);
+      setSaving((p) => ({ ...p, [shift]: false }));
+    }
+  }
+
+  async function cancelShift(shift: Shift) {
+    setError(null);
+    setOkMsg(null);
+
+    if (!worksiteId || !contract?.restaurant_id) {
+      setError("Sem contrato ativo para esta obra.");
+      return;
+    }
+
+    const rid = contract.restaurant_id;
+
+    setCanceling((p) => ({ ...p, [shift]: true }));
+
+    try {
+      let orderId = saved[shift]?.orderId || null;
+      if (!orderId) {
+        // tenta achar no banco
+        const snap = await fetchSavedForShift(worksiteId, rid, mealDate, shift);
+        orderId = snap.orderId;
+      }
+      if (!orderId) {
+        setOkMsg("Nada salvo para cancelar.");
+        return;
+      }
+
+      const delLines = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
+      if (delLines.error) throw delLines.error;
+
+      const delOrder = await supabase.from("meal_orders").delete().eq("id", orderId);
+      if (delOrder.error) throw delOrder.error;
+
+      await refreshSaved();
+      // limpa seleção local desse turno também (pra não confundir)
+      clearSelection(shift);
+
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (apagado). Audit fica registrado.`);
+    } catch (e: any) {
+      setError(e?.message || "Erro ao cancelar.");
+    } finally {
+      setCanceling((p) => ({ ...p, [shift]: false }));
     }
   }
 
   async function copyResumo() {
     const ws = worksites.find((w) => w.id === worksiteId);
-    const txt =
-      `✅ Refeições - ${ws ? ws.name : "Obra"}\n` +
-      `📅 Data: ${dateBRFromISO(mealDate)}\n` +
-      `🍽 Almoço: ${draftLunch.size} (salvo: ${counts.savedL})\n` +
-      `🌙 Janta: ${draftDinner.size} (salvo: ${counts.savedD})\n` +
-      (cutLunch || cutDinner ? `⏱ Limites: Almoço ${cutLunch || "-"} • Janta ${cutDinner || "-"}\n` : "");
+    const wsName = ws ? `${ws.name}${ws.city ? " - " + ws.city : ""}` : "-";
+
+    const lunchNames = employees
+      .filter((e) => selectedLunch.has(e.id))
+      .map((e) => e.full_name);
+    const dinnerNames = employees
+      .filter((e) => selectedDinner.has(e.id))
+      .map((e) => e.full_name);
+
+    const msg =
+      `📍 Obra: ${wsName}\n` +
+      `📅 Data: ${formatBRFromISO(mealDate)}\n\n` +
+      `🍽️ Almoço (${totals.lunch}):\n` +
+      `${[...lunchNames, ...visitorsLunch].map((x) => `- ${x}`).join("\n") || "-"}\n\n` +
+      `🌙 Janta (${totals.dinner}):\n` +
+      `${[...dinnerNames, ...visitorsDinner].map((x) => `- ${x}`).join("\n") || "-"}`;
 
     try {
-      await navigator.clipboard.writeText(txt);
-      setInfo("Resumo copiado.");
+      await navigator.clipboard.writeText(msg);
+      setOkMsg("Resumo copiado.");
     } catch {
-      setInfo("Não consegui copiar automaticamente. Selecione e copie manualmente.");
+      setError("Não consegui copiar automaticamente (permita clipboard).");
     }
   }
 
-  async function handleSignOut() {
-    setBusy(true);
-    try {
-      await supabase.auth.signOut();
-      window.location.href = "/";
-    } finally {
-      setBusy(false);
+  const filteredEmployees = useMemo(() => {
+    const q = query.trim().toLowerCase();
+
+    let list = employees;
+
+    if (q) {
+      list = list.filter((e) => e.full_name.toLowerCase().includes(q));
     }
+
+    if (!onlyMarked) return list;
+
+    return list.filter((e) => {
+      if (mode === "ALMOCO") return selectedLunch.has(e.id);
+      if (mode === "JANTA") return selectedDinner.has(e.id);
+      return selectedLunch.has(e.id) || selectedDinner.has(e.id);
+    });
+  }, [employees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
+
+  const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
+
+  const bottomTitle = useMemo(() => {
+    if (mode === "ALMOCO") return `Salvar Almoço (${totals.lunch})`;
+    if (mode === "JANTA") return `Salvar Janta (${totals.dinner})`;
+    return `Salvar (Almoço ${totals.lunch} • Janta ${totals.dinner})`;
+  }, [mode, totals]);
+
+  const bottomSaveDisabled = useMemo(() => {
+    if (mode === "ALMOCO") return totals.lunch <= 0 || saving.ALMOCO;
+    if (mode === "JANTA") return totals.dinner <= 0 || saving.JANTA;
+    return (totals.lunch <= 0 && totals.dinner <= 0) || saving.ALMOCO || saving.JANTA;
+  }, [mode, totals, saving]);
+
+  async function handleBottomSave() {
+    if (mode === "ALMOCO") return saveShift("ALMOCO");
+    if (mode === "JANTA") return saveShift("JANTA");
+    // AMBOS
+    if (totals.lunch > 0) await saveShift("ALMOCO");
+    if (totals.dinner > 0) await saveShift("JANTA");
   }
 
-  const headerRightDate = dateBRFromISO(mealDate);
-
-  // Botões de ação (sempre no rodapé, largura total)
-  const saveLabel =
-    viewShift === "LUNCH"
-      ? `Salvar Almoço (${draftLunch.size})`
-      : viewShift === "DINNER"
-      ? `Salvar Janta (${draftDinner.size})`
-      : `Salvar (Almoço ${draftLunch.size} • Janta ${draftDinner.size})`;
-
-  const cancelLabel =
-    viewShift === "LUNCH" ? "Cancelar Almoço" : viewShift === "DINNER" ? "Cancelar Janta" : "Cancelar (Almoço/Janta)";
-
-  async function saveAction() {
-    if (viewShift === "LUNCH") return saveShift("LUNCH");
-    if (viewShift === "DINNER") return saveShift("DINNER");
-    // BOTH: salva os dois
-    await saveShift("LUNCH");
-    await saveShift("DINNER");
+  async function handleBottomCancel() {
+    if (mode === "ALMOCO") return cancelShift("ALMOCO");
+    if (mode === "JANTA") return cancelShift("JANTA");
+    // AMBOS: cancela os dois (se existir)
+    await cancelShift("ALMOCO");
+    await cancelShift("JANTA");
   }
 
-  async function cancelAction() {
-    if (viewShift === "LUNCH") return cancelShift("LUNCH");
-    if (viewShift === "DINNER") return cancelShift("DINNER");
-    // BOTH: cancela os dois
-    await cancelShift("LUNCH");
-    await cancelShift("DINNER");
-  }
+  const bottomCancelLabel = useMemo(() => {
+    if (mode === "ALMOCO") return `Cancelar Almoço (salvo: ${savedCounts.lunch})`;
+    if (mode === "JANTA") return `Cancelar Janta (salvo: ${savedCounts.dinner})`;
+    return `Cancelar (salvos: Almoço ${savedCounts.lunch} • Janta ${savedCounts.dinner})`;
+  }, [mode, savedCounts]);
 
-  if (loading) {
-    return (
-      <div className="page-root">
-        <div className="page-container">
-          <div className="section-card">Carregando…</div>
-        </div>
-      </div>
-    );
-  }
+  const bottomCancelDisabled = useMemo(() => {
+    if (mode === "ALMOCO") return canceling.ALMOCO || savedCounts.lunch <= 0;
+    if (mode === "JANTA") return canceling.JANTA || savedCounts.dinner <= 0;
+    return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
+  }, [mode, canceling, savedCounts]);
 
   return (
-    <div className="page-root" style={{ paddingBottom: 240 }}>
-      <div className="page-container">
-        <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between" }}>
+    <div className="page-root">
+      <div className="page-container" style={{ paddingBottom: 240 }}>
+        <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <img
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
-              style={{ width: 40, height: 40, objectFit: "contain", border: "none", background: "transparent" }}
+              style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }}
             />
             <div>
-              <div className="brand-text-main">Refeições</div>
+              <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
+                Refeições
+              </div>
               <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
             </div>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={styles.pill}>{headerRightDate}</div>
-            <button type="button" style={{ ...styles.pill, cursor: "pointer" }} onClick={handleSignOut} disabled={busy}>
+            <div
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 800,
+              }}
+              title="Data selecionada"
+            >
+              {headerDatePill}
+            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
               Sair
             </button>
           </div>
@@ -788,11 +897,11 @@ export default function RefeicoesPage() {
           <div className="section-header" style={{ alignItems: "flex-start" }}>
             <div>
               <div className="section-title">Marcação</div>
-              <div className="section-subtitle">Escolha a obra, marque rápido e no final confira o total antes de salvar.</div>
+              <div className="section-subtitle" style={{ marginTop: 2 }}>
+                Escolha a obra, marque rápido e no final confira os totais antes de salvar.
+              </div>
             </div>
-            <div style={{ textAlign: "right", fontSize: 12, color: "var(--gp-muted-soft)" }}>
-              Logado: {userEmail || "-"}
-            </div>
+            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
           </div>
 
           {error ? (
@@ -811,7 +920,7 @@ export default function RefeicoesPage() {
             </div>
           ) : null}
 
-          {info ? (
+          {okMsg ? (
             <div
               style={{
                 borderRadius: 14,
@@ -823,7 +932,7 @@ export default function RefeicoesPage() {
                 marginBottom: 12,
               }}
             >
-              {info}
+              {okMsg}
             </div>
           ) : null}
 
@@ -831,10 +940,10 @@ export default function RefeicoesPage() {
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Obra</label>
               <select
-                style={styles.input}
+                style={styles.select}
                 value={worksiteId}
                 onChange={(e) => setWorksiteId(e.target.value)}
-                disabled={busy}
+                disabled={loading || worksites.length === 0}
               >
                 {worksites.map((w) => (
                   <option key={w.id} value={w.id}>
@@ -852,181 +961,316 @@ export default function RefeicoesPage() {
                 type="date"
                 value={mealDate}
                 onChange={(e) => setMealDate(e.target.value)}
-                disabled={busy}
+                disabled={loading}
               />
-              <div style={styles.hint}>Padrão: abre Almoço até 11h, depois Janta.</div>
+              <div style={{ marginTop: 6, ...styles.hint }}>Padrão: abre Almoço até 11h, depois Janta.</div>
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Buscar</label>
               <input
                 style={styles.input}
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
                 placeholder="Nome do funcionário..."
-                disabled={busy}
               />
-              <div style={styles.hint}>Dica: marque e, se quiser, ative “Mostrar só marcados”.</div>
+              <div style={{ marginTop: 6, ...styles.hint }}>Dica: marque e, se quiser, ative “Mostrar só marcados”.</div>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button type="button" style={segBtnStyle(viewShift === "LUNCH")} onClick={() => setViewShift("LUNCH")} disabled={busy}>
+                <button type="button" style={segBtnStyle(mode === "ALMOCO", "lunch")} onClick={() => setMode("ALMOCO")}>
                   Almoço
                 </button>
-                <button type="button" style={segBtnStyle(viewShift === "DINNER")} onClick={() => setViewShift("DINNER")} disabled={busy}>
+                <button type="button" style={segBtnStyle(mode === "JANTA", "dinner")} onClick={() => setMode("JANTA")}>
                   Janta
                 </button>
-                <button type="button" style={segBtnStyle(viewShift === "BOTH")} onClick={() => setViewShift("BOTH")} disabled={busy}>
+                <button type="button" style={segBtnStyle(mode === "AMBOS", "neutral")} onClick={() => setMode("AMBOS")}>
                   Ambos
                 </button>
+
+                <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
+                  Limites: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
+                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override ativo)</span> : null}
+                </div>
               </div>
 
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800, color: "#0f172a" }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800 }}>
                 <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
                 Mostrar só marcados
               </label>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
-              <div style={{ fontSize: 13, color: "#0f172a", fontWeight: 800 }}>
-                {cutLunch || cutDinner ? (
-                  <>
-                    Limites: <span style={{ color: "#166534" }}>Almoço {cutLunch || "-"}</span> •{" "}
-                    <span style={{ color: "#1d4ed8" }}>Janta {cutDinner || "-"}</span>
-                    {!allowAfter ? <span style={{ color: "var(--gp-muted-soft)", fontWeight: 700 }}> • trava após limite</span> : null}
-                  </>
-                ) : (
-                  <span style={{ color: "var(--gp-muted-soft)", fontWeight: 700 }}>Sem limites carregados (contrato).</span>
-                )}
+            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => copyYesterday(mode)} disabled={loading}>
+                  Copiar ontem
+                </button>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => restoreSaved(mode)} disabled={loading}>
+                  Restaurar salvo
+                </button>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => clearSelection(mode)} disabled={loading}>
+                  Limpar
+                </button>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={copyResumo} disabled={loading}>
+                  Copiar resumo
+                </button>
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button type="button" style={{ ...styles.pill, cursor: "pointer" }} onClick={copyYesterday} disabled={busy}>
-                  Copiar ontem
-                </button>
-                <button type="button" style={{ ...styles.pill, cursor: "pointer" }} onClick={restoreSaved} disabled={busy}>
-                  Restaurar salvo
-                </button>
-                <button type="button" style={{ ...styles.pill, cursor: "pointer" }} onClick={clearDraft} disabled={busy}>
-                  Limpar
-                </button>
+                <div
+                  style={{
+                    borderRadius: 999,
+                    border: "1px solid #86efac",
+                    background: "#ecfdf5",
+                    color: "#166534",
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    fontWeight: 900,
+                  }}
+                  title="Marcados agora / Salvos no banco"
+                >
+                  Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
+                </div>
+                <div
+                  style={{
+                    borderRadius: 999,
+                    border: "1px solid #93c5fd",
+                    background: "#eff6ff",
+                    color: "#1d4ed8",
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    fontWeight: 900,
+                  }}
+                  title="Marcados agora / Salvos no banco"
+                >
+                  Janta: {totals.dinner} (salvo: {savedCounts.dinner})
+                </div>
               </div>
             </div>
 
-            <div style={{ gridColumn: "span 12", marginTop: 6, fontSize: 13, color: "var(--gp-muted-soft)" }}>
-              Agora: <b>Almoço</b> {counts.draftL} • <b>Janta</b> {counts.draftD} | Salvo: <b>Almoço</b> {counts.savedL} • <b>Janta</b>{" "}
-              {counts.savedD}
-            </div>
+            {!contract ? (
+              <div style={{ gridColumn: "span 12", borderRadius: 14, border: "1px solid #fde68a", background: "#fffbeb", padding: "10px 12px", color: "#92400e", fontSize: 13 }}>
+                ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode marcar, mas não vai conseguir salvar.
+              </div>
+            ) : null}
           </div>
         </div>
 
-        <div className="section-card" style={{ marginTop: 14 }}>
+        <div className="section-card" style={{ marginTop: 16 }}>
           <div className="section-header">
             <div>
               <div className="section-title">Funcionários</div>
-              <div className="section-subtitle">Toque no nome para marcar/desmarcar no turno selecionado.</div>
+              <div className="section-subtitle">Toque para marcar/desmarcar no turno selecionado.</div>
             </div>
+            <button
+              type="button"
+              onClick={() => addVisitor(mode === "JANTA" ? "JANTA" : "ALMOCO")}
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+              title="Adicionar visitante sem cadastro"
+            >
+              + Pessoa
+            </button>
           </div>
 
-          <div style={{ display: "grid", gap: 10 }}>
-            {filteredEmployees.map((emp) => {
-              const isFav = favorites.has(emp.id);
+          <div style={{ display: "grid", gap: 12 }}>
+            {filteredEmployees.map((e) => {
+              const lunchOn = selectedLunch.has(e.id);
+              const dinnerOn = selectedDinner.has(e.id);
+              const fav = favoriteIds.has(e.id);
 
-              const selected =
-                viewShift === "LUNCH" ? draftLunch.has(emp.id) : viewShift === "DINNER" ? draftDinner.has(emp.id) : draftLunch.has(emp.id) || draftDinner.has(emp.id);
+              const card: CSSProperties = {
+                borderRadius: 16,
+                border: "1px solid #eef2f7",
+                background: "#fff",
+                padding: 12,
+              };
 
-              const tone: MealShift = viewShift === "DINNER" ? "DINNER" : "LUNCH";
+              const nameStyle: CSSProperties = {
+                fontSize: 14,
+                fontWeight: 900,
+                color: "#0f172a",
+                letterSpacing: "0.02em",
+                textTransform: "uppercase",
+              };
+
+              const tag: CSSProperties = {
+                borderRadius: 999,
+                padding: "6px 10px",
+                fontSize: 12,
+                fontWeight: 900,
+                border: "1px solid #fed7aa",
+                background: "#fff7ed",
+                color: "#9a3412",
+              };
+
+              const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
+                if (tone === "ALMOCO") {
+                  return {
+                    width: "100%",
+                    borderRadius: 14,
+                    border: `1px solid ${active ? "#86efac" : "#d1fae5"}`,
+                    background: active ? "#ecfdf5" : "#f0fdf4",
+                    color: "#166534",
+                    padding: "14px 14px",
+                    fontSize: 16,
+                    fontWeight: 900,
+                    cursor: "pointer",
+                  };
+                }
+                return {
+                  width: "100%",
+                  borderRadius: 14,
+                  border: `1px solid ${active ? "#93c5fd" : "#dbeafe"}`,
+                  background: active ? "#eff6ff" : "#f8fbff",
+                  color: "#1d4ed8",
+                  padding: "14px 14px",
+                  fontSize: 16,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                };
+              };
 
               return (
-                <div
-                  key={emp.id}
-                  style={employeeRowStyle(selected, tone)}
-                  onClick={() => toggleEmployee(emp.id)}
-                  role="button"
-                  aria-label={`Marcar ${emp.full_name}`}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontWeight: 900, color: "#0f172a", fontSize: 14, textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                      {emp.full_name}
-                    </div>
+                <div key={e.id} style={card}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div style={nameStyle}>{e.full_name}</div>
+                    {fav ? <div style={tag}>favorito</div> : null}
                   </div>
 
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    {isFav ? (
-                      <span style={{ borderRadius: 999, border: "1px solid #fed7aa", background: "#fff7ed", color: "#9a3412", fontWeight: 900, fontSize: 12, padding: "6px 10px" }}>
-                        favorito
-                      </span>
-                    ) : null}
-
-                    <span
-                      style={{
-                        borderRadius: 999,
-                        border: selected ? "1px solid #cbd5e1" : "1px solid #e5e7eb",
-                        background: selected ? "#f8fafc" : "#fff",
-                        fontWeight: 900,
-                        fontSize: 13,
-                        padding: "8px 12px",
-                        color: "#0f172a",
-                      }}
-                    >
-                      {selected ? "✓ Marcado" : "+ Marcar"}
-                    </span>
+                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                    {mode === "AMBOS" ? (
+                      <>
+                        <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>
+                          {lunchOn ? "✓ Almoço" : "+ Almoço"}
+                        </button>
+                        <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>
+                          {dinnerOn ? "✓ Janta" : "+ Janta"}
+                        </button>
+                      </>
+                    ) : mode === "ALMOCO" ? (
+                      <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>
+                        {lunchOn ? "✓ Almoço" : "+ Almoço"}
+                      </button>
+                    ) : (
+                      <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>
+                        {dinnerOn ? "✓ Janta" : "+ Janta"}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
 
-            {!filteredEmployees.length ? (
-              <div style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", padding: 14, color: "var(--gp-muted-soft)", fontWeight: 700 }}>
-                Nenhum funcionário encontrado.
+            {/* visitantes já adicionados */}
+            {(visitorsLunch.length > 0 || visitorsDinner.length > 0) ? (
+              <div
+                style={{
+                  borderRadius: 16,
+                  border: "1px solid #eef2f7",
+                  background: "#fff",
+                  padding: 12,
+                }}
+              >
+                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Pessoas sem cadastro
+                </div>
+
+                <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+                  {visitorsLunch.map((v) => (
+                    <div key={`l-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 800, color: "#166534" }}>🍽️ {v}</div>
+                      <button
+                        type="button"
+                        onClick={() => setVisitorsLunch((p) => p.filter((x) => x !== v))}
+                        style={segBtnStyle(false, "neutral")}
+                      >
+                        Remover
+                      </button>
+                    </div>
+                  ))}
+                  {visitorsDinner.map((v) => (
+                    <div key={`d-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 800, color: "#1d4ed8" }}>🌙 {v}</div>
+                      <button
+                        type="button"
+                        onClick={() => setVisitorsDinner((p) => p.filter((x) => x !== v))}
+                        style={segBtnStyle(false, "neutral")}
+                      >
+                        Remover
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
             ) : null}
           </div>
+
+          {loading ? (
+            <div style={{ marginTop: 12, fontSize: 13, color: "var(--gp-muted-soft)" }}>Carregando…</div>
+          ) : null}
         </div>
       </div>
 
-      {/* AÇÕES FIXAS NO RODAPÉ */}
+      {/* Barra fixa no final */}
       <div
         style={{
           position: "fixed",
           left: 0,
           right: 0,
           bottom: 0,
-          background: "rgba(255,255,255,0.96)",
-          borderTop: "1px solid #e5e7eb",
-          padding: "12px 12px",
-          backdropFilter: "blur(6px)",
+          padding: "12px 12px calc(12px + env(safe-area-inset-bottom))",
+          background: "rgba(255,255,255,0.92)",
+          borderTop: "1px solid #eef2f7",
+          backdropFilter: "blur(10px)",
         }}
       >
-        <div style={{ maxWidth: 920, margin: "0 auto", display: "grid", gap: 10 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <div style={{ borderRadius: 14, border: "1px solid #bbf7d0", background: "#f0fdf4", padding: "10px 12px" }}>
-              <div style={{ fontSize: 12, fontWeight: 900, letterSpacing: "0.08em", color: "var(--gp-muted)", textTransform: "uppercase" }}>Almoço</div>
-              <div style={{ fontSize: 22, fontWeight: 900, color: "#0f172a" }}>{draftLunch.size}</div>
-              <div style={{ fontSize: 12, color: "#14532d", fontWeight: 800 }}>
-                salvo: {savedLunch.size + savedVisitorsLunch}
-              </div>
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
+              <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
+              <div style={{ fontSize: 12, color: "#166534" }}>salvo: {savedCounts.lunch} • limite {limits.lunch}</div>
             </div>
 
-            <div style={{ borderRadius: 14, border: "1px solid #bfdbfe", background: "#eff6ff", padding: "10px 12px" }}>
-              <div style={{ fontSize: 12, fontWeight: 900, letterSpacing: "0.08em", color: "var(--gp-muted)", textTransform: "uppercase" }}>Janta</div>
-              <div style={{ fontSize: 22, fontWeight: 900, color: "#0f172a" }}>{draftDinner.size}</div>
-              <div style={{ fontSize: 12, color: "#1e40af", fontWeight: 800 }}>
-                salvo: {savedDinner.size + savedVisitorsDinner}
-              </div>
+            <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
+              <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
+              <div style={{ fontSize: 12, color: "#1d4ed8" }}>salvo: {savedCounts.dinner} • limite {limits.dinner}</div>
             </div>
           </div>
 
-          <button type="button" style={styles.btnPrimary} onClick={saveAction} disabled={busy || !worksiteId}>
-            {busy ? "Aguarde..." : saveLabel}
+          <button
+            type="button"
+            style={mode === "JANTA" ? bigBtnStyle("primaryDinner", bottomSaveDisabled) : bigBtnStyle("primaryLunch", bottomSaveDisabled)}
+            onClick={handleBottomSave}
+            disabled={bottomSaveDisabled || !contract}
+          >
+            {saving.ALMOCO || saving.JANTA ? "Salvando..." : bottomTitle}
           </button>
 
-          <button type="button" style={styles.btnDanger} onClick={cancelAction} disabled={busy || !worksiteId}>
-            {cancelLabel}
+          <div style={{ height: 10 }} />
+
+          <button
+            type="button"
+            style={bigBtnStyle("danger", bottomCancelDisabled)}
+            onClick={handleBottomCancel}
+            disabled={bottomCancelDisabled || !contract}
+          >
+            {canceling.ALMOCO || canceling.JANTA ? "Cancelando..." : bottomCancelLabel}
           </button>
 
-          <button type="button" style={styles.btnGhost} onClick={copyResumo} disabled={busy}>
+          <div style={{ height: 10 }} />
+
+          <button type="button" style={bigBtnStyle("ghost", false)} onClick={copyResumo}>
             Copiar resumo
           </button>
         </div>
