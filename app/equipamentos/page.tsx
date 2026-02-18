@@ -1,4 +1,3 @@
-// FILE: app/equipamentos/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -136,10 +135,6 @@ function formatQtd(it: ItemRowDb): string {
   return "—";
 }
 
-function approxEq(a: number, b: number, eps = 0.01) {
-  return Math.abs(a - b) <= eps;
-}
-
 // ✅ parse robusto de preço (aceita number, "1.265,32", "R$ 417,00", "417.00")
 function parseMoneyBR(v: any): number | null {
   if (v == null) return null;
@@ -153,7 +148,6 @@ function parseMoneyBR(v: any): number | null {
 
   // mantém só dígitos, ponto, vírgula e sinal
   s = s.replace(/[^0-9.,-]/g, "");
-
   if (!s) return null;
 
   const hasComma = s.includes(",");
@@ -166,12 +160,10 @@ function parseMoneyBR(v: any): number | null {
     // só vírgula -> decimal
     s = s.replace(",", ".");
   }
+
   const n = Number(s);
   return Number.isFinite(n) ? n : null;
 }
-
-// FORNECEDOR = o do menor preço considerado (valor_menor)
-// FILE: app/equipamentos/page.tsx
 
 // FORNECEDOR = o do menor preço considerado
 function pickFornecedor(r: RawLikeRow) {
@@ -186,14 +178,14 @@ function pickFornecedor(r: RawLikeRow) {
   const f2 = clean(r.fornecedor_2);
   const f3 = clean(r.fornecedor_3);
 
-  const n1 = Number(r.preco_1);
-  const n2 = Number(r.preco_2);
-  const n3 = Number(r.preco_3);
+  const n1 = parseMoneyBR(r.preco_1);
+  const n2 = parseMoneyBR(r.preco_2);
+  const n3 = parseMoneyBR(r.preco_3);
 
   const candidates: { f: string; p: number }[] = [];
-  if (f1 && Number.isFinite(n1)) candidates.push({ f: f1, p: n1 });
-  if (f2 && Number.isFinite(n2)) candidates.push({ f: f2, p: n2 });
-  if (f3 && Number.isFinite(n3)) candidates.push({ f: f3, p: n3 });
+  if (f1 && n1 != null) candidates.push({ f: f1, p: n1 });
+  if (f2 && n2 != null) candidates.push({ f: f2, p: n2 });
+  if (f3 && n3 != null) candidates.push({ f: f3, p: n3 });
 
   if (candidates.length) {
     candidates.sort((a, b) => a.p - b.p);
@@ -201,16 +193,8 @@ function pickFornecedor(r: RawLikeRow) {
   }
 
   // 3) Se não tem colunas preenchidas, tenta extrair do texto_original
-  // Ex.: "Center tintas: R$ 75,00" ou "Fornecedor X: R$ 1.234,56"
   const txt = clean(r.texto_original);
   if (txt) {
-    const parseBRL = (v: string) => {
-      // "1.234,56" -> 1234.56
-      const s = v.replace(/\./g, "").replace(",", ".").replace(/[^\d.]/g, "");
-      const n = Number(s);
-      return Number.isFinite(n) ? n : null;
-    };
-
     const badNames = new Set([
       "TOTAL",
       "VALOR",
@@ -228,6 +212,8 @@ function pickFornecedor(r: RawLikeRow) {
       "MATERIAL",
       "QUANTIDADE",
       "LOCAL",
+      "PAGAMENTO",
+      "FORMA DE PAGAMENTO",
     ]);
 
     const extracted: { f: string; p: number }[] = [];
@@ -237,12 +223,11 @@ function pickFornecedor(r: RawLikeRow) {
     let m: RegExpExecArray | null;
     while ((m = re1.exec(txt))) {
       const name = String(m[1] ?? "").trim().replace(/\s{2,}/g, " ");
-      const price = parseBRL(String(m[2] ?? ""));
+      const price = parseMoneyBR(String(m[2] ?? ""));
       if (!name || price == null) continue;
 
       const nameUp = name.toUpperCase();
       if (badNames.has(nameUp)) continue;
-      // evita pegar coisas muito curtas tipo "R$:" ou lixo
       if (name.length < 3) continue;
 
       extracted.push({ f: name, p: price });
@@ -251,7 +236,7 @@ function pickFornecedor(r: RawLikeRow) {
     // padrão alternativo: "R$ <valor> - <nome>"
     const re2 = /R\$\s*([\d.]+,\d{2})\s*-\s*([A-Za-zÀ-ÿ0-9][^|\n]{2,80})/gi;
     while ((m = re2.exec(txt))) {
-      const price = parseBRL(String(m[1] ?? ""));
+      const price = parseMoneyBR(String(m[1] ?? ""));
       const name = String(m[2] ?? "").trim().replace(/\s{2,}/g, " ");
       if (!name || price == null) continue;
 
@@ -268,7 +253,7 @@ function pickFornecedor(r: RawLikeRow) {
     }
   }
 
-  // 4) fallback final (se tiver fornecedor mas preço veio vazio)
+  // 4) fallback final
   return f1 || f2 || f3 || "—";
 }
 
@@ -443,10 +428,7 @@ export default function EquipamentosComprasPage() {
 
           const oc = (r.numero_oc || "").trim() || "—";
           const tipoTxt = mapTipo(r.tipo_registro);
-
-          // ✅ fornecedor corrigido (sem mexer no resto)
           const fornecedor = pickFornecedor(r);
-
           const totalOc = parseMoneyBR(r.valor_menor) ?? null;
           const obra = (r.obra || "").trim() || "—";
           const operador = (r.operador || "").trim() || "—";
