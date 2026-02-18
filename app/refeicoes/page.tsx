@@ -1,15 +1,16 @@
 // FILE: app/refeicoes/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 
-type MealShift = "ALMOCO" | "JANTA";
-type ViewMode = "AMBOS" | "ALMOCO" | "JANTA";
+type Shift = "ALMOCO" | "JANTA";
+type ViewTab = "AMBOS" | "ALMOCO" | "JANTA";
 
 type Worksite = {
   id: string;
   name: string;
+  city: string | null;
   active: boolean | null;
 };
 
@@ -18,761 +19,804 @@ type Employee = {
   full_name: string;
   active: boolean | null;
   is_third_party: boolean | null;
-  created_at: string | null;
 };
 
 type Contract = {
   id: string;
-  worksite_id: string;
   restaurant_id: string;
-  lunch_cutoff: string; // "09:30:00"
-  dinner_cutoff: string; // "15:30:00"
+  cutoff_lunch: string | null;
+  cutoff_dinner: string | null;
   allow_after_cutoff: boolean | null;
-  active: boolean | null;
 };
 
-type MealOrder = {
+type Order = {
   id: string;
-  worksite_id: string;
   restaurant_id: string;
-  meal_date: string; // "2026-02-18"
-  order_date?: string | null;
-  shift: MealShift;
-  status: string | null; // enum no banco
-  created_by?: string | null;
-  created_at?: string | null;
+  status: string | null;
+  shift: Shift;
+  closed_at?: string | null;
 };
 
-type OrderLine = {
-  id: string;
-  order_id: string;
-  employee_id: string;
-};
-
-type Picks = Record<string, { lunch: boolean; dinner: boolean }>;
+type Pick = { ALMOCO: boolean; JANTA: boolean };
 
 function isoLocalToday() {
   const d = new Date();
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  const off = d.getTimezoneOffset();
+  const d2 = new Date(d.getTime() - off * 60 * 1000);
+  return d2.toISOString().slice(0, 10);
 }
 
-function isoAddDays(iso: string, days: number) {
-  const [y, m, d] = iso.split("-").map((x) => parseInt(x, 10));
+function isoLocalAddDays(iso: string, days: number) {
+  const [y, m, d] = iso.split("-").map(Number);
   const dt = new Date(y, m - 1, d);
   dt.setDate(dt.getDate() + days);
-  const yyyy = dt.getFullYear();
-  const mm = String(dt.getMonth() + 1).padStart(2, "0");
-  const dd = String(dt.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  const off = dt.getTimezoneOffset();
+  const d2 = new Date(dt.getTime() - off * 60 * 1000);
+  return d2.toISOString().slice(0, 10);
 }
 
-function timeToMinutes(hhmmss: string) {
-  const [hh, mm] = hhmmss.split(":");
-  return parseInt(hh, 10) * 60 + parseInt(mm, 10);
+function parseHHMM(t: string | null) {
+  if (!t) return null;
+  const parts = t.split(":");
+  if (parts.length < 2) return null;
+  const hh = Number(parts[0]);
+  const mm = Number(parts[1]);
+  if (Number.isNaN(hh) || Number.isNaN(mm)) return null;
+  return { hh, mm };
 }
 
-function nowLocalMinutes() {
-  const d = new Date();
-  return d.getHours() * 60 + d.getMinutes();
+function nowAfterCutoff(cutoff: string | null) {
+  const c = parseHHMM(cutoff);
+  if (!c) return false;
+  const now = new Date();
+  const hh = now.getHours();
+  const mm = now.getMinutes();
+  return hh > c.hh || (hh === c.hh && mm > c.mm);
 }
 
-function defaultViewByClock(): ViewMode {
-  // pedido do Marcelo: almoço até 11:00, janta após
-  return nowLocalMinutes() < 11 * 60 ? "ALMOCO" : "JANTA";
+function isTodayISO(iso: string) {
+  return iso === isoLocalToday();
 }
 
-function makeEmptyPicks(employees: Employee[]): Picks {
-  const p: Picks = {};
-  for (const e of employees) p[e.id] = { lunch: false, dinner: false };
-  return p;
+function defaultViewTabForNow(dateISO: string): ViewTab {
+  // seu pedido: por padrão abre ALMOÇO até 11h, depois abre JANTA.
+  if (!isTodayISO(dateISO)) return "AMBOS";
+  const h = new Date().getHours();
+  return h < 11 ? "ALMOCO" : "JANTA";
 }
 
-function shallowEqualPicks(a: Picks, b: Picks) {
-  const aKeys = Object.keys(a);
-  const bKeys = Object.keys(b);
-  if (aKeys.length !== bKeys.length) return false;
-  for (const k of aKeys) {
-    const av = a[k];
-    const bv = b[k];
-    if (!bv) return false;
-    if (av.lunch !== bv.lunch) return false;
-    if (av.dinner !== bv.dinner) return false;
+async function copyToClipboard(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      document.body.removeChild(ta);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+function shiftLabel(s: Shift) {
+  return s === "ALMOCO" ? "Almoço" : "Janta";
+}
+
+function deepSamePicks(a: Record<string, Pick>, b: Record<string, Pick>) {
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const k of keys) {
+    const pa = a[k] ?? { ALMOCO: false, JANTA: false };
+    const pb = b[k] ?? { ALMOCO: false, JANTA: false };
+    if (pa.ALMOCO !== pb.ALMOCO || pa.JANTA !== pb.JANTA) return false;
   }
   return true;
 }
 
-function fmtDateBR(iso: string) {
-  const [y, m, d] = iso.split("-");
-  return `${d}/${m}/${y}`;
-}
-
-function safeLower(s: string) {
-  return (s || "").toLowerCase();
-}
-
 export default function RefeicoesPage() {
-  const [loading, setLoading] = useState(true);
+  const [sessionUserId, setSessionUserId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string>("");
 
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginSent, setLoginSent] = useState(false);
+  const [loginEmail, setLoginEmail] = useState<string>("");
+  const [loginSent, setLoginSent] = useState<boolean>(false);
 
   const [worksites, setWorksites] = useState<Worksite[]>([]);
-  const [worksiteId, setWorksiteId] = useState<string>("");
+  const [selectedWorksiteId, setSelectedWorksiteId] = useState<string>("");
 
   const [dateISO, setDateISO] = useState<string>(isoLocalToday());
-  const [search, setSearch] = useState("");
 
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+  const [favoritesIds, setFavoritesIds] = useState<Set<string>>(new Set());
 
   const [contract, setContract] = useState<Contract | null>(null);
 
-  const [orderLunch, setOrderLunch] = useState<MealOrder | null>(null);
-  const [orderDinner, setOrderDinner] = useState<MealOrder | null>(null);
+  const [orderLunch, setOrderLunch] = useState<Order | null>(null);
+  const [orderDinner, setOrderDinner] = useState<Order | null>(null);
 
-  const [picks, setPicks] = useState<Picks>({});
-  const [savedPicks, setSavedPicks] = useState<Picks>({});
-
-  const [view, setView] = useState<ViewMode>(defaultViewByClock());
-  const [onlyMarked, setOnlyMarked] = useState(false);
+  // picks = marcações atuais (antes de salvar)
+  const [picks, setPicks] = useState<Record<string, Pick>>({});
+  // savedPicks = retrato do que está salvo no banco (para "Restaurar salvo")
+  const [savedPicks, setSavedPicks] = useState<Record<string, Pick>>({});
 
   const [busy, setBusy] = useState<string | null>(null);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [okMsg, setOkMsg] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
-  const okTimer = useRef<number | null>(null);
+  const [search, setSearch] = useState<string>("");
+  const [showOnlyMarked, setShowOnlyMarked] = useState<boolean>(false);
 
-  const [addOpen, setAddOpen] = useState(false);
-  const [addName, setAddName] = useState("");
-  const [addThird, setAddThird] = useState(false);
+  const [viewTab, setViewTab] = useState<ViewTab>(() => defaultViewTabForNow(isoLocalToday()));
+  const [copiedBanner, setCopiedBanner] = useState<string | null>(null);
 
-  function toastOk(msg: string) {
-    setOkMsg(msg);
-    if (okTimer.current) window.clearTimeout(okTimer.current);
-    okTimer.current = window.setTimeout(() => setOkMsg(null), 2200);
-  }
+  const [showAdd, setShowAdd] = useState<boolean>(false);
+  const [newName, setNewName] = useState<string>("");
+  const [newIsThird, setNewIsThird] = useState<boolean>(false);
 
-  function clearMsgs() {
-    setErrorMsg(null);
-    setOkMsg(null);
-  }
-
-  // ---- Auth
   useEffect(() => {
-    let unsub: any = null;
+    let mounted = true;
 
-    (async () => {
-      const { data } = await supabase.auth.getSession();
-      const email = data.session?.user?.email ?? null;
-      setUserEmail(email);
-      setLoading(false);
-    })();
-
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUserEmail(session?.user?.email ?? null);
+    supabase.auth.getSession().then(({ data }) => {
+      if (!mounted) return;
+      const uid = data.session?.user?.id ?? null;
+      const em = data.session?.user?.email ?? "";
+      setSessionUserId(uid);
+      setUserEmail(em);
     });
-    unsub = sub.subscription;
+
+    const { data: sub } = supabase.auth.onAuthStateChange((_evt, s) => {
+      const uid = s?.user?.id ?? null;
+      const em = s?.user?.email ?? "";
+      setSessionUserId(uid);
+      setUserEmail(em);
+      setLoginSent(false);
+    });
 
     return () => {
-      unsub?.unsubscribe?.();
+      mounted = false;
+      sub.subscription.unsubscribe();
     };
   }, []);
 
-  // ---- Load base data (worksites + employees)
+  // quando muda data, recalcula aba padrão (almoço até 11h)
   useEffect(() => {
-    if (!userEmail) return;
+    setViewTab(defaultViewTabForNow(dateISO));
+  }, [dateISO]);
+
+  // carrega obras + funcionários
+  useEffect(() => {
+    if (!sessionUserId) return;
 
     (async () => {
       setBusy("Carregando...");
-      clearMsgs();
+      setToast(null);
 
-      const { data: ws, error: wsErr } = await supabase
-        .from("meal_worksites")
-        .select("id,name,active")
-        .order("name", { ascending: true });
+      const [wsRes, empRes] = await Promise.all([
+        supabase
+          .from("meal_worksites")
+          .select("id,name,city,active")
+          .eq("active", true)
+          .order("name", { ascending: true }),
+        supabase
+          .from("meal_employees")
+          .select("id,full_name,active,is_third_party")
+          .eq("active", true)
+          .order("full_name", { ascending: true }),
+      ]);
 
-      if (wsErr) {
+      if (wsRes.error) {
         setBusy(null);
-        setErrorMsg(wsErr.message);
+        setToast(`Erro obras: ${wsRes.error.message}`);
+        return;
+      }
+      if (empRes.error) {
+        setBusy(null);
+        setToast(`Erro funcionários: ${empRes.error.message}`);
         return;
       }
 
-      setWorksites((ws ?? []) as Worksite[]);
-      if (!worksiteId && ws && ws.length > 0) setWorksiteId(ws[0].id);
+      const ws = (wsRes.data ?? []) as Worksite[];
+      const emps = (empRes.data ?? []) as Employee[];
 
-      const { data: emps, error: empErr } = await supabase
-        .from("meal_employees")
-        .select("id,full_name,active,created_at,is_third_party")
-        .eq("active", true)
-        .order("full_name", { ascending: true });
+      setWorksites(ws);
+      setEmployees(emps);
 
-      if (empErr) {
-        setBusy(null);
-        setErrorMsg(empErr.message);
-        return;
-      }
+      if (!selectedWorksiteId && ws.length > 0) setSelectedWorksiteId(ws[0].id);
 
-      const empList = (emps ?? []) as Employee[];
-      setEmployees(empList);
+      const map: Record<string, Pick> = {};
+      for (const e of emps) map[e.id] = { ALMOCO: false, JANTA: false };
 
-      const empty = makeEmptyPicks(empList);
-      setPicks(empty);
-      setSavedPicks(empty);
+      setPicks(map);
+      setSavedPicks(map);
 
       setBusy(null);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userEmail]);
+  }, [sessionUserId]);
 
-  // ---- Default view update when date changes (use clock rule mostly when date is today)
+  // carrega contrato + favoritos + pedidos do dia (almoço/janta) + linhas (salvo)
   useEffect(() => {
-    if (dateISO === isoLocalToday()) {
-      setView(defaultViewByClock());
-    } else {
-      // em dias passados/futuros, deixa "AMBOS" mais útil para conferência
-      setView("AMBOS");
-    }
-  }, [dateISO]);
-
-  // ---- Load favorites + contract + orders/lines
-  useEffect(() => {
-    if (!userEmail) return;
-    if (!worksiteId) return;
+    if (!sessionUserId) return;
+    if (!selectedWorksiteId) return;
     if (employees.length === 0) return;
 
     (async () => {
-      setBusy("Sincronizando...");
-      clearMsgs();
+      setBusy("Carregando pedido...");
+      setToast(null);
 
-      // favorites
-      const { data: fav, error: favErr } = await supabase
+      const favRes = await supabase
         .from("meal_worksite_favorites")
         .select("employee_id")
-        .eq("worksite_id", worksiteId);
+        .eq("worksite_id", selectedWorksiteId);
 
-      if (favErr) {
+      if (favRes.error) {
         setBusy(null);
-        setErrorMsg(favErr.message);
+        setToast(`Erro favoritos: ${favRes.error.message}`);
         return;
       }
+      setFavoritesIds(new Set((favRes.data ?? []).map((r: any) => r.employee_id)));
 
-      const favSet = new Set<string>((fav ?? []).map((r: any) => r.employee_id));
-      setFavoriteIds(favSet);
-
-      // contract (active first)
-      const { data: cts, error: ctErr } = await supabase
+      // ✅ nomes corretos do schema: cutoff_lunch / cutoff_dinner
+      const ctRes = await supabase
         .from("meal_contracts")
-        .select("id,worksite_id,restaurant_id,lunch_cutoff,dinner_cutoff,allow_after_cutoff,active")
-        .eq("worksite_id", worksiteId)
-        .order("active", { ascending: false })
-        .order("id", { ascending: false })
+        .select("id,restaurant_id,cutoff_lunch,cutoff_dinner,allow_after_cutoff,start_date")
+        .eq("worksite_id", selectedWorksiteId)
+        .lte("start_date", dateISO)
+        .order("start_date", { ascending: false })
         .limit(1);
 
-      if (ctErr) {
+      if (ctRes.error) {
         setBusy(null);
-        setErrorMsg(ctErr.message);
+        setToast(`Erro contrato: ${ctRes.error.message}`);
         return;
       }
 
-      const ct = (cts && cts.length > 0 ? (cts[0] as Contract) : null) as Contract | null;
-      setContract(ct);
+      const ct = (ctRes.data?.[0] ?? null) as any;
+      if (!ct) {
+        setContract(null);
+        setOrderLunch(null);
+        setOrderDinner(null);
 
-      // orders for date
-      const { data: orders, error: ordErr } = await supabase
-        .from("meal_orders")
-        .select("id,worksite_id,restaurant_id,meal_date,order_date,shift,status,created_at,created_by")
-        .eq("worksite_id", worksiteId)
-        .eq("meal_date", dateISO);
+        const empty: Record<string, Pick> = {};
+        for (const e of employees) empty[e.id] = { ALMOCO: false, JANTA: false };
+        setPicks(empty);
+        setSavedPicks(empty);
 
-      if (ordErr) {
         setBusy(null);
-        setErrorMsg(ordErr.message);
+        setToast("Sem contrato para essa obra/data.");
         return;
       }
 
-      const ordList = (orders ?? []) as MealOrder[];
-      const lunch = ordList.find((o) => o.shift === "ALMOCO") ?? null;
-      const dinner = ordList.find((o) => o.shift === "JANTA") ?? null;
-      setOrderLunch(lunch);
-      setOrderDinner(dinner);
+      const nextContract: Contract = {
+        id: ct.id,
+        restaurant_id: ct.restaurant_id,
+        cutoff_lunch: ct.cutoff_lunch,
+        cutoff_dinner: ct.cutoff_dinner,
+        allow_after_cutoff: ct.allow_after_cutoff,
+      };
+      setContract(nextContract);
 
-      // lines
-      const empty = makeEmptyPicks(employees);
-      const saved = makeEmptyPicks(employees);
+      async function fetchOrder(shift: Shift) {
+        const oRes = await supabase
+          .from("meal_orders")
+          .select("id,restaurant_id,status,shift,closed_at")
+          .eq("worksite_id", selectedWorksiteId)
+          .eq("meal_date", dateISO)
+          .eq("shift", shift)
+          .order("created_at", { ascending: false })
+          .limit(1);
 
-      async function applyLines(order: MealOrder | null, shift: MealShift) {
-        if (!order) return;
-        const { data: ln, error: lnErr } = await supabase
+        if (oRes.error) return { error: oRes.error, order: null as Order | null };
+        const o = (oRes.data?.[0] ?? null) as Order | null;
+        return { error: null, order: o };
+      }
+
+      const [lunch, dinner] = await Promise.all([fetchOrder("ALMOCO"), fetchOrder("JANTA")]);
+
+      if (lunch.error) {
+        setBusy(null);
+        setToast(`Erro pedido almoço: ${lunch.error.message}`);
+        return;
+      }
+      if (dinner.error) {
+        setBusy(null);
+        setToast(`Erro pedido janta: ${dinner.error.message}`);
+        return;
+      }
+
+      setOrderLunch(lunch.order);
+      setOrderDinner(dinner.order);
+
+      const saved: Record<string, Pick> = {};
+      for (const e of employees) saved[e.id] = { ALMOCO: false, JANTA: false };
+
+      async function applyLines(order: Order | null, shift: Shift) {
+        if (!order?.id) return;
+        const lRes = await supabase
           .from("meal_order_lines")
-          .select("id,order_id,employee_id")
-          .eq("order_id", order.id);
+          .select("employee_id")
+          .eq("meal_order_id", order.id);
 
-        if (lnErr) throw new Error(lnErr.message);
-
-        const lines = (ln ?? []) as OrderLine[];
-        for (const l of lines) {
-          if (!saved[l.employee_id]) continue;
-          if (shift === "ALMOCO") {
-            saved[l.employee_id].lunch = true;
-            empty[l.employee_id].lunch = true;
-          } else {
-            saved[l.employee_id].dinner = true;
-            empty[l.employee_id].dinner = true;
-          }
+        if (lRes.error) throw new Error(lRes.error.message);
+        const rows = (lRes.data ?? []) as any[];
+        for (const r of rows) {
+          const empId = r.employee_id as string;
+          if (!saved[empId]) saved[empId] = { ALMOCO: false, JANTA: false };
+          saved[empId][shift] = true;
         }
       }
 
       try {
-        await applyLines(lunch, "ALMOCO");
-        await applyLines(dinner, "JANTA");
+        await Promise.all([applyLines(lunch.order, "ALMOCO"), applyLines(dinner.order, "JANTA")]);
       } catch (e: any) {
         setBusy(null);
-        setErrorMsg(e?.message || "Erro ao carregar linhas.");
+        setToast(`Erro itens: ${e?.message ?? "falha ao carregar itens"}`);
         return;
       }
 
-      setPicks(empty);
+      // ao carregar, "o que está salvo" vira a base da tela
       setSavedPicks(saved);
+      setPicks(saved);
 
       setBusy(null);
     })();
-  }, [userEmail, worksiteId, dateISO, employees]);
+  }, [sessionUserId, selectedWorksiteId, dateISO, employees]);
 
-  const worksiteName = useMemo(() => {
-    return worksites.find((w) => w.id === worksiteId)?.name ?? "";
-  }, [worksites, worksiteId]);
+  const employeesOrdered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    let filtered = employees.filter((e) => (q ? e.full_name.toLowerCase().includes(q) : true));
 
-  const employeesSorted = useMemo(() => {
-    const list = [...employees].filter((e) => e.active !== false);
-
-    // favorito primeiro, depois normal; terceiros por último
-    list.sort((a, b) => {
-      const aFav = favoriteIds.has(a.id) ? 1 : 0;
-      const bFav = favoriteIds.has(b.id) ? 1 : 0;
-      if (aFav !== bFav) return bFav - aFav;
-
-      const aThird = a.is_third_party ? 1 : 0;
-      const bThird = b.is_third_party ? 1 : 0;
-      if (aThird !== bThird) return aThird - bThird;
-
-      return a.full_name.localeCompare(b.full_name);
-    });
-
-    const q = safeLower(search).trim();
-    if (!q) return list;
-    return list.filter((e) => safeLower(e.full_name).includes(q));
-  }, [employees, favoriteIds, search]);
-
-  const currentCounts = useMemo(() => {
-    let lunch = 0;
-    let dinner = 0;
-    for (const k of Object.keys(picks)) {
-      if (picks[k]?.lunch) lunch++;
-      if (picks[k]?.dinner) dinner++;
+    if (showOnlyMarked) {
+      filtered = filtered.filter((e) => {
+        const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
+        if (viewTab === "ALMOCO") return !!p.ALMOCO;
+        if (viewTab === "JANTA") return !!p.JANTA;
+        return !!p.ALMOCO || !!p.JANTA;
+      });
     }
-    return { lunch, dinner };
+
+    const fav: Employee[] = [];
+    const normal: Employee[] = [];
+    const third: Employee[] = [];
+
+    for (const e of filtered) {
+      if (favoritesIds.has(e.id)) fav.push(e);
+      else if (e.is_third_party) third.push(e);
+      else normal.push(e);
+    }
+
+    return [...fav, ...normal, ...third];
+  }, [employees, favoritesIds, search, showOnlyMarked, picks, viewTab]);
+
+  const nowCounts = useMemo(() => {
+    let almoco = 0;
+    let janta = 0;
+    for (const empId of Object.keys(picks)) {
+      if (picks[empId]?.ALMOCO) almoco++;
+      if (picks[empId]?.JANTA) janta++;
+    }
+    return { almoco, janta };
   }, [picks]);
 
   const savedCounts = useMemo(() => {
-    let lunch = 0;
-    let dinner = 0;
-    for (const k of Object.keys(savedPicks)) {
-      if (savedPicks[k]?.lunch) lunch++;
-      if (savedPicks[k]?.dinner) dinner++;
+    let almoco = 0;
+    let janta = 0;
+    for (const empId of Object.keys(savedPicks)) {
+      if (savedPicks[empId]?.ALMOCO) almoco++;
+      if (savedPicks[empId]?.JANTA) janta++;
     }
-    return { lunch, dinner };
+    return { almoco, janta };
   }, [savedPicks]);
 
-  const hasChanges = useMemo(() => {
-    return !shallowEqualPicks(picks, savedPicks);
-  }, [picks, savedPicks]);
+  const isSavedLunch = !!orderLunch?.id;
+  const isSavedDinner = !!orderDinner?.id;
 
-  const filteredForView = useMemo(() => {
-    const list = employeesSorted;
+  const canRestore = useMemo(() => !deepSamePicks(picks, savedPicks), [picks, savedPicks]);
 
-    if (!onlyMarked) return list;
+  async function sendMagicLink() {
+    const email = loginEmail.trim().toLowerCase();
+    if (!email) return;
 
-    if (view === "ALMOCO") return list.filter((e) => picks[e.id]?.lunch);
-    if (view === "JANTA") return list.filter((e) => picks[e.id]?.dinner);
-    // AMBOS
-    return list.filter((e) => picks[e.id]?.lunch || picks[e.id]?.dinner);
-  }, [employeesSorted, onlyMarked, view, picks]);
+    setBusy("Enviando link...");
+    setToast(null);
 
-  function setPick(empId: string, patch: Partial<{ lunch: boolean; dinner: boolean }>) {
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: `${process.env.NEXT_PUBLIC_SITE_URL ?? window.location.origin}/refeicoes`,
+      },
+    });
+
+    setBusy(null);
+    if (error) setToast(`Erro login: ${error.message}`);
+    else setLoginSent(true);
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+  }
+
+  function togglePick(empId: string, shift: Shift) {
     setPicks((prev) => {
-      const cur = prev[empId] ?? { lunch: false, dinner: false };
-      return { ...prev, [empId]: { ...cur, ...patch } };
+      const cur = prev[empId] ?? { ALMOCO: false, JANTA: false };
+      return { ...prev, [empId]: { ...cur, [shift]: !cur[shift] } };
     });
   }
 
-  function clearAllMarksUI() {
-    const empty = makeEmptyPicks(employees);
-    setPicks(empty);
-    toastOk("Limpo (apenas tela).");
-  }
-
-  function restoreSaved() {
-    setPicks(savedPicks);
-    toastOk("Restaurado do salvo.");
-  }
-
-  function markAll(shift: MealShift, value: boolean) {
+  function setAll(shift: Shift, value: boolean) {
     setPicks((prev) => {
-      const next: Picks = { ...prev };
-      for (const e of filteredForView) {
-        const cur = next[e.id] ?? { lunch: false, dinner: false };
-        if (shift === "ALMOCO") next[e.id] = { ...cur, lunch: value };
-        else next[e.id] = { ...cur, dinner: value };
+      const next = { ...prev };
+      for (const e of employees) {
+        const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
+        next[e.id] = { ...cur, [shift]: value };
       }
       return next;
     });
   }
 
-  function canSaveShift(shift: MealShift) {
-    if (!contract) return true;
-
-    const now = nowLocalMinutes();
-    const cutoff = shift === "ALMOCO" ? timeToMinutes(contract.lunch_cutoff) : timeToMinutes(contract.dinner_cutoff);
-    if (now <= cutoff) return true;
-
-    return !!contract.allow_after_cutoff;
+  function clearShift(shift: Shift) {
+    setPicks((prev) => {
+      const next = { ...prev };
+      for (const e of employees) {
+        const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
+        next[e.id] = { ...cur, [shift]: false };
+      }
+      return next;
+    });
   }
 
-  async function ensureOrder(shift: MealShift) {
-    const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
-    if (existing) {
-      // garante restaurant_id do contrato (se tiver)
-      if (contract && existing.restaurant_id !== contract.restaurant_id) {
-        const { error: upErr } = await supabase
-          .from("meal_orders")
-          .update({ restaurant_id: contract.restaurant_id })
-          .eq("id", existing.id);
-        if (upErr) throw new Error(upErr.message);
+  function clearAll() {
+    setPicks((prev) => {
+      const next: Record<string, Pick> = { ...prev };
+      for (const key of Object.keys(next)) next[key] = { ALMOCO: false, JANTA: false };
+      return next;
+    });
+  }
+
+  async function copyYesterday() {
+    if (!selectedWorksiteId) return;
+    const y = isoLocalAddDays(dateISO, -1);
+
+    setBusy("Copiando ontem...");
+    setToast(null);
+
+    async function getOrderId(shift: Shift) {
+      const oRes = await supabase
+        .from("meal_orders")
+        .select("id")
+        .eq("worksite_id", selectedWorksiteId)
+        .eq("meal_date", y)
+        .eq("shift", shift)
+        .order("created_at", { ascending: false })
+        .limit(1);
+
+      if (oRes.error) throw new Error(oRes.error.message);
+      return (oRes.data?.[0]?.id as string | undefined) ?? null;
+    }
+
+    async function getLines(orderId: string | null) {
+      if (!orderId) return new Set<string>();
+      const lRes = await supabase
+        .from("meal_order_lines")
+        .select("employee_id")
+        .eq("meal_order_id", orderId);
+
+      if (lRes.error) throw new Error(lRes.error.message);
+      return new Set((lRes.data ?? []).map((r: any) => r.employee_id as string));
+    }
+
+    try {
+      const [oidLunch, oidDinner] = await Promise.all([getOrderId("ALMOCO"), getOrderId("JANTA")]);
+
+      if (!oidLunch && !oidDinner) {
+        setBusy(null);
+        setToast("Ontem não tem pedido nessa obra.");
+        return;
       }
+
+      const [setLunch, setDinner] = await Promise.all([getLines(oidLunch), getLines(oidDinner)]);
+
+      const map: Record<string, Pick> = {};
+      for (const e of employees) {
+        map[e.id] = { ALMOCO: setLunch.has(e.id), JANTA: setDinner.has(e.id) };
+      }
+
+      setPicks(map);
+      setBusy(null);
+      setToast("Copiado do dia anterior (apenas na tela). Agora salve o turno.");
+    } catch (e: any) {
+      setBusy(null);
+      setToast(`Erro copiar: ${e?.message ?? "falha"}`);
+    }
+  }
+
+  async function ensureOrder(shift: Shift): Promise<Order | null> {
+    if (!selectedWorksiteId || !contract) return null;
+
+    const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
+
+    if (existing?.id) {
+      // bloqueia se já fechou
+      if (existing.closed_at) throw new Error("Pedido já fechado. Não é possível alterar.");
+      const upd = await supabase
+        .from("meal_orders")
+        .update({ restaurant_id: contract.restaurant_id })
+        .eq("id", existing.id);
+
+      if (upd.error) throw new Error(upd.error.message);
       return existing;
     }
 
-    if (!contract) throw new Error("Sem contrato para esta obra.");
+    const ins = await supabase
+      .from("meal_orders")
+      .insert({
+        worksite_id: selectedWorksiteId,
+        restaurant_id: contract.restaurant_id,
+        meal_date: dateISO,
+        shift,
+        status: "DRAFT",
+      })
+      .select("id,restaurant_id,status,shift,closed_at")
+      .single();
 
-    const insertObj: any = {
-      worksite_id: worksiteId,
-      restaurant_id: contract.restaurant_id,
-      meal_date: dateISO,
-      order_date: dateISO,
-      shift,
-      status: "DRAFT", // importante: NÃO use CANCELLED (seu enum não aceita)
-    };
+    if (ins.error) throw new Error(ins.error.message);
 
-    const { data, error } = await supabase.from("meal_orders").insert(insertObj).select("*").single();
-    if (error) throw new Error(error.message);
+    const created = ins.data as Order;
 
-    const created = data as MealOrder;
     if (shift === "ALMOCO") setOrderLunch(created);
     else setOrderDinner(created);
 
     return created;
   }
 
-  async function saveShift(shift: MealShift) {
-    clearMsgs();
-
-    if (!canSaveShift(shift)) {
-      setErrorMsg("Passou do horário limite e o contrato NÃO permite salvar após o limite.");
+  async function saveShift(shift: Shift) {
+    if (!selectedWorksiteId) return;
+    if (!contract) {
+      setToast("Sem contrato para salvar.");
       return;
     }
 
-    setBusy(`Salvando ${shift === "ALMOCO" ? "Almoço" : "Janta"}...`);
+    const late =
+      shift === "ALMOCO"
+        ? nowAfterCutoff(contract.cutoff_lunch)
+        : nowAfterCutoff(contract.cutoff_dinner);
+
+    if (late && contract.allow_after_cutoff === false) {
+      setToast("Atenção: passou do horário e esse contrato não permite após cutoff.");
+      return;
+    }
+
+    setBusy(`Salvando ${shiftLabel(shift)}...`);
+    setToast(null);
 
     try {
       const order = await ensureOrder(shift);
+      if (!order?.id) {
+        setBusy(null);
+        setToast("Não foi possível criar/obter o pedido.");
+        return;
+      }
 
-      // apaga linhas existentes do turno (na prática: order_id = turno)
-      const { error: delErr } = await supabase.from("meal_order_lines").delete().eq("order_id", order.id);
-      if (delErr) throw new Error(delErr.message);
+      // substitui as linhas do turno
+      const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", order.id);
+      if (del.error) throw new Error(del.error.message);
 
       const rows: any[] = [];
       for (const e of employees) {
-        const pk = picks[e.id] ?? { lunch: false, dinner: false };
-        const ok = shift === "ALMOCO" ? pk.lunch : pk.dinner;
-        if (ok) rows.push({ order_id: order.id, employee_id: e.id });
+        const p = picks[e.id];
+        if (!p) continue;
+        if (shift === "ALMOCO" && p.ALMOCO) rows.push({ meal_order_id: order.id, employee_id: e.id });
+        if (shift === "JANTA" && p.JANTA) rows.push({ meal_order_id: order.id, employee_id: e.id });
       }
 
       if (rows.length > 0) {
-        const { error: insErr } = await supabase.from("meal_order_lines").insert(rows);
-        if (insErr) throw new Error(insErr.message);
+        const insLines = await supabase.from("meal_order_lines").insert(rows);
+        if (insLines.error) throw new Error(insLines.error.message);
       }
 
-      // mantém status como DRAFT (seu enum está aceitando isso)
-      const { error: stErr } = await supabase.from("meal_orders").update({ status: "DRAFT" }).eq("id", order.id);
-      if (stErr) throw new Error(stErr.message);
-
-      // atualiza savedPicks só no turno salvo
+      // o que está na tela vira "salvo"
       setSavedPicks((prev) => {
-        const next: Picks = { ...prev };
+        const next = { ...prev };
         for (const e of employees) {
-          const curSaved = next[e.id] ?? { lunch: false, dinner: false };
-          const curPick = picks[e.id] ?? { lunch: false, dinner: false };
-          if (shift === "ALMOCO") next[e.id] = { ...curSaved, lunch: curPick.lunch };
-          else next[e.id] = { ...curSaved, dinner: curPick.dinner };
+          const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
+          const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
+          next[e.id] = shift === "ALMOCO" ? { ...cur, ALMOCO: !!p.ALMOCO } : { ...cur, JANTA: !!p.JANTA };
         }
         return next;
       });
 
-      toastOk(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo.`);
-    } catch (e: any) {
-      setErrorMsg(e?.message || "Erro ao salvar.");
-    } finally {
       setBusy(null);
+      setToast(`${shiftLabel(shift)} salvo ✅`);
+    } catch (e: any) {
+      setBusy(null);
+      setToast(`Erro salvar: ${e?.message ?? "falha"}`);
     }
   }
 
-  async function cancelShift(shift: MealShift) {
-    clearMsgs();
-
-    const order = shift === "ALMOCO" ? orderLunch : orderDinner;
-
-    // se não existe order ainda, não tem como cancelar no banco
-    if (!order) {
-      // só limpa UI daquele turno
-      setPicks((prev) => {
-        const next: Picks = { ...prev };
-        for (const e of employees) {
-          const cur = next[e.id] ?? { lunch: false, dinner: false };
-          if (shift === "ALMOCO") next[e.id] = { ...cur, lunch: false };
-          else next[e.id] = { ...cur, dinner: false };
-        }
-        return next;
-      });
-      setSavedPicks((prev) => {
-        const next: Picks = { ...prev };
-        for (const e of employees) {
-          const cur = next[e.id] ?? { lunch: false, dinner: false };
-          if (shift === "ALMOCO") next[e.id] = { ...cur, lunch: false };
-          else next[e.id] = { ...cur, dinner: false };
-        }
-        return next;
-      });
-      toastOk("Nada salvo para cancelar (só limpei).");
+  async function cancelShift(shift: Shift) {
+    const existing = shift === "ALMOCO" ? orderLunch : orderDinner;
+    if (!existing?.id) {
+      setToast(`Não há ${shiftLabel(shift)} salvo para cancelar.`);
+      return;
+    }
+    if (existing.closed_at) {
+      setToast("Pedido já fechado. Não é possível cancelar.");
       return;
     }
 
-    setBusy(`Cancelando ${shift === "ALMOCO" ? "Almoço" : "Janta"}...`);
+    setBusy(`Cancelando ${shiftLabel(shift)}...`);
+    setToast(null);
 
     try {
-      // 1) remover linhas do pedido
-      const { error: delErr } = await supabase.from("meal_order_lines").delete().eq("order_id", order.id);
-      if (delErr) throw new Error(delErr.message);
+      // ✅ CANCELAR robusto (sem mexer em enum): apaga linhas + apaga pedido
+      const delLines = await supabase.from("meal_order_lines").delete().eq("meal_order_id", existing.id);
+      if (delLines.error) throw new Error(delLines.error.message);
 
-      // 2) manter status como DRAFT (NÃO existe CANCELLED no seu enum)
-      const { error: upErr } = await supabase.from("meal_orders").update({ status: "DRAFT" }).eq("id", order.id);
-      if (upErr) throw new Error(upErr.message);
+      const delOrder = await supabase.from("meal_orders").delete().eq("id", existing.id);
+      if (delOrder.error) throw new Error(delOrder.error.message);
 
-      // 3) refletir na UI (zera turno)
+      // zera marcações do turno na tela
       setPicks((prev) => {
-        const next: Picks = { ...prev };
+        const next = { ...prev };
         for (const e of employees) {
-          const cur = next[e.id] ?? { lunch: false, dinner: false };
-          if (shift === "ALMOCO") next[e.id] = { ...cur, lunch: false };
-          else next[e.id] = { ...cur, dinner: false };
+          const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
+          next[e.id] = shift === "ALMOCO" ? { ...cur, ALMOCO: false } : { ...cur, JANTA: false };
         }
         return next;
       });
 
+      // zera "salvo" do turno
       setSavedPicks((prev) => {
-        const next: Picks = { ...prev };
+        const next = { ...prev };
         for (const e of employees) {
-          const cur = next[e.id] ?? { lunch: false, dinner: false };
-          if (shift === "ALMOCO") next[e.id] = { ...cur, lunch: false };
-          else next[e.id] = { ...cur, dinner: false };
+          const cur = next[e.id] ?? { ALMOCO: false, JANTA: false };
+          next[e.id] = shift === "ALMOCO" ? { ...cur, ALMOCO: false } : { ...cur, JANTA: false };
         }
         return next;
       });
 
-      toastOk(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (zerado).`);
-    } catch (e: any) {
-      setErrorMsg(e?.message || "Erro ao cancelar.");
-    } finally {
+      if (shift === "ALMOCO") setOrderLunch(null);
+      else setOrderDinner(null);
+
       setBusy(null);
+      setToast(`${shiftLabel(shift)} cancelado ✅`);
+    } catch (e: any) {
+      setBusy(null);
+      setToast(`Erro cancelar: ${e?.message ?? "falha"}`);
     }
+  }
+
+  function buildSummary() {
+    const ws = worksites.find((w) => w.id === selectedWorksiteId);
+    const wsName = ws ? `${ws.name}${ws.city ? ` - ${ws.city}` : ""}` : selectedWorksiteId;
+
+    const selectedLunch = employees
+      .filter((e) => (picks[e.id]?.ALMOCO ? true : false))
+      .map((e) => `- ${e.full_name}${e.is_third_party ? " (terceiro)" : ""}`);
+
+    const selectedDinner = employees
+      .filter((e) => (picks[e.id]?.JANTA ? true : false))
+      .map((e) => `- ${e.full_name}${e.is_third_party ? " (terceiro)" : ""}`);
+
+    const cutoff = contract
+      ? `Horário limite: Almoço ${contract.cutoff_lunch ?? "--"} | Janta ${contract.cutoff_dinner ?? "--"}`
+      : "";
+
+    return (
+      `Refeições • ${wsName} • ${dateISO}\n` +
+      (cutoff ? `${cutoff}\n\n` : "\n") +
+      `ALMOÇO (${selectedLunch.length}):\n` +
+      (selectedLunch.length ? selectedLunch.join("\n") : "- (ninguém marcado)") +
+      "\n\n" +
+      `JANTA (${selectedDinner.length}):\n` +
+      (selectedDinner.length ? selectedDinner.join("\n") : "- (ninguém marcado)")
+    );
   }
 
   async function copySummary() {
-    clearMsgs();
-
-    const lunchNames: string[] = [];
-    const dinnerNames: string[] = [];
-
-    const byId = new Map(employees.map((e) => [e.id, e.full_name]));
-    for (const e of employeesSorted) {
-      const pk = picks[e.id] ?? { lunch: false, dinner: false };
-      if (pk.lunch) lunchNames.push(byId.get(e.id) || e.full_name);
-      if (pk.dinner) dinnerNames.push(byId.get(e.id) || e.full_name);
-    }
-
-    const lines: string[] = [];
-    lines.push(`OBRA: ${worksiteName}`);
-    lines.push(`DATA: ${fmtDateBR(dateISO)}`);
-    lines.push("");
-    lines.push(`ALMOÇO (${lunchNames.length})`);
-    lines.push(lunchNames.length ? lunchNames.join(", ") : "— ninguém marcado —");
-    lines.push("");
-    lines.push(`JANTA (${dinnerNames.length})`);
-    lines.push(dinnerNames.length ? dinnerNames.join(", ") : "— ninguém marcado —");
-
-    try {
-      await navigator.clipboard.writeText(lines.join("\n"));
-      toastOk("Resumo copiado.");
-    } catch {
-      setErrorMsg("Não consegui copiar (permissão do navegador).");
-    }
-  }
-
-  async function copyYesterday() {
-    clearMsgs();
-    setBusy("Copiando ontem...");
-
-    try {
-      const yISO = isoAddDays(dateISO, -1);
-
-      const { data: ords, error: ordErr } = await supabase
-        .from("meal_orders")
-        .select("id,shift")
-        .eq("worksite_id", worksiteId)
-        .eq("meal_date", yISO);
-
-      if (ordErr) throw new Error(ordErr.message);
-
-      const lunch = (ords ?? []).find((o: any) => o.shift === "ALMOCO") ?? null;
-      const dinner = (ords ?? []).find((o: any) => o.shift === "JANTA") ?? null;
-
-      const next = makeEmptyPicks(employees);
-
-      async function apply(order: any, shift: MealShift) {
-        if (!order) return;
-        const { data: ln, error: lnErr } = await supabase
-          .from("meal_order_lines")
-          .select("employee_id")
-          .eq("order_id", order.id);
-
-        if (lnErr) throw new Error(lnErr.message);
-
-        for (const r of ln ?? []) {
-          if (!next[r.employee_id]) continue;
-          if (shift === "ALMOCO") next[r.employee_id].lunch = true;
-          else next[r.employee_id].dinner = true;
-        }
-      }
-
-      await apply(lunch, "ALMOCO");
-      await apply(dinner, "JANTA");
-
-      setPicks(next);
-      toastOk("Copiado de ontem (não salvou ainda).");
-    } catch (e: any) {
-      setErrorMsg(e?.message || "Erro ao copiar ontem.");
-    } finally {
-      setBusy(null);
-    }
+    const text = buildSummary();
+    const ok = await copyToClipboard(text);
+    setCopiedBanner(ok ? "Resumo copiado ✅ (cole no WhatsApp)" : "Falha ao copiar 😕");
+    setTimeout(() => setCopiedBanner(null), 2400);
   }
 
   async function addEmployee() {
-    clearMsgs();
-    const name = addName.trim();
+    const name = newName.trim();
     if (!name) {
-      setErrorMsg("Digite o nome do funcionário.");
+      setToast("Informe o nome.");
       return;
     }
 
-    setBusy("Adicionando pessoa...");
+    setBusy("Adicionando...");
+    setToast(null);
 
-    try {
-      const { data, error } = await supabase
-        .from("meal_employees")
-        .insert({ full_name: name, active: true, is_third_party: addThird })
-        .select("id,full_name,active,created_at,is_third_party")
-        .single();
+    const ins = await supabase
+      .from("meal_employees")
+      .insert({
+        full_name: name,
+        active: true,
+        is_third_party: newIsThird,
+      })
+      .select("id,full_name,active,is_third_party")
+      .single();
 
-      if (error) throw new Error(error.message);
+    setBusy(null);
 
-      setEmployees((prev) => {
-        const next = [...prev, data as Employee];
-        next.sort((a, b) => a.full_name.localeCompare(b.full_name));
-        return next;
-      });
-
-      setPicks((prev) => ({ ...prev, [data.id]: { lunch: false, dinner: false } }));
-      setSavedPicks((prev) => ({ ...prev, [data.id]: { lunch: false, dinner: false } }));
-
-      setAddName("");
-      setAddThird(false);
-      setAddOpen(false);
-      toastOk("Pessoa adicionada.");
-    } catch (e: any) {
-      setErrorMsg(e?.message || "Erro ao adicionar pessoa.");
-    } finally {
-      setBusy(null);
+    if (ins.error) {
+      setToast(`Erro adicionar: ${ins.error.message}`);
+      return;
     }
-  }
 
-  async function signIn() {
-    clearMsgs();
-    const email = loginEmail.trim();
-    if (!email) return;
+    const created = ins.data as Employee;
 
-    setBusy("Enviando link...");
-    const { error } = await supabase.auth.signInWithOtp({
-      email,
-      options: { emailRedirectTo: typeof window !== "undefined" ? window.location.origin + "/refeicoes" : undefined },
+    setEmployees((prev) => {
+      const next = [...prev, created];
+      next.sort((a, b) => a.full_name.localeCompare(b.full_name));
+      return next;
     });
-    setBusy(null);
 
-    if (error) setErrorMsg(error.message);
-    else setLoginSent(true);
+    setPicks((prev) => ({
+      ...prev,
+      [created.id]: { ALMOCO: false, JANTA: false },
+    }));
+    setSavedPicks((prev) => ({
+      ...prev,
+      [created.id]: { ALMOCO: false, JANTA: false },
+    }));
+
+    setNewName("");
+    setNewIsThird(false);
+    setShowAdd(false);
+    setToast("Pessoa adicionada ✅");
   }
 
-  async function signOut() {
-    clearMsgs();
-    setBusy("Saindo...");
-    await supabase.auth.signOut();
-    setBusy(null);
-  }
+  const ws = worksites.find((w) => w.id === selectedWorksiteId);
+  const wsText = ws ? `${ws.name}${ws.city ? ` - ${ws.city}` : ""}` : "";
 
-  const showLunchBtn = view === "AMBOS" || view === "ALMOCO";
-  const showDinnerBtn = view === "AMBOS" || view === "JANTA";
+  const bottomShift: Shift =
+    viewTab === "JANTA" ? "JANTA" : "ALMOCO"; // quando AMBOS, deixa a barra focar no ALMOÇO (você troca pela aba)
 
-  const isLunchTimeDefault = useMemo(() => defaultViewByClock() === "ALMOCO", [dateISO]);
+  const bottomSaveText = bottomShift === "ALMOCO" ? "Salvar Almoço" : "Salvar Janta";
+  const bottomCancelText = bottomShift === "ALMOCO" ? "Cancelar Almoço" : "Cancelar Janta";
 
-  // ---- UI
-  if (loading) return null;
+  const showLunch = viewTab === "AMBOS" || viewTab === "ALMOCO";
+  const showDinner = viewTab === "AMBOS" || viewTab === "JANTA";
 
-  if (!userEmail) {
+  if (!sessionUserId) {
     return (
-      <div className="rf-page">
-        <div className="rf-card rf-login">
-          <div className="rf-brand">
-            <img src="/gpasfalto-logo.png" alt="GP Asfalto" className="rf-logo" />
-            <div>
-              <div className="rf-title">Refeições</div>
-              <div className="rf-sub">Acesso com link por e-mail</div>
+      <div className="page-root">
+        <div className="page-container">
+          <div className="card">
+            <div className="top">
+              <img className="logo" src="/gpasfalto-logo.png" alt="GP Asfalto" />
+              <div className="title">Refeições</div>
+              <div className="subtitle">Login simples por e-mail (link mágico)</div>
+            </div>
+
+            <div className="form">
+              <label className="label">E-mail</label>
+              <input
+                className="input"
+                placeholder="seuemail@empresa.com"
+                value={loginEmail}
+                onChange={(e) => setLoginEmail(e.target.value)}
+                inputMode="email"
+                autoComplete="email"
+              />
+
+              <button className="btn btn-primary" onClick={sendMagicLink} disabled={!loginEmail.trim() || !!busy}>
+                {busy ? busy : "Enviar link de acesso"}
+              </button>
+
+              {loginSent && <div className="hint ok">Link enviado. Abra seu e-mail e clique para entrar.</div>}
+              {toast && <div className="hint err">{toast}</div>}
             </div>
           </div>
-
-          <div className="rf-field">
-            <label>E-mail</label>
-            <input value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="seu@email.com" />
-          </div>
-
-          <button className="rf-btn rf-btn-primary" onClick={signIn} disabled={!!busy}>
-            Entrar
-          </button>
-
-          {loginSent && <div className="rf-ok">Link enviado. Abra o e-mail e clique no link.</div>}
-          {errorMsg && <div className="rf-err">{errorMsg}</div>}
-          {busy && <div className="rf-muted">{busy}</div>}
         </div>
 
         <style jsx>{styles}</style>
@@ -781,263 +825,272 @@ export default function RefeicoesPage() {
   }
 
   return (
-    <div className="rf-page">
-      <div className="rf-top">
-        <div className="rf-brand">
-          <img src="/gpasfalto-logo.png" alt="GP Asfalto" className="rf-logo" />
-          <div>
-            <div className="rf-title">Refeições</div>
-            <div className="rf-sub">Logado: {userEmail}</div>
+    <div className="page-root">
+      <div className="page-container">
+        <div className="header">
+          <div className="header-left">
+            <img className="logo" src="/gpasfalto-logo.png" alt="GP Asfalto" />
+            <div>
+              <div className="title">Refeições</div>
+              <div className="subtitle">Logado: {userEmail || sessionUserId}</div>
+            </div>
+          </div>
+
+          <div className="header-right">
+            <div className="pill">Data: <b>{dateISO}</b></div>
+            <button className="btn btn-ghost" onClick={logout}>Sair</button>
           </div>
         </div>
 
-        <div className="rf-top-right">
-          <div className="rf-pill">Data: {dateISO}</div>
-          <button className="rf-btn rf-btn-ghost" onClick={signOut}>
-            Sair
-          </button>
-        </div>
-      </div>
-
-      <div className="rf-card rf-filters">
-        <div className="rf-grid3">
-          <div className="rf-field">
-            <label>Obra</label>
-            <select value={worksiteId} onChange={(e) => setWorksiteId(e.target.value)}>
+        <div className="filters card">
+          <div className="field">
+            <div className="label">Obra</div>
+            <select className="input" value={selectedWorksiteId} onChange={(e) => setSelectedWorksiteId(e.target.value)}>
               {worksites.map((w) => (
                 <option key={w.id} value={w.id}>
-                  {w.name}
+                  {w.name} {w.city ? `- ${w.city}` : ""}
                 </option>
               ))}
             </select>
           </div>
 
-          <div className="rf-field">
-            <label>Data</label>
-            <input type="date" value={dateISO} onChange={(e) => setDateISO(e.target.value)} />
+          <div className="field">
+            <div className="label">Data</div>
+            <input className="input" type="date" value={dateISO} onChange={(e) => setDateISO(e.target.value)} />
           </div>
 
-          <div className="rf-field">
-            <label>Buscar</label>
-            <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Nome do funcionário..." />
+          <div className="field" style={{ gridColumn: "1 / -1" }}>
+            <div className="label">Buscar</div>
+            <input
+              className="input"
+              placeholder="Nome do funcionário..."
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
           </div>
         </div>
-      </div>
 
-      <div className="rf-summary">
-        <div className="rf-card">
-          <div className="rf-card-h">Totais do dia (salvo)</div>
-          <div className="rf-totals">
-            <div className="rf-totalBox rf-lunchBox">
-              <div className="rf-totalLabel">ALMOÇO</div>
-              <div className="rf-totalNum">{savedCounts.lunch}</div>
-              <div className="rf-totalSub">{savedCounts.lunch > 0 ? "salvo" : "não salvo"}</div>
-              <div className="rf-totalNow">Agora: {currentCounts.lunch}</div>
+        <div className="summary">
+          <div className="card">
+            <div className="kicker">Totais do dia</div>
+            <div className="big">
+              {savedCounts.almoco} / {savedCounts.janta}
+            </div>
+            <div className="muted">Já pedido (salvo) • Almoço / Janta</div>
+            <div className="chips">
+              <span className={`chip ${isSavedLunch ? "chip-ok" : "chip-off"}`}>
+                Almoço: {isSavedLunch ? "salvo" : "não salvo"}
+              </span>
+              <span className={`chip ${isSavedDinner ? "chip-ok" : "chip-off"}`}>
+                Janta: {isSavedDinner ? "salvo" : "não salvo"}
+              </span>
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="kicker">Horário limite</div>
+            <div className="big small">
+              {contract ? `${contract.cutoff_lunch ?? "--"} / ${contract.cutoff_dinner ?? "--"}` : "-- / --"}
+            </div>
+            <div className="muted">Almoço / Janta</div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              {contract?.allow_after_cutoff === false ? "Contrato NÃO permite após o limite." : "Contrato permite após o limite."}
+            </div>
+          </div>
+
+          <div className="card">
+            <div className="kicker">Ações rápidas</div>
+            <div className="actions">
+              <button className="btn btn-ghost" onClick={copyYesterday} disabled={!!busy}>Copiar ontem</button>
+              <button className="btn btn-ghost" onClick={copySummary} disabled={!!busy}>Copiar resumo</button>
+              <button className="btn btn-ghost" onClick={() => setShowAdd((v) => !v)} disabled={!!busy}>
+                {showAdd ? "Fechar" : "Adicionar pessoa"}
+              </button>
+            </div>
+            <div className="muted" style={{ marginTop: 10 }}>
+              {wsText} • {dateISO}
+            </div>
+          </div>
+        </div>
+
+        {toast && <div className={`banner ${toast.toLowerCase().includes("erro") ? "banner-err" : "banner-ok"}`}>{toast}</div>}
+        {copiedBanner && <div className="banner banner-ok">{copiedBanner}</div>}
+
+        <div className="nowTotals">
+          <div className="card card-tint-green">
+            <div className="kicker">Almoço (marcados agora)</div>
+            <div className="big">{nowCounts.almoco}</div>
+          </div>
+          <div className="card card-tint-blue">
+            <div className="kicker">Janta (marcados agora)</div>
+            <div className="big">{nowCounts.janta}</div>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="markHeader">
+            <div>
+              <div className="kicker">Marcação</div>
+              <div className="muted">
+                Visual app-like: por padrão abre <b>{defaultViewTabForNow(dateISO) === "ALMOCO" ? "ALMOÇO" : "JANTA"}</b>{" "}
+                (almoço até 11h).
+              </div>
             </div>
 
-            <div className="rf-totalBox rf-dinnerBox">
-              <div className="rf-totalLabel">JANTA</div>
-              <div className="rf-totalNum">{savedCounts.dinner}</div>
-              <div className="rf-totalSub">{savedCounts.dinner > 0 ? "salvo" : "não salvo"}</div>
-              <div className="rf-totalNow">Agora: {currentCounts.dinner}</div>
+            <label className="onlyMarked">
+              <input type="checkbox" checked={showOnlyMarked} onChange={(e) => setShowOnlyMarked(e.target.checked)} />
+              <span>Mostrar só marcados</span>
+            </label>
+          </div>
+
+          <div className="tabs">
+            <button className={`tab ${viewTab === "AMBOS" ? "tab-on" : ""}`} onClick={() => setViewTab("AMBOS")}>
+              Ambos
+            </button>
+            <button className={`tab ${viewTab === "ALMOCO" ? "tab-on" : ""}`} onClick={() => setViewTab("ALMOCO")}>
+              Almoço
+            </button>
+            <button className={`tab ${viewTab === "JANTA" ? "tab-on" : ""}`} onClick={() => setViewTab("JANTA")}>
+              Janta
+            </button>
+          </div>
+
+          <div className="miniActions">
+            {showLunch && (
+              <button className="btn btn-ghost" onClick={() => setAll("ALMOCO", true)} disabled={!!busy}>
+                Todos almoço
+              </button>
+            )}
+            {showDinner && (
+              <button className="btn btn-ghost" onClick={() => setAll("JANTA", true)} disabled={!!busy}>
+                Todos janta
+              </button>
+            )}
+
+            <button
+              className="btn btn-danger"
+              onClick={() => {
+                if (viewTab === "ALMOCO") clearShift("ALMOCO");
+                else if (viewTab === "JANTA") clearShift("JANTA");
+                else clearAll();
+              }}
+              disabled={!!busy}
+            >
+              Limpar
+            </button>
+          </div>
+        </div>
+
+        {showAdd && (
+          <div className="card">
+            <div className="kicker">Adicionar pessoa</div>
+
+            <div className="addGrid">
+              <div className="field">
+                <div className="label">Nome completo</div>
+                <input
+                  className="input"
+                  placeholder="Ex.: João da Silva"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                />
+              </div>
+
+              <label className="checkRow">
+                <input type="checkbox" checked={newIsThird} onChange={(e) => setNewIsThird(e.target.checked)} />
+                <span>É terceiro</span>
+              </label>
+
+              <button className="btn btn-primary" onClick={addEmployee} disabled={!!busy}>
+                {busy ? busy : "Adicionar"}
+              </button>
             </div>
           </div>
+        )}
 
-          <div className="rf-muted rf-mt8">Já pedido (salvo) · bater o olho e conferir rápido</div>
-        </div>
+        <div className="list">
+          {employeesOrdered.map((e) => {
+            const p = picks[e.id] ?? { ALMOCO: false, JANTA: false };
+            const isFav = favoritesIds.has(e.id);
 
-        <div className="rf-card">
-          <div className="rf-card-h">Horário limite</div>
-          <div className="rf-big">
-            {contract ? `${contract.lunch_cutoff} / ${contract.dinner_cutoff}` : "—"}
-          </div>
-          <div className="rf-muted">Almoço / Janta</div>
-          {contract && (
-            <div className="rf-muted rf-mt8">
-              {contract.allow_after_cutoff ? "Contrato permite após o limite." : "Contrato NÃO permite após o limite."}
-            </div>
-          )}
-        </div>
+            const activeTint =
+              viewTab === "ALMOCO"
+                ? p.ALMOCO
+                : viewTab === "JANTA"
+                ? p.JANTA
+                : p.ALMOCO || p.JANTA;
 
-        <div className="rf-card">
-          <div className="rf-card-h">Ações rápidas</div>
-          <div className="rf-actions">
-            <button className="rf-btn rf-btn-ghost" onClick={copyYesterday} disabled={!!busy}>
-              Copiar ontem
-            </button>
-            <button className="rf-btn rf-btn-ghost" onClick={copySummary} disabled={!!busy}>
-              Copiar resumo
-            </button>
-            <button className="rf-btn rf-btn-ghost" onClick={() => setAddOpen(true)} disabled={!!busy}>
-              Adicionar pessoa
-            </button>
-          </div>
+            return (
+              <div key={e.id} className={`emp card empCard ${activeTint ? "empOn" : ""}`}>
+                <div className="empTop">
+                  <div className="empName">{e.full_name}</div>
+                  <div className="empBadges">
+                    {isFav && <span className="badge badge-fav">favorito</span>}
+                    {e.is_third_party && <span className="badge badge-third">terceiro</span>}
+                  </div>
+                </div>
 
-          <div className="rf-muted rf-mt8">
-            {worksiteName} · {fmtDateBR(dateISO)}
-          </div>
-        </div>
-      </div>
+                <div className="empBtns">
+                  {showLunch && (
+                    <button
+                      className={`pickBtn ${p.ALMOCO ? "pickOn lunch" : "pickOff lunch"}`}
+                      onClick={() => togglePick(e.id, "ALMOCO")}
+                      disabled={!!busy}
+                    >
+                      {p.ALMOCO ? "✓ Almoço" : "+ Almoço"}
+                    </button>
+                  )}
 
-      {errorMsg && <div className="rf-alert rf-alert-err">Erro: {errorMsg}</div>}
-      {okMsg && <div className="rf-alert rf-alert-ok">{okMsg}</div>}
-
-      <div className="rf-card rf-markHeader">
-        <div>
-          <div className="rf-card-h">Marcação</div>
-          <div className="rf-muted">
-            Visual app-like: por padrão abre{" "}
-            <b>{dateISO === isoLocalToday() ? (isLunchTimeDefault ? "ALMOÇO (até 11h)" : "JANTA (após 11h)") : "AMBOS"}</b>.
-          </div>
-        </div>
-
-        <div className="rf-rightTools">
-          <label className="rf-check">
-            <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
-            <span>Mostrar só marcados</span>
-          </label>
-        </div>
-
-        <div className="rf-tabs">
-          <button className={`rf-tab ${view === "AMBOS" ? "on" : ""}`} onClick={() => setView("AMBOS")}>
-            Ambos
-          </button>
-          <button className={`rf-tab ${view === "ALMOCO" ? "on" : ""}`} onClick={() => setView("ALMOCO")}>
-            Almoço
-          </button>
-          <button className={`rf-tab ${view === "JANTA" ? "on" : ""}`} onClick={() => setView("JANTA")}>
-            Janta
-          </button>
-        </div>
-
-        <div className="rf-miniActions">
-          {showLunchBtn && (
-            <button className="rf-btn rf-btn-ghost" onClick={() => markAll("ALMOCO", true)} disabled={!!busy}>
-              Todos almoço
-            </button>
-          )}
-          {showDinnerBtn && (
-            <button className="rf-btn rf-btn-ghost" onClick={() => markAll("JANTA", true)} disabled={!!busy}>
-              Todos janta
-            </button>
-          )}
-          <button className="rf-btn rf-btn-warn" onClick={clearAllMarksUI} disabled={!!busy}>
-            Limpar
-          </button>
-        </div>
-      </div>
-
-      <div className="rf-list">
-        {filteredForView.map((e) => {
-          const pk = picks[e.id] ?? { lunch: false, dinner: false };
-          const any = pk.lunch || pk.dinner;
-
-          return (
-            <div key={e.id} className={`rf-empCard ${any ? "on" : ""}`}>
-              <div className="rf-empTop">
-                <div className="rf-empName">{e.full_name}</div>
-                <div className="rf-badges">
-                  {favoriteIds.has(e.id) && <span className="rf-badge">favorito</span>}
-                  {e.is_third_party && <span className="rf-badge rf-badge2">terceiro</span>}
+                  {showDinner && (
+                    <button
+                      className={`pickBtn ${p.JANTA ? "pickOn dinner" : "pickOff dinner"}`}
+                      onClick={() => togglePick(e.id, "JANTA")}
+                      disabled={!!busy}
+                    >
+                      {p.JANTA ? "✓ Janta" : "+ Janta"}
+                    </button>
+                  )}
                 </div>
               </div>
+            );
+          })}
 
-              <div className={`rf-empBtns ${view === "AMBOS" ? "two" : "one"}`}>
-                {view !== "JANTA" && (
-                  <button
-                    className={`rf-btnShift rf-btnLunch ${pk.lunch ? "on" : ""}`}
-                    onClick={() => setPick(e.id, { lunch: !pk.lunch })}
-                    disabled={!!busy}
-                  >
-                    {pk.lunch ? "✓ Almoço" : "+ Almoço"}
-                  </button>
-                )}
-
-                {view !== "ALMOCO" && (
-                  <button
-                    className={`rf-btnShift rf-btnDinner ${pk.dinner ? "on" : ""}`}
-                    onClick={() => setPick(e.id, { dinner: !pk.dinner })}
-                    disabled={!!busy}
-                  >
-                    {pk.dinner ? "✓ Janta" : "+ Janta"}
-                  </button>
-                )}
-              </div>
+          {employeesOrdered.length === 0 && (
+            <div className="card muted" style={{ textAlign: "center", padding: 18 }}>
+              Nenhum funcionário encontrado.
             </div>
-          );
-        })}
-      </div>
+          )}
+        </div>
 
-      {/* Action bar (botões largos) */}
-      <div className="rf-actionBar">
-        <button className="rf-btn rf-btn-ghost" onClick={restoreSaved} disabled={!hasChanges || !!busy}>
-          Restaurar salvo
-        </button>
+        {/* Barra fixa (botões largos) */}
+        <div className="bottomBar">
+          <div className="bottomInner">
+            <button className="btn btn-ghost wide" onClick={() => setPicks(savedPicks)} disabled={!canRestore || !!busy}>
+              Restaurar salvo
+            </button>
 
-        {view !== "JANTA" && (
-          <>
             <button
-              className="rf-btn rf-btn-danger"
-              onClick={() => cancelShift("ALMOCO")}
-              disabled={!!busy || savedCounts.lunch === 0}
-              title={savedCounts.lunch === 0 ? "Nada salvo para cancelar" : "Cancela o salvo do Almoço"}
+              className={`btn wide ${bottomShift === "ALMOCO" ? "btn-green" : "btn-blue"}`}
+              onClick={() => saveShift(bottomShift)}
+              disabled={!!busy || !selectedWorksiteId}
             >
-              Cancelar Almoço
+              {busy?.toLowerCase().includes("salvando") ? busy : bottomSaveText}
             </button>
 
-            <button className="rf-btn rf-btn-primary" onClick={() => saveShift("ALMOCO")} disabled={!!busy}>
-              Salvar Almoço
-            </button>
-          </>
-        )}
-
-        {view !== "ALMOCO" && (
-          <>
             <button
-              className="rf-btn rf-btn-danger"
-              onClick={() => cancelShift("JANTA")}
-              disabled={!!busy || savedCounts.dinner === 0}
-              title={savedCounts.dinner === 0 ? "Nada salvo para cancelar" : "Cancela o salvo da Janta"}
+              className="btn btn-danger wide"
+              onClick={() => cancelShift(bottomShift)}
+              disabled={!!busy || (bottomShift === "ALMOCO" ? !orderLunch?.id : !orderDinner?.id)}
             >
-              Cancelar Janta
+              {bottomCancelText}
             </button>
 
-            <button className="rf-btn rf-btn-primary2" onClick={() => saveShift("JANTA")} disabled={!!busy}>
-              Salvar Janta
+            <button className="btn btn-ghost wide" onClick={copySummary} disabled={!!busy}>
+              Copiar resumo
             </button>
-          </>
-        )}
-
-        {busy && <div className="rf-muted rf-mt6">{busy}</div>}
-      </div>
-
-      {/* Modal add */}
-      {addOpen && (
-        <div className="rf-modalMask" onClick={() => setAddOpen(false)}>
-          <div className="rf-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="rf-modalTitle">Adicionar pessoa</div>
-
-            <div className="rf-field">
-              <label>Nome</label>
-              <input value={addName} onChange={(e) => setAddName(e.target.value)} placeholder="Ex.: João Silva" />
-            </div>
-
-            <label className="rf-check">
-              <input type="checkbox" checked={addThird} onChange={(e) => setAddThird(e.target.checked)} />
-              <span>Terceiro</span>
-            </label>
-
-            <div className="rf-modalBtns">
-              <button className="rf-btn rf-btn-ghost" onClick={() => setAddOpen(false)}>
-                Fechar
-              </button>
-              <button className="rf-btn rf-btn-primary" onClick={addEmployee} disabled={!!busy}>
-                Salvar
-              </button>
-            </div>
           </div>
         </div>
-      )}
+      </div>
 
       <style jsx>{styles}</style>
     </div>
@@ -1045,462 +1098,432 @@ export default function RefeicoesPage() {
 }
 
 const styles = `
-  .rf-page{
-    max-width: 1100px;
-    margin: 0 auto;
-    padding: 18px 14px 130px;
-    color:#0f172a;
-    font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Arial, "Apple Color Emoji","Segoe UI Emoji";
-    background: transparent;
+  :global(body){
+    background:#f3f4f6;
+  }
+  .page-root{
+    min-height:100vh;
+    padding:18px 12px 130px;
+  }
+  .page-container{
+    max-width:980px;
+    margin:0 auto;
   }
 
-  .rf-card{
-    background:#fff;
-    border:1px solid rgba(15,23,42,0.08);
-    border-radius:18px;
-    padding:14px;
-    box-shadow: 0 8px 24px rgba(15,23,42,0.06);
-  }
-
-  .rf-top{
+  .header{
     display:flex;
     align-items:center;
     justify-content:space-between;
-    gap:12px;
-    margin-bottom:12px;
+    gap:14px;
+    padding:6px 2px 14px;
   }
-
-  .rf-brand{
+  .header-left{
+    display:flex;
+    align-items:center;
+    gap:12px;
+  }
+  .header-right{
     display:flex;
     align-items:center;
     gap:10px;
-    min-width: 0;
   }
-  .rf-logo{
-    width:40px;
-    height:40px;
-    object-fit:contain;
+  .logo{
+    height:28px;
+    width:auto;
+    display:block;
   }
-  .rf-title{
-    font-size:22px;
+  .title{
+    font-size:26px;
+    line-height:1.1;
     font-weight:700;
     letter-spacing:-0.02em;
-    line-height:1.1;
+    color:#0f172a;
   }
-  .rf-sub{
-    font-size:12px;
-    color:rgba(15,23,42,0.55);
+  .subtitle{
+    font-size:13px;
+    color:#64748b;
     margin-top:2px;
   }
-  .rf-top-right{
-    display:flex;
-    align-items:center;
-    gap:10px;
-    flex-shrink:0;
-  }
-  .rf-pill{
-    background:rgba(15,23,42,0.04);
-    border:1px solid rgba(15,23,42,0.08);
-    padding:8px 10px;
+  .pill{
+    border:1px solid #e5e7eb;
+    background:#fff;
+    padding:8px 12px;
     border-radius:999px;
     font-size:12px;
-    color:rgba(15,23,42,0.75);
+    color:#334155;
+    box-shadow:0 6px 20px rgba(15,23,42,0.06);
   }
 
-  .rf-filters{ margin-bottom:12px; }
-  .rf-grid3{
-    display:grid;
-    grid-template-columns: 1fr 180px 1fr;
-    gap:12px;
-  }
-  @media (max-width: 820px){
-    .rf-grid3{ grid-template-columns: 1fr; }
-    .rf-top{ align-items:flex-start; }
-    .rf-title{ font-size:20px; }
-  }
-
-  .rf-field label{
-    display:block;
-    font-size:12px;
-    color:rgba(15,23,42,0.6);
-    margin-bottom:6px;
-  }
-  .rf-field input, .rf-field select{
-    width:100%;
-    height:40px;
-    border-radius:12px;
-    border:1px solid rgba(15,23,42,0.12);
-    padding:0 12px;
-    outline:none;
-    font-size:14px;
+  .card{
     background:#fff;
-  }
-  .rf-field input:focus, .rf-field select:focus{
-    border-color: rgba(37,99,235,0.55);
-    box-shadow: 0 0 0 3px rgba(37,99,235,0.12);
+    border:1px solid #e5e7eb;
+    border-radius:18px;
+    box-shadow:0 10px 28px rgba(15,23,42,0.06);
+    padding:14px;
   }
 
-  .rf-summary{
+  .filters{
     display:grid;
-    grid-template-columns: 1.2fr 0.9fr 0.9fr;
+    grid-template-columns: 1.4fr 0.8fr 1fr;
     gap:12px;
-    margin-bottom:12px;
+    margin-bottom:14px;
   }
-  @media (max-width: 980px){
-    .rf-summary{ grid-template-columns:1fr; }
-  }
-
-  .rf-card-h{
-    font-size:12px;
-    color:rgba(15,23,42,0.6);
+  .field{ display:flex; flex-direction:column; gap:6px; }
+  .label{
+    font-size:11px;
+    font-weight:700;
     letter-spacing:0.08em;
     text-transform:uppercase;
-    font-weight:700;
-    margin-bottom:10px;
+    color:#94a3b8;
   }
-
-  .rf-totals{
-    display:grid;
-    grid-template-columns: 1fr 1fr;
-    gap:10px;
-  }
-
-  .rf-totalBox{
-    border-radius:16px;
-    padding:12px;
-    border:1px solid rgba(15,23,42,0.08);
-  }
-  .rf-lunchBox{ background: rgba(16,185,129,0.09); }
-  .rf-dinnerBox{ background: rgba(59,130,246,0.09); }
-
-  .rf-totalLabel{
-    font-size:12px;
-    font-weight:800;
-    letter-spacing:0.08em;
-    color: rgba(15,23,42,0.7);
-  }
-  .rf-totalNum{
-    font-size:42px;
-    font-weight:800;
-    letter-spacing:-0.03em;
-    line-height:1;
-    margin-top:6px;
-  }
-  .rf-totalSub{
-    font-size:12px;
-    color: rgba(15,23,42,0.65);
-    margin-top:6px;
-    font-weight:600;
-  }
-  .rf-totalNow{
-    font-size:12px;
-    color: rgba(15,23,42,0.6);
-    margin-top:6px;
-  }
-
-  .rf-big{
-    font-size:24px;
-    font-weight:750;
-    letter-spacing:-0.02em;
-  }
-
-  .rf-actions{
-    display:flex;
-    flex-direction:column;
-    gap:8px;
-  }
-
-  .rf-muted{
-    font-size:12px;
-    color: rgba(15,23,42,0.55);
-  }
-  .rf-mt6{ margin-top:6px; }
-  .rf-mt8{ margin-top:8px; }
-
-  .rf-alert{
-    margin: 10px 0 12px;
+  .input{
+    width:100%;
     border-radius:14px;
+    border:1px solid #e5e7eb;
     padding:10px 12px;
-    font-size:13px;
-    border:1px solid rgba(15,23,42,0.12);
-  }
-  .rf-alert-err{
-    background: rgba(239,68,68,0.08);
-    border-color: rgba(239,68,68,0.25);
-    color: rgba(127,29,29,0.95);
-    font-weight:600;
-  }
-  .rf-alert-ok{
-    background: rgba(16,185,129,0.10);
-    border-color: rgba(16,185,129,0.25);
-    color: rgba(6,95,70,0.95);
-    font-weight:650;
-  }
-
-  .rf-markHeader{
-    margin-bottom:12px;
-    display:grid;
-    grid-template-columns: 1fr auto;
-    gap:10px;
-    align-items:start;
-  }
-  @media (max-width: 820px){
-    .rf-markHeader{ grid-template-columns: 1fr; }
-  }
-
-  .rf-rightTools{
-    display:flex;
-    justify-content:flex-end;
-    align-items:center;
-  }
-
-  .rf-check{
-    display:flex;
-    align-items:center;
-    gap:8px;
-    font-size:13px;
-    color: rgba(15,23,42,0.7);
-    user-select:none;
-  }
-  .rf-check input{ width:16px; height:16px; }
-
-  .rf-tabs{
-    grid-column: 1 / -1;
-    display:flex;
-    gap:8px;
-    justify-content:center;
-    margin-top:8px;
-    flex-wrap:wrap;
-  }
-  .rf-tab{
-    border-radius:999px;
-    border:1px solid rgba(15,23,42,0.12);
     background:#fff;
-    height:36px;
-    padding:0 14px;
-    font-weight:700;
-    font-size:13px;
-    color: rgba(15,23,42,0.75);
+    outline:none;
+    font-size:14px;
+    color:#0f172a;
   }
-  .rf-tab.on{
-    background: rgba(37,99,235,0.10);
-    border-color: rgba(37,99,235,0.22);
-    color: rgba(30,64,175,0.95);
+  .input:focus{
+    border-color: rgba(255,75,43,0.35);
+    box-shadow:0 0 0 3px rgba(255,75,43,0.12);
   }
 
-  .rf-miniActions{
-    grid-column: 1 / -1;
+  .summary{
+    display:grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap:12px;
+    margin-bottom:12px;
+  }
+  .kicker{
+    font-size:11px;
+    font-weight:800;
+    letter-spacing:0.12em;
+    text-transform:uppercase;
+    color:#94a3b8;
+  }
+  .big{
+    font-size:34px;
+    font-weight:800;
+    letter-spacing:-0.02em;
+    color:#0f172a;
+    margin-top:6px;
+  }
+  .big.small{
+    font-size:22px;
+    font-weight:800;
+  }
+  .muted{
+    font-size:12px;
+    color:#64748b;
+    margin-top:6px;
+  }
+  .chips{
     display:flex;
     gap:8px;
-    justify-content:center;
     flex-wrap:wrap;
     margin-top:10px;
   }
+  .chip{
+    font-size:12px;
+    padding:6px 10px;
+    border-radius:999px;
+    border:1px solid #e5e7eb;
+    background:#fff;
+    color:#334155;
+    font-weight:700;
+  }
+  .chip-ok{
+    border-color:#86efac;
+    background:#ecfdf5;
+    color:#065f46;
+  }
+  .chip-off{
+    border-color:#e5e7eb;
+    background:#f8fafc;
+    color:#475569;
+  }
 
-  .rf-list{
+  .actions{
+    display:flex;
+    flex-wrap:wrap;
+    gap:8px;
+    margin-top:10px;
+  }
+
+  .banner{
+    border-radius:14px;
+    padding:10px 12px;
+    font-size:13px;
+    font-weight:700;
+    margin:12px 0;
+    border:1px solid;
+  }
+  .banner-ok{
+    background:#ecfdf5;
+    border-color:#86efac;
+    color:#065f46;
+  }
+  .banner-err{
+    background:#fef2f2;
+    border-color:#fecaca;
+    color:#991b1b;
+  }
+
+  .nowTotals{
     display:grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns:1fr 1fr;
+    gap:12px;
+    margin-bottom:12px;
+  }
+  .card-tint-green{
+    border-color:#a7f3d0;
+    background:linear-gradient(180deg, #ecfdf5 0%, #ffffff 60%);
+  }
+  .card-tint-blue{
+    border-color:#bfdbfe;
+    background:linear-gradient(180deg, #eff6ff 0%, #ffffff 60%);
+  }
+
+  .markHeader{
+    display:flex;
+    align-items:flex-start;
+    justify-content:space-between;
+    gap:12px;
+    flex-wrap:wrap;
+  }
+  .onlyMarked{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    user-select:none;
+    padding:8px 10px;
+    border:1px solid #e5e7eb;
+    border-radius:999px;
+    background:#fff;
+    font-size:13px;
+    color:#0f172a;
+    font-weight:700;
+  }
+
+  .tabs{
+    display:flex;
+    gap:10px;
+    justify-content:center;
+    margin-top:14px;
+    flex-wrap:wrap;
+  }
+  .tab{
+    border:1px solid #e5e7eb;
+    background:#fff;
+    border-radius:999px;
+    padding:10px 16px;
+    font-size:14px;
+    font-weight:800;
+    cursor:pointer;
+    color:#334155;
+  }
+  .tab-on{
+    border-color:#bfdbfe;
+    background:#eff6ff;
+    color:#1d4ed8;
+  }
+
+  .miniActions{
+    display:flex;
+    gap:10px;
+    justify-content:center;
+    flex-wrap:wrap;
+    margin-top:12px;
+  }
+
+  .list{
+    margin-top:12px;
+    display:grid;
     gap:12px;
   }
-  @media (max-width: 820px){
-    .rf-list{ grid-template-columns: 1fr; }
+  .empCard{ padding:12px 12px; }
+  .empOn{
+    border-color:#cbd5e1;
+    box-shadow:0 12px 34px rgba(15,23,42,0.08);
   }
-
-  .rf-empCard{
-    background:#fff;
-    border:1px solid rgba(15,23,42,0.08);
-    border-radius:18px;
-    padding:12px;
-    box-shadow: 0 8px 20px rgba(15,23,42,0.05);
-  }
-  .rf-empCard.on{
-    border-color: rgba(37,99,235,0.22);
-  }
-  .rf-empTop{
+  .empTop{
     display:flex;
     align-items:flex-start;
     justify-content:space-between;
     gap:10px;
     margin-bottom:10px;
   }
-  .rf-empName{
+  .empName{
+    font-size:14px;
     font-weight:800;
-    font-size:13px;
-    letter-spacing:0.08em;
-    text-transform:uppercase;
-    color: rgba(15,23,42,0.78);
+    color:#0f172a;
   }
-  .rf-badges{
+  .empBadges{
     display:flex;
-    gap:6px;
-    align-items:center;
+    gap:8px;
     flex-wrap:wrap;
     justify-content:flex-end;
   }
-  .rf-badge{
-    font-size:12px;
-    font-weight:700;
-    padding:4px 10px;
+  .badge{
+    font-size:11px;
+    padding:5px 10px;
     border-radius:999px;
-    background: rgba(251,146,60,0.14);
-    border:1px solid rgba(251,146,60,0.22);
-    color: rgba(124,45,18,0.92);
+    font-weight:900;
+    border:1px solid;
+    white-space:nowrap;
   }
-  .rf-badge2{
-    background: rgba(148,163,184,0.16);
-    border-color: rgba(148,163,184,0.26);
-    color: rgba(15,23,42,0.75);
+  .badge-fav{
+    background:#fff7ed;
+    border-color:#fed7aa;
+    color:#9a3412;
+  }
+  .badge-third{
+    background:#eff6ff;
+    border-color:#bfdbfe;
+    color:#1d4ed8;
   }
 
-  .rf-empBtns{
+  .empBtns{
+    display:grid;
+    gap:10px;
+    grid-template-columns: 1fr;
+  }
+  .pickBtn{
+    width:100%;
+    border-radius:16px;
+    padding:14px 14px;
+    font-size:16px;
+    font-weight:900;
+    border:1px solid #e5e7eb;
+    background:#fff;
+    cursor:pointer;
+  }
+  .pickOff.lunch{
+    background:#f0fdf4;
+    border-color:#a7f3d0;
+    color:#065f46;
+  }
+  .pickOn.lunch{
+    background:#bbf7d0;
+    border-color:#34d399;
+    color:#065f46;
+  }
+  .pickOff.dinner{
+    background:#eff6ff;
+    border-color:#bfdbfe;
+    color:#1d4ed8;
+  }
+  .pickOn.dinner{
+    background:#dbeafe;
+    border-color:#60a5fa;
+    color:#1d4ed8;
+  }
+
+  .btn{
+    border-radius:14px;
+    padding:10px 12px;
+    border:1px solid #e5e7eb;
+    background:#fff;
+    cursor:pointer;
+    font-weight:800;
+    font-size:13px;
+  }
+  .btn:disabled{
+    opacity:0.55;
+    cursor:not-allowed;
+  }
+  .btn-ghost{
+    background:#fff;
+    color:#0f172a;
+  }
+  .btn-danger{
+    border-color:rgba(239,68,68,0.25);
+    background:rgba(239,68,68,0.08);
+    color:#991b1b;
+  }
+  .btn-primary{
+    border-color: rgba(255,75,43,0.28);
+    background: linear-gradient(90deg, rgba(255,75,43,0.95), rgba(255,122,89,0.95));
+    color:#fff;
+  }
+  .btn-green{
+    border-color:rgba(16,185,129,0.25);
+    background: linear-gradient(90deg, rgba(16,185,129,0.95), rgba(34,197,94,0.95));
+    color:#fff;
+  }
+  .btn-blue{
+    border-color:rgba(59,130,246,0.25);
+    background: linear-gradient(90deg, rgba(59,130,246,0.95), rgba(37,99,235,0.95));
+    color:#fff;
+  }
+  .wide{
+    width:100%;
+    padding:14px 14px;
+    font-size:16px;
+    border-radius:18px;
+  }
+
+  .bottomBar{
+    position:fixed;
+    left:0;
+    right:0;
+    bottom:0;
+    background:rgba(243,244,246,0.86);
+    backdrop-filter: blur(10px);
+    border-top:1px solid #e5e7eb;
+    padding:10px 12px;
+    z-index:50;
+  }
+  .bottomInner{
+    max-width:980px;
+    margin:0 auto;
+    display:grid;
+    grid-template-columns: 1fr;
+    gap:10px;
+  }
+
+  .top{
+    text-align:center;
+    padding:6px 0 6px;
+  }
+  .form{
+    margin-top:10px;
     display:grid;
     gap:10px;
   }
-  .rf-empBtns.two{ grid-template-columns: 1fr 1fr; }
-  .rf-empBtns.one{ grid-template-columns: 1fr; }
+  .hint{
+    font-size:13px;
+    font-weight:700;
+    margin-top:2px;
+  }
+  .hint.ok{ color:#065f46; }
+  .hint.err{ color:#991b1b; }
 
-  .rf-btnShift{
-    height:52px;
-    border-radius:16px;
-    border:1px solid rgba(15,23,42,0.10);
-    font-size:16px;
-    font-weight:800;
-    letter-spacing:-0.01em;
-  }
-  .rf-btnLunch{
-    background: rgba(16,185,129,0.10);
-    color: rgba(5,150,105,0.95);
-  }
-  .rf-btnLunch.on{
-    background: rgba(16,185,129,0.22);
-    border-color: rgba(16,185,129,0.35);
-    color: rgba(4,120,87,0.98);
-  }
-  .rf-btnDinner{
-    background: rgba(59,130,246,0.10);
-    color: rgba(37,99,235,0.98);
-  }
-  .rf-btnDinner.on{
-    background: rgba(59,130,246,0.20);
-    border-color: rgba(59,130,246,0.32);
-    color: rgba(30,64,175,0.98);
-  }
-
-  .rf-actionBar{
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: 0;
-    background: rgba(255,255,255,0.92);
-    backdrop-filter: blur(8px);
-    border-top:1px solid rgba(15,23,42,0.10);
-    padding: 10px 14px 12px;
-    display:flex;
-    flex-direction:column; /* botões LARGOS, 100% */
+  .addGrid{
+    display:grid;
     gap:10px;
-    max-width: 1100px;
-    margin: 0 auto;
-  }
-
-  .rf-btn{
-    height:42px;
-    border-radius:999px;
-    border:1px solid rgba(15,23,42,0.12);
-    padding:0 14px;
-    font-size:13px;
-    font-weight:750;
-    background:#fff;
-    color: rgba(15,23,42,0.78);
-    cursor:pointer;
-  }
-  .rf-btn:disabled{ opacity:0.55; cursor:not-allowed; }
-
-  .rf-btn-ghost{
-    background: rgba(15,23,42,0.03);
-  }
-  .rf-btn-primary{
-    background: rgba(16,185,129,0.95);
-    border-color: rgba(16,185,129,0.95);
-    color:#fff;
-    height:46px;
-    font-size:15px;
-    font-weight:850;
-  }
-  .rf-btn-primary2{
-    background: rgba(59,130,246,0.95);
-    border-color: rgba(59,130,246,0.95);
-    color:#fff;
-    height:46px;
-    font-size:15px;
-    font-weight:850;
-  }
-  .rf-btn-danger{
-    background: rgba(239,68,68,0.10);
-    border-color: rgba(239,68,68,0.26);
-    color: rgba(153,27,27,0.95);
-    height:46px;
-    font-size:15px;
-    font-weight:850;
-  }
-  .rf-btn-warn{
-    background: rgba(239,68,68,0.08);
-    border-color: rgba(239,68,68,0.18);
-    color: rgba(153,27,27,0.92);
-  }
-
-  .rf-login{
-    max-width: 480px;
-    margin: 50px auto;
-  }
-  .rf-ok{
     margin-top:10px;
-    font-size:13px;
-    color: rgba(6,95,70,0.95);
-    background: rgba(16,185,129,0.10);
-    border:1px solid rgba(16,185,129,0.22);
-    border-radius:14px;
-    padding:10px 12px;
-    font-weight:650;
   }
-  .rf-err{
-    margin-top:10px;
-    font-size:13px;
-    color: rgba(127,29,29,0.95);
-    background: rgba(239,68,68,0.08);
-    border:1px solid rgba(239,68,68,0.25);
-    border-radius:14px;
-    padding:10px 12px;
-    font-weight:650;
-  }
-
-  .rf-modalMask{
-    position:fixed;
-    inset:0;
-    background: rgba(15,23,42,0.35);
+  .checkRow{
     display:flex;
     align-items:center;
-    justify-content:center;
-    padding: 18px;
-    z-index: 50;
-  }
-  .rf-modal{
-    width: min(520px, 100%);
-    background:#fff;
-    border-radius:18px;
-    border:1px solid rgba(15,23,42,0.10);
-    box-shadow: 0 18px 50px rgba(15,23,42,0.25);
-    padding: 14px;
-  }
-  .rf-modalTitle{
-    font-size:16px;
-    font-weight:850;
-    margin-bottom:10px;
-    color: rgba(15,23,42,0.85);
-  }
-  .rf-modalBtns{
-    display:flex;
     gap:10px;
-    justify-content:flex-end;
-    margin-top:12px;
+    font-size:14px;
+    font-weight:800;
+    color:#0f172a;
+    padding:10px 12px;
+    border:1px solid #e5e7eb;
+    border-radius:14px;
+    background:#fff;
+  }
+
+  @media (max-width: 820px){
+    .summary{ grid-template-columns:1fr; }
+    .filters{ grid-template-columns: 1fr; }
+    .nowTotals{ grid-template-columns:1fr; }
+    .title{ font-size:24px; }
   }
 `;
