@@ -953,7 +953,7 @@ export default function RefeicoesPage() {
             <img
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
-              style={{ width: 56, height: 56, objectFit: "contain", border: "none", background: "transparent" }}
+              style={{ width: 112, height: 112, objectFit: "contain", border: "none", background: "transparent" }}
             />
             <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
               Refeições
