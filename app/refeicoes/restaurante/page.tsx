@@ -7,29 +7,26 @@ import { supabase } from "@/lib/supabaseClient";
 
 type Shift = "ALMOCO" | "JANTA";
 
-type Worksite = {
+type Restaurant = {
   id: string;
   name: string;
   city: string | null;
   active: boolean | null;
 };
 
-type OrderLine = {
+type Worksite = {
   id: string;
-  included: boolean | null;
+  name: string;
+  city: string | null;
 };
 
 type OrderRow = {
   id: string;
   worksite_id: string;
-  meal_date: string; // YYYY-MM-DD
   shift: Shift;
   status: string | null;
   cutoff_at: string | null; // timestamptz
-  submitted_at: string | null;
-  confirmed_at: string | null;
-  closed_at: string | null;
-  meal_order_lines?: OrderLine[];
+  confirmed_at: string | null; // timestamptz
 };
 
 function pad2(n: number) {
@@ -46,250 +43,312 @@ function formatBRFromISO(iso: string) {
   return `${d}/${m}/${y}`;
 }
 
-function timeHHMMFromISODateTime(iso: string | null) {
+function timeHHMMFromISO(iso: string | null) {
   if (!iso) return "--:--";
-  const dt = new Date(iso);
-  return `${pad2(dt.getHours())}:${pad2(dt.getMinutes())}`;
+  const d = new Date(iso);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-function isSameISODate(a: string, b: string) {
-  return a === b;
-}
-
-function pillStyle(kind: "neutral" | "ok" | "warn" | "bad"): CSSProperties {
-  const base: CSSProperties = {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: 999,
-    padding: "6px 10px",
+function cardTitleStyle(color: string): CSSProperties {
+  return {
     fontSize: 12,
     fontWeight: 900,
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    color: "#0f172a",
-    whiteSpace: "nowrap",
+    color,
+    textTransform: "uppercase",
+    letterSpacing: "0.08em",
   };
-  if (kind === "ok") return { ...base, borderColor: "#86efac", background: "#ecfdf5", color: "#166534" };
-  if (kind === "warn") return { ...base, borderColor: "#fde68a", background: "#fffbeb", color: "#92400e" };
-  if (kind === "bad") return { ...base, borderColor: "#fecaca", background: "#fef2f2", color: "#991b1b" };
-  return { ...base, borderColor: "#e2e8f0", background: "#f8fafc", color: "#0f172a" };
 }
 
-function btnStyle(kind: "primary" | "ghost", disabled?: boolean): CSSProperties {
+function bigBtnStyle(kind: "primary" | "ghost", disabled?: boolean): CSSProperties {
   const base: CSSProperties = {
-    borderRadius: 12,
-    padding: "10px 12px",
-    fontSize: 14,
+    width: "100%",
+    borderRadius: 14,
+    padding: "14px 14px",
+    fontSize: 16,
     fontWeight: 900,
     cursor: disabled ? "not-allowed" : "pointer",
-    opacity: disabled ? 0.6 : 1,
+    opacity: disabled ? 0.65 : 1,
     border: "1px solid transparent",
-    width: "100%",
+    background: "#fff",
+    color: "#0f172a",
   };
+
   if (kind === "primary") {
-    return { ...base, background: "#2563eb", borderColor: "#1d4ed8", color: "#fff" };
+    return {
+      ...base,
+      background: "#2563eb",
+      color: "#fff",
+      borderColor: "#1d4ed8",
+      boxShadow: "0 12px 26px rgba(37, 99, 235, 0.18)",
+    };
   }
-  return { ...base, background: "#fff", borderColor: "#e5e7eb", color: "#0f172a" };
+
+  return {
+    ...base,
+    borderColor: "#e5e7eb",
+  };
 }
 
-function normalizeStatus(s: string | null) {
-  const v = String(s || "").trim().toUpperCase();
-  return v || "DRAFT";
-}
-
-function statusLabel(status: string | null) {
-  const s = normalizeStatus(status);
-  if (s === "CONFIRMED") return { text: "CONFIRMADO", kind: "ok" as const };
-  if (s === "CLOSED") return { text: "FECHADO", kind: "neutral" as const };
-  if (s === "SUBMITTED") return { text: "ENVIADO", kind: "warn" as const };
-  if (s === "DRAFT") return { text: "RASCUNHO", kind: "warn" as const };
-  return { text: s, kind: "neutral" as const };
-}
-
-export default function RefeicoesRestaurantePage() {
+export default function RestaurantePage() {
   const router = useRouter();
 
-  const [userEmail, setUserEmail] = useState("");
-  const [restaurantId, setRestaurantId] = useState<string | null>(null);
+  const [userEmail, setUserEmail] = useState<string>("");
+  const [userId, setUserId] = useState<string | null>(null);
+
+  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
+  const [restaurantId, setRestaurantId] = useState<string>("");
 
   const [mealDate, setMealDate] = useState<string>(isoTodayLocal());
-  const [worksites, setWorksites] = useState<Worksite[]>([]);
-  const [orders, setOrders] = useState<OrderRow[]>([]);
 
   const [loading, setLoading] = useState(false);
-  const [acting, setActing] = useState<Record<string, boolean>>({});
+  const [confirming, setConfirming] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
+
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [worksitesById, setWorksitesById] = useState<Record<string, Worksite>>({});
+  const [qtyByOrderId, setQtyByOrderId] = useState<Record<string, number>>({});
+
   async function handleSignOut() {
     await supabase.auth.signOut();
-    // volta pro módulo de refeições (não pro "/")
+    // mantém no módulo de refeições (e o middleware/login decide o resto)
     router.push("/refeicoes");
   }
 
-  const wsMap = useMemo(() => {
-    const m = new Map<string, Worksite>();
-    for (const w of worksites) m.set(w.id, w);
-    return m;
-  }, [worksites]);
-
-  const ordersLunch = useMemo(() => orders.filter((o) => o.shift === "ALMOCO"), [orders]);
-  const ordersDinner = useMemo(() => orders.filter((o) => o.shift === "JANTA"), [orders]);
-
-  const totals = useMemo(() => {
-    const countIncluded = (o: OrderRow) => (o.meal_order_lines || []).filter((l) => l.included).length;
-    const lunch = ordersLunch.reduce((acc, o) => acc + countIncluded(o), 0);
-    const dinner = ordersDinner.reduce((acc, o) => acc + countIncluded(o), 0);
-    return { lunch, dinner, all: lunch + dinner };
-  }, [ordersLunch, ordersDinner]);
-
-  function worksiteLabel(id: string) {
-    const w = wsMap.get(id);
-    if (!w) return id;
-    return `${w.name}${w.city ? ` - ${w.city}` : ""}`;
-  }
-
-  function countIncluded(o: OrderRow) {
-    return (o.meal_order_lines || []).filter((l) => l.included).length;
-  }
-
-  function canConfirm(o: OrderRow) {
-    // regra: só confirmar depois do cutoff (se for hoje e tiver cutoff_at)
-    if (!o.cutoff_at) return true;
-    if (!isSameISODate(mealDate, isoTodayLocal())) return true;
-    const now = new Date();
-    const cutoff = new Date(o.cutoff_at);
-    return now.getTime() >= cutoff.getTime();
-  }
-
-  async function loadAll(dateISO: string) {
+  async function loadContext() {
     setLoading(true);
     setError(null);
     setOkMsg(null);
 
     try {
-      // user
-      const { data: ud, error: ue } = await supabase.auth.getUser();
-      if (ue) throw ue;
+      const { data: ud } = await supabase.auth.getUser();
       const u = ud?.user;
-      if (!u) {
-        setError("Faça login para acessar o portal do restaurante.");
-        setRestaurantId(null);
-        setOrders([]);
+      setUserEmail(u?.email || "");
+      setUserId(u?.id || null);
+
+      if (!u?.id) {
+        setError("Você não está logado.");
         return;
       }
-      setUserEmail(u.email || "");
 
-      // restaurant binding
-      const { data: ru, error: re } = await supabase
+      // vínculos do usuário com restaurantes
+      const linkRes = await supabase
         .from("meal_restaurant_users")
         .select("restaurant_id")
-        .eq("user_id", u.id)
-        .maybeSingle();
+        .eq("user_id", u.id);
 
-      if (re) throw re;
-      const rid = (ru as any)?.restaurant_id ? String((ru as any).restaurant_id) : null;
-      if (!rid) {
+      if (linkRes.error) throw linkRes.error;
+
+      const ids = (linkRes.data || []).map((r: any) => String(r.restaurant_id)).filter(Boolean);
+
+      if (!ids.length) {
+        setRestaurants([]);
+        setRestaurantId("");
         setError("Seu usuário não está vinculado a nenhum restaurante (meal_restaurant_users).");
-        setRestaurantId(null);
-        setOrders([]);
         return;
       }
-      setRestaurantId(rid);
 
-      // worksites (pra mostrar o nome)
-      const wsRes = await supabase.from("meal_worksites").select("id,name,city,active").eq("active", true).order("name");
-      if (wsRes.error) throw wsRes.error;
-      setWorksites((wsRes.data || []) as Worksite[]);
+      const restRes = await supabase
+        .from("meal_restaurants")
+        .select("id,name,city,active")
+        .in("id", ids)
+        .eq("active", true)
+        .order("name", { ascending: true });
 
-      // orders + lines do dia (só quantidade; não mostramos nomes)
-      const ordRes = await supabase
-        .from("meal_orders")
-        .select("id,worksite_id,meal_date,shift,status,cutoff_at,submitted_at,confirmed_at,closed_at,meal_order_lines(id,included)")
-        .eq("restaurant_id", rid)
-        .eq("meal_date", dateISO);
+      if (restRes.error) throw restRes.error;
 
-      if (ordRes.error) throw ordRes.error;
+      const rows = (restRes.data || []) as Restaurant[];
+      setRestaurants(rows);
 
-      const rows = (ordRes.data || []) as any as OrderRow[];
-
-      // ordena por obra (nome) e depois turno
-      rows.sort((a, b) => {
-        const an = worksiteLabel(a.worksite_id);
-        const bn = worksiteLabel(b.worksite_id);
-        const c = an.localeCompare(bn, "pt-BR");
-        if (c !== 0) return c;
-        return a.shift.localeCompare(b.shift);
-      });
-
-      setOrders(rows);
+      if (!restaurantId && rows[0]?.id) setRestaurantId(rows[0].id);
     } catch (e: any) {
-      setError(e?.message || "Falha ao carregar portal do restaurante.");
+      setError(e?.message || "Falha ao carregar.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function loadDay() {
+    setLoading(true);
+    setError(null);
+    setOkMsg(null);
+
+    try {
+      if (!restaurantId) return;
+
+      const oRes = await supabase
+        .from("meal_orders")
+        .select("id,worksite_id,shift,status,cutoff_at,confirmed_at,created_at")
+        .eq("restaurant_id", restaurantId)
+        .eq("meal_date", mealDate)
+        .in("shift", ["ALMOCO", "JANTA"])
+        .order("created_at", { ascending: true });
+
+      if (oRes.error) throw oRes.error;
+
+      const o = (oRes.data || []) as any[];
+      const parsed: OrderRow[] = o.map((r) => ({
+        id: String(r.id),
+        worksite_id: String(r.worksite_id),
+        shift: r.shift as Shift,
+        status: r.status ?? null,
+        cutoff_at: r.cutoff_at ?? null,
+        confirmed_at: r.confirmed_at ?? null,
+      }));
+      setOrders(parsed);
+
+      const orderIds = parsed.map((x) => x.id);
+      const wsIds = Array.from(new Set(parsed.map((x) => x.worksite_id)));
+
+      // worksites
+      if (wsIds.length) {
+        const wsRes = await supabase.from("meal_worksites").select("id,name,city").in("id", wsIds);
+        if (wsRes.error) throw wsRes.error;
+
+        const map: Record<string, Worksite> = {};
+        for (const w of (wsRes.data || []) as any[]) {
+          map[String(w.id)] = { id: String(w.id), name: String(w.name), city: w.city ?? null };
+        }
+        setWorksitesById(map);
+      } else {
+        setWorksitesById({});
+      }
+
+      // linhas -> quantidades (included=true)
+      if (orderIds.length) {
+        const lRes = await supabase
+          .from("meal_order_lines")
+          .select("meal_order_id")
+          .in("meal_order_id", orderIds)
+          .eq("included", true);
+
+        if (lRes.error) throw lRes.error;
+
+        const counts: Record<string, number> = {};
+        for (const row of (lRes.data || []) as any[]) {
+          const oid = String(row.meal_order_id);
+          counts[oid] = (counts[oid] || 0) + 1;
+        }
+        setQtyByOrderId(counts);
+      } else {
+        setQtyByOrderId({});
+      }
+    } catch (e: any) {
+      setError(e?.message || "Falha ao carregar pedidos do dia.");
     } finally {
       setLoading(false);
     }
   }
 
   useEffect(() => {
-    loadAll(mealDate);
+    loadContext();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mealDate]);
+  }, []);
 
-  async function confirmOrder(orderId: string) {
+  useEffect(() => {
+    if (!restaurantId) return;
+    loadDay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restaurantId, mealDate]);
+
+  const byShift = useMemo(() => {
+    const mk = (shift: Shift) => {
+      const list = orders.filter((o) => o.shift === shift);
+
+      const items = list
+        .map((o) => {
+          const ws = worksitesById[o.worksite_id];
+          const wsName = ws ? `${ws.name}${ws.city ? " - " + ws.city : ""}` : o.worksite_id;
+          return {
+            orderId: o.id,
+            worksiteName: wsName,
+            qty: qtyByOrderId[o.id] || 0,
+            cutoffAt: o.cutoff_at,
+            status: o.status,
+            confirmedAt: o.confirmed_at,
+          };
+        })
+        .sort((a, b) => a.worksiteName.localeCompare(b.worksiteName, "pt-BR"));
+
+      const total = items.reduce((acc, it) => acc + it.qty, 0);
+
+      const maxCutoff = items
+        .map((it) => (it.cutoffAt ? new Date(it.cutoffAt).getTime() : null))
+        .filter((x): x is number => typeof x === "number")
+        .reduce<number | null>((acc, t) => (acc === null ? t : Math.max(acc, t)), null);
+
+      const allConfirmed = items.length > 0 && items.every((it) => Boolean(it.confirmedAt) || it.status === "CONFIRMED");
+
+      return { items, total, maxCutoff, allConfirmed };
+    };
+
+    return { ALMOCO: mk("ALMOCO"), JANTA: mk("JANTA") };
+  }, [orders, worksitesById, qtyByOrderId]);
+
+  const canConfirm = useMemo(() => {
+    const today = isoTodayLocal();
+    const now = Date.now();
+
+    const rules = (shift: Shift) => {
+      const pack = byShift[shift];
+      if (!pack.items.length) return { disabled: true, reason: "Sem pedidos." };
+      if (pack.allConfirmed) return { disabled: true, reason: "Já confirmado." };
+      if (!pack.maxCutoff) return { disabled: true, reason: "Sem horário de cutoff." };
+      if (mealDate > today) return { disabled: true, reason: "Data futura." };
+      if (mealDate === today && now < pack.maxCutoff) {
+        return { disabled: true, reason: `Aguarde cutoff (${timeHHMMFromISO(new Date(pack.maxCutoff).toISOString())}).` };
+      }
+      return { disabled: false, reason: "" };
+    };
+
+    return { ALMOCO: rules("ALMOCO"), JANTA: rules("JANTA") };
+  }, [byShift, mealDate]);
+
+  async function confirmShift(shift: Shift) {
     setError(null);
     setOkMsg(null);
 
-    setActing((p) => ({ ...p, [orderId]: true }));
-    try {
-      const { data: ud } = await supabase.auth.getUser();
-      const userId = ud?.user?.id ?? null;
-      if (!userId) throw new Error("Sessão expirada. Faça login novamente.");
+    if (!restaurantId) return;
+    if (!userId) return setError("Você não está logado."), undefined;
 
+    const ids = byShift[shift].items.map((it) => it.orderId);
+    if (!ids.length) return;
+
+    setConfirming((p) => ({ ...p, [shift]: true }));
+
+    try {
       const nowISO = new Date().toISOString();
 
-      // tenta atualizar status + confirmed_at
-      let up = await supabase
+      // tenta setar status + confirmed_at
+      const up1 = await supabase
         .from("meal_orders")
-        .update({ status: "CONFIRMED", confirmed_at: nowISO, updated_by: userId })
-        .eq("id", orderId);
+        .update({
+          status: "CONFIRMED",
+          confirmed_at: nowISO,
+          updated_by: userId,
+        })
+        .in("id", ids);
 
-      // fallback: se seu enum não tiver CONFIRMED, pelo menos grava confirmed_at
-      if (up.error && String(up.error.message || "").includes("invalid input value for enum")) {
-        up = await supabase.from("meal_orders").update({ confirmed_at: nowISO, updated_by: userId }).eq("id", orderId);
+      if (up1.error) {
+        // fallback: se o enum/status der problema, confirma só pelo timestamp
+        const up2 = await supabase
+          .from("meal_orders")
+          .update({
+            confirmed_at: nowISO,
+            updated_by: userId,
+          })
+          .in("id", ids);
+
+        if (up2.error) throw up2.error;
       }
 
-      if (up.error) throw up.error;
-
-      await loadAll(mealDate);
-      setOkMsg("Confirmado com sucesso.");
+      await loadDay();
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} confirmado.`);
     } catch (e: any) {
       setError(e?.message || "Erro ao confirmar.");
     } finally {
-      setActing((p) => ({ ...p, [orderId]: false }));
-    }
-  }
-
-  async function copyResumoRestaurante() {
-    // resumo só com quantidades por obra/turno
-    const byShift = (shift: Shift) => orders.filter((o) => o.shift === shift);
-
-    const lines = (shift: Shift) =>
-      byShift(shift)
-        .map((o) => `- ${worksiteLabel(o.worksite_id)}: ${countIncluded(o)}`)
-        .join("\n") || "-";
-
-    const msg =
-      `🍽️ PEDIDOS DO DIA (Restaurante)\n` +
-      `📅 Data: ${formatBRFromISO(mealDate)}\n\n` +
-      `ALMOÇO (total ${totals.lunch})\n${lines("ALMOCO")}\n\n` +
-      `JANTA (total ${totals.dinner})\n${lines("JANTA")}`;
-
-    try {
-      await navigator.clipboard.writeText(msg);
-      setOkMsg("Resumo copiado.");
-    } catch {
-      setError("Não consegui copiar automaticamente (permita clipboard).");
+      setConfirming((p) => ({ ...p, [shift]: false }));
     }
   }
 
@@ -299,45 +358,45 @@ export default function RefeicoesRestaurantePage() {
         <header
           className="page-header"
           style={{
+            display: "grid",
+            gridTemplateColumns: "1fr auto 1fr",
             alignItems: "center",
-            justifyContent: "space-between",
             gap: 12,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div />
+
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
             <img
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
-              style={{ width: 40, height: 40, objectFit: "contain", border: "none", background: "transparent" }}
+              style={{ width: 44, height: 44, objectFit: "contain", border: "none", background: "transparent" }}
             />
-            <div>
-              <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
-                Restaurante
-              </div>
-              <div className="brand-text-sub" style={{ opacity: 0.85 }}>
-                Totais do dia • Confirmar
-              </div>
+            <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
+              Restaurante
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
+          <div style={{ justifySelf: "end", display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+            <div style={{ fontSize: 11, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
 
-            <button
-              type="button"
-              onClick={handleSignOut}
-              style={{
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                padding: "8px 12px",
-                fontSize: 13,
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Sair
-            </button>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <button
+                type="button"
+                onClick={handleSignOut}
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  padding: "8px 12px",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+              >
+                Sair
+              </button>
+            </div>
           </div>
         </header>
 
@@ -375,45 +434,77 @@ export default function RefeicoesRestaurantePage() {
           ) : null}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
+            <div style={{ gridColumn: "span 12" }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
+                Restaurante
+              </div>
+              <select
+                value={restaurantId}
+                onChange={(e) => setRestaurantId(e.target.value)}
+                disabled={loading || restaurants.length <= 1}
+                style={{
+                  width: "100%",
+                  borderRadius: 14,
+                  border: "1px solid #e5e7eb",
+                  padding: "12px 12px",
+                  fontSize: 16,
+                  outline: "none",
+                  background: "#ffffff",
+                  color: "var(--gp-text)",
+                }}
+              >
+                {restaurants.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {r.city ? ` - ${r.city}` : ""}
+                  </option>
+                ))}
+              </select>
+            </div>
+
             <div style={{ gridColumn: "span 6" }}>
-              <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 6 }}>
                 Data
               </div>
               <input
                 type="date"
                 value={mealDate}
                 onChange={(e) => setMealDate(e.target.value)}
+                disabled={loading}
                 style={{
                   width: "100%",
-                  marginTop: 6,
                   borderRadius: 14,
                   border: "1px solid #e5e7eb",
                   padding: "12px 12px",
                   fontSize: 16,
                   outline: "none",
-                  background: "#fff",
+                  background: "#ffffff",
+                  color: "var(--gp-text)",
                 }}
-                disabled={loading}
               />
             </div>
 
             <div style={{ gridColumn: "span 6", display: "flex", alignItems: "flex-end", gap: 10 }}>
-              <button type="button" style={btnStyle("ghost", loading)} onClick={() => loadAll(mealDate)} disabled={loading}>
-                Atualizar
-              </button>
-              <button type="button" style={btnStyle("ghost", loading)} onClick={copyResumoRestaurante} disabled={loading}>
-                Copiar resumo
+              <button type="button" onClick={loadDay} disabled={loading || !restaurantId} style={bigBtnStyle("ghost", loading || !restaurantId)}>
+                {loading ? "Atualizando..." : "Atualizar"}
               </button>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginTop: 6 }}>
+            <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
               <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
-                <div style={{ fontSize: 28, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
+                <div style={cardTitleStyle("#166534")}>Almoço</div>
+                <div style={{ fontSize: 28, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{byShift.ALMOCO.total}</div>
+                <div style={{ fontSize: 12, color: "#166534" }}>
+                  cutoff: {timeHHMMFromISO(byShift.ALMOCO.maxCutoff ? new Date(byShift.ALMOCO.maxCutoff).toISOString() : null)}
+                </div>
               </div>
+
               <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
-                <div style={{ fontSize: 28, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
+                <div style={cardTitleStyle("#1d4ed8")}>Janta</div>
+                <div style={{ fontSize: 28, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{byShift.JANTA.total}</div>
+                <div style={{ fontSize: 12, color: "#1d4ed8" }}>
+                  cutoff: {timeHHMMFromISO(byShift.JANTA.maxCutoff ? new Date(byShift.JANTA.maxCutoff).toISOString() : null)}
+                </div>
               </div>
             </div>
           </div>
@@ -426,56 +517,59 @@ export default function RefeicoesRestaurantePage() {
               <div className="section-title">Almoço</div>
               <div className="section-subtitle">Somente quantidades por obra. Confirmar após o cutoff.</div>
             </div>
-            <div style={pillStyle("neutral")}>{formatBRFromISO(mealDate)}</div>
+            <div
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+              }}
+            >
+              {formatBRFromISO(mealDate)}
+            </div>
           </div>
 
-          {ordersLunch.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--gp-muted-soft)" }}>Nenhum pedido de almoço para este dia.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {ordersLunch.map((o) => {
-                const st = statusLabel(o.status);
-                const qty = countIncluded(o);
-                const cutoff = timeHHMMFromISODateTime(o.cutoff_at);
-                const allow = canConfirm(o);
-                const isConfirmed = normalizeStatus(o.status) === "CONFIRMED" || Boolean(o.confirmed_at);
-
-                return (
-                  <div key={o.id} style={{ borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <div style={{ fontSize: 14, fontWeight: 950, color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.02em" }}>
-                        {worksiteLabel(o.worksite_id)}
-                      </div>
-
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <div style={pillStyle("neutral")}>Qtd: {qty}</div>
-                        <div style={pillStyle("neutral")}>Cutoff: {cutoff}</div>
-                        <div style={pillStyle(st.kind)}>{st.text}</div>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10 }}>
-                      <button
-                        type="button"
-                        style={btnStyle("primary", !allow || acting[o.id] || isConfirmed || qty === 0)}
-                        disabled={!allow || acting[o.id] || isConfirmed || qty === 0}
-                        onClick={() => confirmOrder(o.id)}
-                        title={!allow ? "Aguardando cutoff" : isConfirmed ? "Já confirmado" : ""}
-                      >
-                        {acting[o.id] ? "Confirmando..." : isConfirmed ? "Confirmado" : "Confirmar"}
-                      </button>
-
-                      {!allow ? (
-                        <div style={{ marginTop: 6, fontSize: 12, color: "var(--gp-muted-soft)" }}>
-                          Aguardando cutoff para confirmar.
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
+          {byShift.ALMOCO.items.length ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              {byShift.ALMOCO.items.map((it) => (
+                <div
+                  key={it.orderId}
+                  style={{
+                    borderRadius: 14,
+                    border: "1px solid #eef2f7",
+                    background: "#fff",
+                    padding: "10px 12px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    alignItems: "center",
+                  }}
+                >
+                  <div style={{ fontWeight: 900, color: "#0f172a" }}>{it.worksiteName}</div>
+                  <div style={{ fontWeight: 950, fontSize: 18, color: "#166534" }}>{it.qty}</div>
+                </div>
+              ))}
             </div>
+          ) : (
+            <div style={{ fontSize: 13, color: "var(--gp-muted-soft)" }}>Nenhum pedido de almoço para este dia.</div>
           )}
+
+          <div style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={() => confirmShift("ALMOCO")}
+              disabled={confirming.ALMOCO || canConfirm.ALMOCO.disabled}
+              style={bigBtnStyle("primary", confirming.ALMOCO || canConfirm.ALMOCO.disabled)}
+              title={canConfirm.ALMOCO.reason || ""}
+            >
+              {byShift.ALMOCO.allConfirmed ? "Almoço confirmado" : confirming.ALMOCO ? "Confirmando..." : "Confirmar Almoço"}
+            </button>
+            {canConfirm.ALMOCO.disabled && !byShift.ALMOCO.allConfirmed ? (
+              <div style={{ marginTop: 6, fontSize: 12, color: "var(--gp-muted-soft)" }}>{canConfirm.ALMOCO.reason}</div>
+            ) : null}
+          </div>
         </div>
 
         {/* JANTA */}
@@ -485,61 +579,62 @@ export default function RefeicoesRestaurantePage() {
               <div className="section-title">Janta</div>
               <div className="section-subtitle">Somente quantidades por obra. Confirmar após o cutoff.</div>
             </div>
-            <div style={pillStyle("neutral")}>{formatBRFromISO(mealDate)}</div>
+            <div
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+              }}
+            >
+              {formatBRFromISO(mealDate)}
+            </div>
           </div>
 
-          {ordersDinner.length === 0 ? (
-            <div style={{ fontSize: 13, color: "var(--gp-muted-soft)" }}>Nenhum pedido de janta para este dia.</div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {ordersDinner.map((o) => {
-                const st = statusLabel(o.status);
-                const qty = countIncluded(o);
-                const cutoff = timeHHMMFromISODateTime(o.cutoff_at);
-                const allow = canConfirm(o);
-                const isConfirmed = normalizeStatus(o.status) === "CONFIRMED" || Boolean(o.confirmed_at);
-
-                return (
-                  <div key={o.id} style={{ borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <div style={{ fontSize: 14, fontWeight: 950, color: "#0f172a", textTransform: "uppercase", letterSpacing: "0.02em" }}>
-                        {worksiteLabel(o.worksite_id)}
-                      </div>
-
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <div style={pillStyle("neutral")}>Qtd: {qty}</div>
-                        <div style={pillStyle("neutral")}>Cutoff: {cutoff}</div>
-                        <div style={pillStyle(st.kind)}>{st.text}</div>
-                      </div>
-                    </div>
-
-                    <div style={{ marginTop: 10 }}>
-                      <button
-                        type="button"
-                        style={btnStyle("primary", !allow || acting[o.id] || isConfirmed || qty === 0)}
-                        disabled={!allow || acting[o.id] || isConfirmed || qty === 0}
-                        onClick={() => confirmOrder(o.id)}
-                        title={!allow ? "Aguardando cutoff" : isConfirmed ? "Já confirmado" : ""}
-                      >
-                        {acting[o.id] ? "Confirmando..." : isConfirmed ? "Confirmado" : "Confirmar"}
-                      </button>
-
-                      {!allow ? (
-                        <div style={{ marginTop: 6, fontSize: 12, color: "var(--gp-muted-soft)" }}>
-                          Aguardando cutoff para confirmar.
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                );
-              })}
+          {byShift.JANTA.items.length ? (
+            <div style={{ display: "grid", gap: 8 }}>
+              {byShift.JANTA.items.map((it) => (
+                <div
+                  key={it.orderId}
+                  style={{
+                    borderRadius: 14,
+                    border: "1px solid #eef2f7",
+                    background: "#fff",
+                    padding: "10px 12px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    gap: 10,
+                    alignItems: "center",
+                  }}
+                >
+                  <div style={{ fontWeight: 900, color: "#0f172a" }}>{it.worksiteName}</div>
+                  <div style={{ fontWeight: 950, fontSize: 18, color: "#1d4ed8" }}>{it.qty}</div>
+                </div>
+              ))}
             </div>
+          ) : (
+            <div style={{ fontSize: 13, color: "var(--gp-muted-soft)" }}>Nenhum pedido de janta para este dia.</div>
           )}
+
+          <div style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              onClick={() => confirmShift("JANTA")}
+              disabled={confirming.JANTA || canConfirm.JANTA.disabled}
+              style={bigBtnStyle("primary", confirming.JANTA || canConfirm.JANTA.disabled)}
+              title={canConfirm.JANTA.reason || ""}
+            >
+              {byShift.JANTA.allConfirmed ? "Janta confirmada" : confirming.JANTA ? "Confirmando..." : "Confirmar Janta"}
+            </button>
+            {canConfirm.JANTA.disabled && !byShift.JANTA.allConfirmed ? (
+              <div style={{ marginTop: 6, fontSize: 12, color: "var(--gp-muted-soft)" }}>{canConfirm.JANTA.reason}</div>
+            ) : null}
+          </div>
         </div>
 
-        {loading ? <div style={{ marginTop: 12, fontSize: 13, color: "var(--gp-muted-soft)" }}>Carregando…</div> : null}
-
-        <div style={{ marginTop: 14, fontSize: 12, color: "var(--gp-muted-soft)" }}>
+        <div style={{ marginTop: 12, fontSize: 12, color: "var(--gp-muted-soft)", textAlign: "center" }}>
           * Este portal não mostra nomes (só quantidades). A empresa mantém os detalhes e o audit.
         </div>
       </div>
