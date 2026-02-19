@@ -95,7 +95,7 @@ function segBtnStyle(active: boolean, tone: "neutral" | "lunch" | "dinner"): CSS
     background: "#ffffff",
     padding: "8px 12px",
     fontSize: 14,
-    fontWeight: 900,
+    fontWeight: 800,
     cursor: "pointer",
     lineHeight: 1,
     userSelect: "none",
@@ -104,12 +104,12 @@ function segBtnStyle(active: boolean, tone: "neutral" | "lunch" | "dinner"): CSS
   if (!active) return base;
 
   if (tone === "lunch") {
-    return { ...base, borderColor: "#86efac", background: "#ecfdf5", color: "#166534" };
+    return { ...base, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534" };
   }
   if (tone === "dinner") {
-    return { ...base, borderColor: "#93c5fd", background: "#eff6ff", color: "#1d4ed8" };
+    return { ...base, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8" };
   }
-  return { ...base, borderColor: "#cbd5e1", background: "#f8fafc", color: "#0f172a" };
+  return { ...base, border: "1px solid #cbd5e1", background: "#f8fafc", color: "#0f172a" };
 }
 
 function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost", disabled?: boolean): CSSProperties {
@@ -118,45 +118,34 @@ function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost"
     borderRadius: 14,
     padding: "14px 14px",
     fontSize: 16,
-    fontWeight: 950,
+    fontWeight: 900,
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.65 : 1,
     border: "1px solid transparent",
   };
 
   if (kind === "primaryLunch") {
-    return { ...base, background: "#22c55e", color: "#fff", borderColor: "#16a34a", boxShadow: "0 12px 26px rgba(34,197,94,0.16)" };
+    return {
+      ...base,
+      background: "#22c55e",
+      color: "#fff",
+      borderColor: "#16a34a",
+      boxShadow: "0 12px 26px rgba(34, 197, 94, 0.18)",
+    };
   }
   if (kind === "primaryDinner") {
-    return { ...base, background: "#2563eb", color: "#fff", borderColor: "#1d4ed8", boxShadow: "0 12px 26px rgba(37,99,235,0.16)" };
+    return {
+      ...base,
+      background: "#2563eb",
+      color: "#fff",
+      borderColor: "#1d4ed8",
+      boxShadow: "0 12px 26px rgba(37, 99, 235, 0.18)",
+    };
   }
   if (kind === "danger") {
     return { ...base, background: "#fff", color: "#991b1b", borderColor: "#fecaca" };
   }
   return { ...base, background: "#fff", color: "#0f172a", borderColor: "#e5e7eb" };
-}
-
-function chipStyle(active: boolean, shift: Shift): CSSProperties {
-  const base: CSSProperties = {
-    borderRadius: 999,
-    border: "1px solid #e5e7eb",
-    background: "#fff",
-    padding: "7px 10px",
-    fontSize: 13,
-    fontWeight: 950,
-    lineHeight: 1,
-    cursor: "pointer",
-    userSelect: "none",
-    whiteSpace: "nowrap",
-  };
-
-  if (shift === "ALMOCO") {
-    if (active) return { ...base, borderColor: "#86efac", background: "#ecfdf5", color: "#166534" };
-    return { ...base, borderColor: "#d1fae5", background: "#f0fdf4", color: "#166534" };
-  }
-
-  if (active) return { ...base, borderColor: "#93c5fd", background: "#eff6ff", color: "#1d4ed8" };
-  return { ...base, borderColor: "#dbeafe", background: "#f8fbff", color: "#1d4ed8" };
 }
 
 export default function RefeicoesPage() {
@@ -196,10 +185,6 @@ export default function RefeicoesPage() {
 
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
-
-  // mini campo inline (visitante)
-  const [visitorName, setVisitorName] = useState("");
-  const [visitorTarget, setVisitorTarget] = useState<Shift>("ALMOCO");
 
   const styles: Record<string, CSSProperties> = {
     label: {
@@ -252,7 +237,7 @@ export default function RefeicoesPage() {
     return { lunch, dinner };
   }, [contract]);
 
-  // default mode: almoço até 11h, depois janta (somente se for hoje)
+  // default mode: almoço até 11h, depois janta (somente se a data for hoje)
   useEffect(() => {
     const today = isoTodayLocal();
     if (!isSameISODate(mealDate, today)) {
@@ -265,12 +250,6 @@ export default function RefeicoesPage() {
     const after11 = hh > 11 || (hh === 11 && mm >= 0);
     setMode(after11 ? "JANTA" : "ALMOCO");
   }, [mealDate]);
-
-  useEffect(() => {
-    // quando muda modo, define alvo do visitante (pra AMBOS não ficar confuso)
-    if (mode === "ALMOCO") setVisitorTarget("ALMOCO");
-    if (mode === "JANTA") setVisitorTarget("JANTA");
-  }, [mode]);
 
   async function handleSignOut() {
     await supabase.auth.signOut();
@@ -309,6 +288,7 @@ export default function RefeicoesPage() {
     const emps = (empRes.data || []) as Employee[];
     const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
 
+    // favoritos primeiro
     emps.sort((a, b) => {
       const af = favIds.has(a.id) ? 1 : 0;
       const bf = favIds.has(b.id) ? 1 : 0;
@@ -379,8 +359,16 @@ export default function RefeicoesPage() {
 
     if (e2) throw e2;
 
-    const empIds = uniq((lines || []).map((r: any) => (r.employee_id ? String(r.employee_id) : "")).filter(Boolean));
-    const visitors = uniq((lines || []).map((r: any) => (r.visitor_name ? String(r.visitor_name) : "")).filter(Boolean));
+    const empIds = uniq(
+      (lines || [])
+        .map((r: any) => (r.employee_id ? String(r.employee_id) : ""))
+        .filter(Boolean)
+    );
+    const visitors = uniq(
+      (lines || [])
+        .map((r: any) => (r.visitor_name ? String(r.visitor_name) : ""))
+        .filter(Boolean)
+    );
 
     return { orderId, employeeIds: empIds, visitors };
   }
@@ -412,6 +400,13 @@ export default function RefeicoesPage() {
     setError(null);
     try {
       const userId = await loadUser();
+
+      // ✅ garante que não entra sem sessão
+      if (!userId) {
+        router.replace("/");
+        return;
+      }
+
       await loadWorksites();
       if (worksiteId) {
         await loadOverride(worksiteId, userId);
@@ -428,6 +423,7 @@ export default function RefeicoesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // quando muda obra/data: recarrega contrato, favoritos, funcionários e saved
   useEffect(() => {
     (async () => {
       if (!worksiteId) return;
@@ -439,15 +435,21 @@ export default function RefeicoesPage() {
         const { data } = await supabase.auth.getUser();
         const userId = data?.user?.id ?? null;
 
+        // se perdeu sessão, volta pro login
+        if (!userId) {
+          router.replace("/");
+          return;
+        }
+
         await loadEmployeesAndFavorites(worksiteId);
         const c = await loadContract(worksiteId, mealDate);
         await loadOverride(worksiteId, userId);
 
+        // reset seleção local (não apaga saved)
         setSelectedLunch(new Set());
         setSelectedDinner(new Set());
         setVisitorsLunch([]);
         setVisitorsDinner([]);
-        setVisitorName("");
 
         if (c?.restaurant_id) {
           await refreshSaved();
@@ -561,17 +563,12 @@ export default function RefeicoesPage() {
     }
   }
 
-  function addVisitorInline() {
-    const name = visitorName.trim();
+  async function addVisitor(targetShift: Shift) {
+    const name = window.prompt("Nome do visitante (sem cadastro):")?.trim();
     if (!name) return;
 
-    const target: Shift = mode === "AMBOS" ? visitorTarget : (mode as Shift);
-
-    if (target === "ALMOCO") setVisitorsLunch((p) => uniq([...p, name]));
+    if (targetShift === "ALMOCO") setVisitorsLunch((p) => uniq([...p, name]));
     else setVisitorsDinner((p) => uniq([...p, name]));
-
-    setVisitorName("");
-    setOkMsg(`Pessoa adicionada em ${target === "ALMOCO" ? "Almoço" : "Janta"}.`);
   }
 
   async function saveShift(shift: Shift) {
@@ -594,6 +591,10 @@ export default function RefeicoesPage() {
     try {
       const { data: ud } = await supabase.auth.getUser();
       const userId = ud?.user?.id ?? null;
+      if (!userId) {
+        router.replace("/");
+        return;
+      }
 
       const cutoffTime = shift === "ALMOCO" ? contract.cutoff_lunch : contract.cutoff_dinner;
       const cutoffAtISO = buildCutoffAtISO(mealDate, cutoffTime);
@@ -653,7 +654,6 @@ export default function RefeicoesPage() {
       }
 
       const rows: any[] = [];
-
       for (const eid of selectedIds) {
         rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: userId, updated_by: userId });
       }
@@ -704,7 +704,8 @@ export default function RefeicoesPage() {
 
       await refreshSaved();
       clearSelection(shift);
-      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (apagado). Audit fica registrado.`);
+
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (apagado).`);
     } catch (e: any) {
       setError(e?.message || "Erro ao cancelar.");
     } finally {
@@ -740,7 +741,6 @@ export default function RefeicoesPage() {
     let list = employees;
 
     if (q) list = list.filter((e) => e.full_name.toLowerCase().includes(q));
-
     if (!onlyMarked) return list;
 
     return list.filter((e) => {
@@ -790,50 +790,28 @@ export default function RefeicoesPage() {
     return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
   }, [mode, canceling, savedCounts]);
 
-  // scroll seguro (barra fixa)
-  const containerPadBottom = "calc(360px + env(safe-area-inset-bottom))";
-
-  const rowBase: CSSProperties = {
-    borderRadius: 16,
-    border: "1px solid #eef2f7",
-    background: "#fff",
-    padding: "10px 12px",
-  };
-
-  const rowClickable: CSSProperties = {
-    cursor: "pointer",
-    userSelect: "none",
-  };
-
-  const rowTintLunch: CSSProperties = {
-    borderColor: "#86efac",
-    background: "#f0fdf4",
-  };
-
-  const rowTintDinner: CSSProperties = {
-    borderColor: "#93c5fd",
-    background: "#f8fbff",
-  };
-
   return (
     <div className="page-root">
-      <div className="page-container" style={{ paddingBottom: containerPadBottom }}>
-        <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img
-              src="/gpasfalto-logo.png"
-              alt="GP Asfalto"
-              style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }}
-            />
-            <div>
-              <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
-                Refeições
-              </div>
-              <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
+      <div className="page-container" style={{ paddingBottom: 260 }}>
+        {/* ✅ HEADER: logo maior e centralizado; logado aqui em cima */}
+        <header className="page-header" style={{ flexDirection: "column", alignItems: "center", gap: 8 }}>
+          <img
+            src="/gpasfalto-logo.png"
+            alt="GP Asfalto"
+            style={{ width: 54, height: 54, objectFit: "contain", border: "none", background: "transparent" }}
+          />
+
+          <div style={{ textAlign: "center" }}>
+            <div className="brand-text-main" style={{ lineHeight: 1.05 }}>
+              Refeições
             </div>
+            <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
+            {userEmail ? (
+              <div style={{ marginTop: 6, fontSize: 12, color: "var(--gp-muted-soft)" }}>Logado: {userEmail}</div>
+            ) : null}
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <div style={{ width: "100%", display: "flex", justifyContent: "flex-end", gap: 10 }}>
             <div
               style={{
                 borderRadius: 999,
@@ -841,7 +819,7 @@ export default function RefeicoesPage() {
                 background: "#fff",
                 padding: "8px 12px",
                 fontSize: 13,
-                fontWeight: 900,
+                fontWeight: 800,
               }}
               title="Data selecionada"
             >
@@ -856,7 +834,7 @@ export default function RefeicoesPage() {
                 background: "#fff",
                 padding: "8px 12px",
                 fontSize: 13,
-                fontWeight: 950,
+                fontWeight: 900,
                 cursor: "pointer",
               }}
             >
@@ -869,11 +847,8 @@ export default function RefeicoesPage() {
           <div className="section-header" style={{ alignItems: "flex-start" }}>
             <div>
               <div className="section-title">Marcação</div>
-              <div className="section-subtitle" style={{ marginTop: 2 }}>
-                Escolha a obra, marque rápido e no final confira os totais antes de salvar.
-              </div>
+              {/* ✅ removido o texto grande “Escolha a obra...” */}
             </div>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
           </div>
 
           {error ? (
@@ -911,7 +886,12 @@ export default function RefeicoesPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Obra</label>
-              <select style={styles.select} value={worksiteId} onChange={(e) => setWorksiteId(e.target.value)} disabled={loading || worksites.length === 0}>
+              <select
+                style={styles.select}
+                value={worksiteId}
+                onChange={(e) => setWorksiteId(e.target.value)}
+                disabled={loading || worksites.length === 0}
+              >
                 {worksites.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.name}
@@ -923,17 +903,37 @@ export default function RefeicoesPage() {
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data</label>
-              <input style={styles.input} type="date" value={mealDate} onChange={(e) => setMealDate(e.target.value)} disabled={loading} />
+              <input
+                style={styles.input}
+                type="date"
+                value={mealDate}
+                onChange={(e) => setMealDate(e.target.value)}
+                disabled={loading}
+              />
               <div style={{ marginTop: 6, ...styles.hint }}>Padrão: abre Almoço até 11h, depois Janta.</div>
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Buscar</label>
-              <input style={styles.input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nome do funcionário..." />
+              <input
+                style={styles.input}
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Nome do funcionário..."
+              />
               <div style={{ marginTop: 6, ...styles.hint }}>Dica: marque e use “Mostrar só marcados”.</div>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div
+              style={{
+                gridColumn: "span 12",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" style={segBtnStyle(mode === "ALMOCO", "lunch")} onClick={() => setMode("ALMOCO")}>
                   Almoço
@@ -951,13 +951,22 @@ export default function RefeicoesPage() {
                 </div>
               </div>
 
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 900 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800 }}>
                 <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
                 Mostrar só marcados
               </label>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div
+              style={{
+                gridColumn: "span 12",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => copyYesterday(mode)} disabled={loading}>
                   Copiar ontem
@@ -967,6 +976,9 @@ export default function RefeicoesPage() {
                 </button>
                 <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => clearSelection(mode)} disabled={loading}>
                   Limpar
+                </button>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={copyResumo} disabled={loading}>
+                  Copiar resumo
                 </button>
               </div>
 
@@ -979,8 +991,9 @@ export default function RefeicoesPage() {
                     color: "#166534",
                     padding: "6px 10px",
                     fontSize: 12,
-                    fontWeight: 950,
+                    fontWeight: 900,
                   }}
+                  title="Marcados agora / Salvos no banco"
                 >
                   Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
                 </div>
@@ -992,8 +1005,9 @@ export default function RefeicoesPage() {
                     color: "#1d4ed8",
                     padding: "6px 10px",
                     fontSize: 12,
-                    fontWeight: 950,
+                    fontWeight: 900,
                   }}
+                  title="Marcados agora / Salvos no banco"
                 >
                   Janta: {totals.dinner} (salvo: {savedCounts.dinner})
                 </div>
@@ -1001,7 +1015,17 @@ export default function RefeicoesPage() {
             </div>
 
             {!contract ? (
-              <div style={{ gridColumn: "span 12", borderRadius: 14, border: "1px solid #fde68a", background: "#fffbeb", padding: "10px 12px", color: "#92400e", fontSize: 13 }}>
+              <div
+                style={{
+                  gridColumn: "span 12",
+                  borderRadius: 14,
+                  border: "1px solid #fde68a",
+                  background: "#fffbeb",
+                  padding: "10px 12px",
+                  color: "#92400e",
+                  fontSize: 13,
+                }}
+              >
                 ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode marcar, mas não vai conseguir salvar.
               </div>
             ) : null}
@@ -1009,161 +1033,144 @@ export default function RefeicoesPage() {
         </div>
 
         <div className="section-card" style={{ marginTop: 16 }}>
-          <div className="section-header" style={{ alignItems: "flex-start", gap: 10 }}>
+          <div className="section-header">
             <div>
               <div className="section-title">Funcionários</div>
-              <div className="section-subtitle">Toque no nome para marcar/desmarcar (modo rápido). No “Ambos”, use os botões AL/JÁ.</div>
+              <div className="section-subtitle">Toque para marcar/desmarcar no turno selecionado.</div>
             </div>
-
-            {/* mini campo inline */}
-            <div style={{ display: "grid", gap: 8, justifyItems: "end" }}>
-              {mode === "AMBOS" ? (
-                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                  <span style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)" }}>Adicionar em:</span>
-                  <button type="button" style={segBtnStyle(visitorTarget === "ALMOCO", "lunch")} onClick={() => setVisitorTarget("ALMOCO")}>
-                    Almoço
-                  </button>
-                  <button type="button" style={segBtnStyle(visitorTarget === "JANTA", "dinner")} onClick={() => setVisitorTarget("JANTA")}>
-                    Janta
-                  </button>
-                </div>
-              ) : null}
-
-              <div style={{ display: "flex", gap: 8, alignItems: "center", width: "min(420px, 100%)" }}>
-                <input
-                  style={{ ...styles.input, padding: "10px 12px", fontSize: 15 }}
-                  value={visitorName}
-                  onChange={(e) => setVisitorName(e.target.value)}
-                  placeholder="Visitante (sem cadastro)…"
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") addVisitorInline();
-                  }}
-                />
-                <button
-                  type="button"
-                  onClick={addVisitorInline}
-                  style={{
-                    borderRadius: 14,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                    padding: "10px 12px",
-                    fontSize: 14,
-                    fontWeight: 950,
-                    cursor: "pointer",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  + Pessoa
-                </button>
-              </div>
-            </div>
+            <button
+              type="button"
+              onClick={() => addVisitor(mode === "JANTA" ? "JANTA" : "ALMOCO")}
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+              title="Adicionar visitante sem cadastro"
+            >
+              + Pessoa
+            </button>
           </div>
 
-          <div style={{ display: "grid", gap: 10 }}>
+          <div style={{ display: "grid", gap: 12 }}>
             {filteredEmployees.map((e) => {
               const lunchOn = selectedLunch.has(e.id);
               const dinnerOn = selectedDinner.has(e.id);
               const fav = favoriteIds.has(e.id);
 
-              const singleMode: Shift | null = mode === "ALMOCO" ? "ALMOCO" : mode === "JANTA" ? "JANTA" : null;
-              const isClickable = Boolean(singleMode);
+              const card: CSSProperties = {
+                borderRadius: 16,
+                border: "1px solid #eef2f7",
+                background: "#fff",
+                padding: 12,
+              };
 
-              const tinted =
-                singleMode === "ALMOCO" ? (lunchOn ? rowTintLunch : undefined) : singleMode === "JANTA" ? (dinnerOn ? rowTintDinner : undefined) : undefined;
+              const nameStyle: CSSProperties = {
+                fontSize: 14,
+                fontWeight: 900,
+                color: "#0f172a",
+                letterSpacing: "0.02em",
+                textTransform: "uppercase",
+              };
+
+              const tag: CSSProperties = {
+                borderRadius: 999,
+                padding: "6px 10px",
+                fontSize: 12,
+                fontWeight: 900,
+                border: "1px solid #fed7aa",
+                background: "#fff7ed",
+                color: "#9a3412",
+              };
+
+              const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
+                if (tone === "ALMOCO") {
+                  return {
+                    width: "100%",
+                    borderRadius: 14,
+                    border: `1px solid ${active ? "#86efac" : "#d1fae5"}`,
+                    background: active ? "#ecfdf5" : "#f0fdf4",
+                    color: "#166534",
+                    padding: "14px 14px",
+                    fontSize: 16,
+                    fontWeight: 900,
+                    cursor: "pointer",
+                  };
+                }
+                return {
+                  width: "100%",
+                  borderRadius: 14,
+                  border: `1px solid ${active ? "#93c5fd" : "#dbeafe"}`,
+                  background: active ? "#eff6ff" : "#f8fbff",
+                  color: "#1d4ed8",
+                  padding: "14px 14px",
+                  fontSize: 16,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                };
+              };
 
               return (
-                <div
-                  key={e.id}
-                  style={{
-                    ...rowBase,
-                    ...(isClickable ? rowClickable : null),
-                    ...(tinted ? tinted : null),
-                  }}
-                  role={isClickable ? "button" : undefined}
-                  tabIndex={isClickable ? 0 : undefined}
-                  onClick={() => {
-                    if (!singleMode) return;
-                    toggleEmployee(singleMode, e.id);
-                  }}
-                  onKeyDown={(ev) => {
-                    if (!singleMode) return;
-                    if (ev.key === "Enter" || ev.key === " ") toggleEmployee(singleMode, e.id);
-                  }}
-                >
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                    <div style={{ minWidth: 0 }}>
-                      <div
-                        style={{
-                          fontSize: 14,
-                          fontWeight: 950,
-                          color: "#0f172a",
-                          letterSpacing: "0.02em",
-                          textTransform: "uppercase",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {e.full_name} {fav ? <span title="Favorito">★</span> : null}
-                      </div>
-                      <div style={{ marginTop: 4, fontSize: 12, color: "var(--gp-muted-soft)" }}>
-                        {e.is_third_party ? "Terceiro" : "Equipe"} • toque para marcar
-                      </div>
-                    </div>
+                <div key={e.id} style={card}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div style={nameStyle}>{e.full_name}</div>
+                    {fav ? <div style={tag}>favorito</div> : null}
+                  </div>
 
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
-                      {mode === "AMBOS" ? (
-                        <>
-                          <button
-                            type="button"
-                            style={chipStyle(lunchOn, "ALMOCO")}
-                            onClick={(ev) => {
-                              ev.stopPropagation();
-                              toggleEmployee("ALMOCO", e.id);
-                            }}
-                          >
-                            {lunchOn ? "✓ AL" : "+ AL"}
-                          </button>
-                          <button
-                            type="button"
-                            style={chipStyle(dinnerOn, "JANTA")}
-                            onClick={(ev) => {
-                              ev.stopPropagation();
-                              toggleEmployee("JANTA", e.id);
-                            }}
-                          >
-                            {dinnerOn ? "✓ JA" : "+ JA"}
-                          </button>
-                        </>
-                      ) : mode === "ALMOCO" ? (
-                        <div style={chipStyle(lunchOn, "ALMOCO")}>{lunchOn ? "✓ Almoço" : "+ Almoço"}</div>
-                      ) : (
-                        <div style={chipStyle(dinnerOn, "JANTA")}>{dinnerOn ? "✓ Janta" : "+ Janta"}</div>
-                      )}
-                    </div>
+                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                    {mode === "AMBOS" ? (
+                      <>
+                        <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>
+                          {lunchOn ? "✓ Almoço" : "+ Almoço"}
+                        </button>
+                        <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>
+                          {dinnerOn ? "✓ Janta" : "+ Janta"}
+                        </button>
+                      </>
+                    ) : mode === "ALMOCO" ? (
+                      <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>
+                        {lunchOn ? "✓ Almoço" : "+ Almoço"}
+                      </button>
+                    ) : (
+                      <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>
+                        {dinnerOn ? "✓ Janta" : "+ Janta"}
+                      </button>
+                    )}
                   </div>
                 </div>
               );
             })}
 
             {(visitorsLunch.length > 0 || visitorsDinner.length > 0) ? (
-              <div style={{ ...rowBase }}>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+              <div style={{ borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 }}>
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 900,
+                    color: "var(--gp-muted)",
+                    textTransform: "uppercase",
+                    letterSpacing: "0.08em",
+                  }}
+                >
                   Pessoas sem cadastro
                 </div>
 
                 <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
                   {visitorsLunch.map((v) => (
-                    <div key={`l-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                      <div style={{ fontWeight: 900, color: "#166534" }}>🍽️ {v}</div>
+                    <div key={`l-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 800, color: "#166534" }}>🍽️ {v}</div>
                       <button type="button" onClick={() => setVisitorsLunch((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>
                         Remover
                       </button>
                     </div>
                   ))}
                   {visitorsDinner.map((v) => (
-                    <div key={`d-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-                      <div style={{ fontWeight: 900, color: "#1d4ed8" }}>🌙 {v}</div>
+                    <div key={`d-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 800, color: "#1d4ed8" }}>🌙 {v}</div>
                       <button type="button" onClick={() => setVisitorsDinner((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>
                         Remover
                       </button>
@@ -1194,13 +1201,13 @@ export default function RefeicoesPage() {
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 950, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
               <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
               <div style={{ fontSize: 12, color: "#166534" }}>salvo: {savedCounts.lunch} • limite {limits.lunch}</div>
             </div>
 
             <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 950, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
               <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
               <div style={{ fontSize: 12, color: "#1d4ed8" }}>salvo: {savedCounts.dinner} • limite {limits.dinner}</div>
             </div>
@@ -1217,7 +1224,12 @@ export default function RefeicoesPage() {
 
           <div style={{ height: 10 }} />
 
-          <button type="button" style={bigBtnStyle("danger", bottomCancelDisabled)} onClick={handleBottomCancel} disabled={bottomCancelDisabled || !contract}>
+          <button
+            type="button"
+            style={bigBtnStyle("danger", bottomCancelDisabled)}
+            onClick={handleBottomCancel}
+            disabled={bottomCancelDisabled || !contract}
+          >
             {canceling.ALMOCO || canceling.JANTA ? "Cancelando..." : bottomCancelLabel}
           </button>
 
