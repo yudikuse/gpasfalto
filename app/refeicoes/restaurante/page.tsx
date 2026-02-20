@@ -43,13 +43,6 @@ function isoTodayLocal(): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-function timeHHMM(t: string | null) {
-  if (!t) return null;
-  const parts = String(t).split(":");
-  if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
-  return String(t);
-}
-
 // pega o "mais tarde" (máximo) entre HH:MM / HH:MM:SS
 function maxTime(a: string | null, b: string | null) {
   if (!a) return b;
@@ -70,8 +63,15 @@ function buildAtLocal(mealDateISO: string, hhmmss: string | null) {
 export default function RestaurantePage() {
   const router = useRouter();
 
+  const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
+
+  // login simples (quando estiver deslogado)
+  const [loginEmail, setLoginEmail] = useState("");
+  const [loginSending, setLoginSending] = useState(false);
+  const [loginInfo, setLoginInfo] = useState<string | null>(null);
+  const [loginErr, setLoginErr] = useState<string | null>(null);
 
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [restaurantId, setRestaurantId] = useState<string>("");
@@ -92,6 +92,7 @@ export default function RestaurantePage() {
 
   const [confirmedAll, setConfirmedAll] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
 
+  // limite “global” do restaurante (pra liberar confirmar só depois do último horário)
   const [limitTime, setLimitTime] = useState<Record<Shift, string | null>>({ ALMOCO: null, JANTA: null });
 
   const styles: Record<string, CSSProperties> = {
@@ -128,19 +129,44 @@ export default function RestaurantePage() {
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    router.replace("/refeicoes/restaurante"); // ✅ restaurante volta pro próprio login
+    router.replace("/refeicoes/restaurante");
+  }
+
+  async function sendMagicLink() {
+    const email = loginEmail.trim().toLowerCase();
+    if (!email) return;
+
+    setLoginErr(null);
+    setLoginInfo(null);
+    setLoginSending(true);
+    try {
+      const origin = window.location.origin;
+      const { error } = await supabase.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: `${origin}/refeicoes/restaurante` },
+      });
+      if (error) throw error;
+      setLoginInfo("Link enviado. Abra seu e-mail para entrar.");
+    } catch (e: any) {
+      setLoginErr(e?.message || "Não consegui enviar o link.");
+    } finally {
+      setLoginSending(false);
+    }
   }
 
   async function loadUserAndGuard() {
     const { data } = await supabase.auth.getUser();
-    const u = data?.user;
+    const u = data?.user || null;
+
     setUserEmail(u?.email || "");
+    setAuthUserId(u?.id || null);
+
     const uid = u?.id || null;
     setUserId(uid);
 
     if (!uid) return null;
 
-    // ✅ se NÃO for restaurante, não deixa ficar aqui
+    // se NÃO for restaurante, não deixa ficar aqui
     const { data: ru, error: ruErr } = await supabase
       .from("meal_restaurant_users")
       .select("restaurant_id")
@@ -183,7 +209,7 @@ export default function RestaurantePage() {
 
     const list = (rs || []) as Restaurant[];
     setRestaurants(list);
-    if (!restaurantId && list[0]?.id) setRestaurantId(list[0].id);
+    setRestaurantId((prev) => prev || list[0]?.id || "");
   }
 
   async function refresh() {
@@ -213,12 +239,12 @@ export default function RestaurantePage() {
         maxLunch = maxTime(maxLunch, c.cutoff_lunch);
         maxDinner = maxTime(maxDinner, c.cutoff_dinner);
       }
-      setLimitTime({ ALMOCO: timeHHMM(maxLunch), JANTA: timeHHMM(maxDinner) });
+      setLimitTime({ ALMOCO: maxLunch, JANTA: maxDinner });
 
       const worksiteIds = Array.from(new Set(crows.map((c) => String(c.worksite_id)).filter(Boolean)));
 
       // mapa de obras (nome)
-      let wsMap = new Map<string, Worksite>();
+      const wsMap = new Map<string, Worksite>();
       if (worksiteIds.length > 0) {
         const { data: ws, error: wErr } = await supabase.from("meal_worksites").select("id,name,city").in("id", worksiteIds);
         if (wErr) throw wErr;
@@ -267,7 +293,7 @@ export default function RestaurantePage() {
         if (!o.confirmed_at) conf[o.shift] = false;
       }
 
-      // se não tem pedidos daquele turno, ainda não está confirmado (pra não “dar ok” sem ver)
+      // se não tem pedidos daquele turno, não confirma
       if (orows.filter((x) => x.shift === "ALMOCO").length === 0) conf.ALMOCO = false;
       if (orows.filter((x) => x.shift === "JANTA").length === 0) conf.JANTA = false;
 
@@ -297,7 +323,29 @@ export default function RestaurantePage() {
     }
   }
 
+  // reaja a login/logout sem “ficar preso”
   useEffect(() => {
+    const { data } = supabase.auth.onAuthStateChange(async () => {
+      setError(null);
+      setOkMsg(null);
+      setRestaurants([]);
+      setRestaurantId("");
+      setTotals({ ALMOCO: 0, JANTA: 0 });
+      setByWorksite({ ALMOCO: [], JANTA: [] });
+      setConfirmedAll({ ALMOCO: false, JANTA: false });
+
+      setLoading(true);
+      try {
+        const uid = await loadUserAndGuard();
+        if (!uid) return;
+        await loadRestaurantsForUser(uid);
+      } catch (e: any) {
+        setError(e?.message || "Falha ao carregar.");
+      } finally {
+        setLoading(false);
+      }
+    });
+
     (async () => {
       setLoading(true);
       setError(null);
@@ -311,6 +359,10 @@ export default function RestaurantePage() {
         setLoading(false);
       }
     })();
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -324,17 +376,16 @@ export default function RestaurantePage() {
     const today = isoTodayLocal();
     const now = new Date();
 
-    const lunchAt = buildAtLocal(mealDate, limitTime.ALMOCO ? `${limitTime.ALMOCO}:00` : null);
-    const dinnerAt = buildAtLocal(mealDate, limitTime.JANTA ? `${limitTime.JANTA}:00` : null);
+    // aqui o botão só libera depois do ÚLTIMO horário (entre as obras)
+    const lunchAt = buildAtLocal(mealDate, limitTime.ALMOCO);
+    const dinnerAt = buildAtLocal(mealDate, limitTime.JANTA);
 
     const base = (shift: Shift, dt: Date | null) => {
       if (confirmedAll[shift]) return false;
       if (!dt) return false; // sem limite => bloqueia
       if (mealDate === today) return now.getTime() >= dt.getTime();
-      // datas passadas: pode confirmar (desde que exista limite configurado)
-      if (mealDate < today) return true;
-      // datas futuras: bloqueia
-      return false;
+      if (mealDate < today) return true; // datas passadas: pode confirmar
+      return false; // futuras: bloqueia
     };
 
     return { ALMOCO: base("ALMOCO", lunchAt), JANTA: base("JANTA", dinnerAt) };
@@ -348,7 +399,6 @@ export default function RestaurantePage() {
 
     setConfirming((p) => ({ ...p, [shift]: true }));
     try {
-      // tenta atualizar status também; se o enum não aceitar, faz fallback só no confirmed_at
       const attempt = await supabase
         .from("meal_orders")
         .update({
@@ -388,20 +438,85 @@ export default function RestaurantePage() {
     }
   }
 
+  // tela de login (se deslogado)
+  if (!authUserId) {
+    return (
+      <div className="page-root">
+        <div className="page-container" style={{ paddingBottom: 48 }}>
+          <header className="page-header" style={{ justifyContent: "center", alignItems: "center" }}>
+            <div style={{ textAlign: "center" }}>
+              <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 54, height: 54, objectFit: "contain", border: "none", background: "transparent" }} />
+              <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 8 }}>
+                Restaurante
+              </div>
+              <div className="brand-text-sub">Totais do dia • Confirmar</div>
+            </div>
+          </header>
+
+          <div className="section-card" style={{ maxWidth: 520, margin: "0 auto" }}>
+            <div className="section-header">
+              <div>
+                <div className="section-title">Entrar</div>
+                <div className="section-subtitle">Acesso do restaurante.</div>
+              </div>
+            </div>
+
+            {loginErr ? (
+              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+                {loginErr}
+              </div>
+            ) : null}
+
+            {loginInfo ? (
+              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+                {loginInfo}
+              </div>
+            ) : null}
+
+            <label style={styles.label}>E-mail</label>
+            <input style={styles.input} value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="seu@email.com" />
+
+            <div style={{ height: 10 }} />
+
+            <button
+              type="button"
+              onClick={sendMagicLink}
+              disabled={loginSending}
+              style={{
+                width: "100%",
+                borderRadius: 14,
+                padding: "14px 14px",
+                fontSize: 16,
+                fontWeight: 950,
+                cursor: loginSending ? "not-allowed" : "pointer",
+                opacity: loginSending ? 0.65 : 1,
+                border: "1px solid #93c5fd",
+                background: "#2563eb",
+                color: "#fff",
+              }}
+            >
+              {loginSending ? "Enviando..." : "Enviar link de acesso"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-root">
       <div className="page-container" style={{ paddingBottom: 48 }}>
         <header className="page-header" style={{ position: "relative", justifyContent: "center", alignItems: "center" }}>
           <div style={{ textAlign: "center" }}>
-            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }} />
+            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 44, height: 44, objectFit: "contain", border: "none", background: "transparent" }} />
             <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 6 }}>
               Restaurante
             </div>
             <div className="brand-text-sub">Totais do dia • Confirmar</div>
+            <div style={{ marginTop: 6, fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
           </div>
 
-          <div style={{ position: "absolute", right: 0, top: 0, display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
+          <div style={{ position: "absolute", right: 0, top: 0 }}>
             <button
               type="button"
               onClick={handleSignOut}
