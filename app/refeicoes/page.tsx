@@ -152,14 +152,7 @@ function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost"
 export default function RefeicoesPage() {
   const router = useRouter();
 
-  const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>("");
-
-  // login simples (quando estiver deslogado)
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginSending, setLoginSending] = useState(false);
-  const [loginInfo, setLoginInfo] = useState<string | null>(null);
-  const [loginErr, setLoginErr] = useState<string | null>(null);
 
   const [worksites, setWorksites] = useState<Worksite[]>([]);
   const [worksiteId, setWorksiteId] = useState<string>("");
@@ -171,15 +164,10 @@ export default function RefeicoesPage() {
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
-
-  // ids do “ontem” (pra ordenar lista)
-  const [yesterday, setYesterday] = useState<Record<Shift, Set<string>>>({
-    ALMOCO: new Set(),
-    JANTA: new Set(),
-  });
+  const [yesterdayPriority, setYesterdayPriority] = useState<Set<string>>(new Set());
 
   const [query, setQuery] = useState("");
-  const [onlyMarked, setOnlyMarked] = useState(false);
+  const [onlySelected, setOnlySelected] = useState(false);
 
   const [mode, setMode] = useState<Mode>("ALMOCO");
 
@@ -251,7 +239,6 @@ export default function RefeicoesPage() {
     return { lunch, dinner };
   }, [contract]);
 
-  // modo padrão: hoje antes 11h almoço, depois janta
   useEffect(() => {
     const today = isoTodayLocal();
     if (!isSameISODate(mealDate, today)) {
@@ -267,42 +254,17 @@ export default function RefeicoesPage() {
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    router.replace("/refeicoes");
-  }
-
-  async function sendMagicLink() {
-    const email = loginEmail.trim().toLowerCase();
-    if (!email) return;
-
-    setLoginErr(null);
-    setLoginInfo(null);
-    setLoginSending(true);
-    try {
-      const origin = window.location.origin;
-      const { error } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: `${origin}/refeicoes` },
-      });
-      if (error) throw error;
-      setLoginInfo("Link enviado. Abra seu e-mail para entrar.");
-    } catch (e: any) {
-      setLoginErr(e?.message || "Não consegui enviar o link.");
-    } finally {
-      setLoginSending(false);
-    }
+    router.replace("/refeicoes"); // ✅ empresa volta pra /refeicoes
   }
 
   async function loadUser() {
     const { data } = await supabase.auth.getUser();
-    const u = data?.user || null;
-
+    const u = data?.user;
     setUserEmail(u?.email || "");
-    setAuthUserId(u?.id || null);
-
     const userId = u?.id || null;
     if (!userId) return null;
 
-    // se esse user for restaurante, não deixa ficar em /refeicoes
+    // ✅ se esse user for restaurante, não deixa ficar em /refeicoes
     const { data: ru, error: ruErr } = await supabase
       .from("meal_restaurant_users")
       .select("restaurant_id")
@@ -328,39 +290,7 @@ export default function RefeicoesPage() {
     if (error) throw error;
     const rows = (data || []) as Worksite[];
     setWorksites(rows);
-
-    setWorksiteId((prev) => prev || rows[0]?.id || "");
-  }
-
-  async function loadEmployeesAndFavorites(wid: string) {
-    const [empRes, favRes] = await Promise.all([
-      supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name"),
-      supabase.from("meal_worksite_favorites").select("employee_id").eq("worksite_id", wid),
-    ]);
-
-    if (empRes.error) throw empRes.error;
-    if (favRes.error) throw favRes.error;
-
-    const emps = (empRes.data || []) as Employee[];
-    const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
-
-    setFavoriteIds(favIds);
-    setEmployees(emps);
-  }
-
-  async function fetchContract(wid: string, dateISO: string): Promise<Contract | null> {
-    const q = supabase
-      .from("meal_contracts")
-      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
-      .eq("worksite_id", wid)
-      .lte("start_date", dateISO)
-      .order("start_date", { ascending: false })
-      .limit(1);
-
-    const { data, error } = await q.or(`end_date.is.null,end_date.gte.${dateISO}`).maybeSingle();
-    if (error) throw error;
-
-    return ((data as any) ?? null) as Contract | null;
+    if (!worksiteId && rows[0]?.id) setWorksiteId(rows[0].id);
   }
 
   async function loadOverride(wid: string, userId: string | null) {
@@ -380,6 +310,22 @@ export default function RefeicoesPage() {
       return;
     }
     setCanOverrideCutoff(Boolean((data as any)?.can_override_cutoff));
+  }
+
+  async function loadContract(wid: string, dateISO: string) {
+    const q = supabase
+      .from("meal_contracts")
+      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
+      .eq("worksite_id", wid)
+      .lte("start_date", dateISO)
+      .order("start_date", { ascending: false })
+      .limit(1);
+
+    const { data, error } = await q.or(`end_date.is.null,end_date.gte.${dateISO}`).maybeSingle();
+    if (error) throw error;
+
+    setContract((data as any) ?? null);
+    return (data as any) as Contract | null;
   }
 
   async function fetchSavedForShift(wid: string, rid: string, dateISO: string, shift: Shift): Promise<SavedSnapshot> {
@@ -420,28 +366,54 @@ export default function RefeicoesPage() {
     return { orderId, employeeIds: empIds, visitors };
   }
 
-  async function refreshSavedFor(wid: string, rid: string, dateISO: string) {
-    const [l, j] = await Promise.all([fetchSavedForShift(wid, rid, dateISO, "ALMOCO"), fetchSavedForShift(wid, rid, dateISO, "JANTA")]);
-    setSaved({ ALMOCO: l, JANTA: j });
+  async function loadEmployeesAndFavorites(wid: string, priorityIds?: Set<string>) {
+    const [empRes, favRes] = await Promise.all([
+      supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name"),
+      supabase.from("meal_worksite_favorites").select("employee_id").eq("worksite_id", wid),
+    ]);
+
+    if (empRes.error) throw empRes.error;
+    if (favRes.error) throw favRes.error;
+
+    const emps = (empRes.data || []) as Employee[];
+    const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
+
+    emps.sort((a, b) => {
+      const ap = priorityIds?.has(a.id) ? 1 : 0;
+      const bp = priorityIds?.has(b.id) ? 1 : 0;
+      if (ap !== bp) return bp - ap;
+
+      const af = favIds.has(a.id) ? 1 : 0;
+      const bf = favIds.has(b.id) ? 1 : 0;
+      if (af !== bf) return bf - af;
+
+      return a.full_name.localeCompare(b.full_name, "pt-BR");
+    });
+
+    setFavoriteIds(favIds);
+    setEmployees(emps);
   }
 
-  async function loadYesterdayIds(wid: string, dateISO: string) {
-    const y = addDaysISO(dateISO, -1);
-    const cY = await fetchContract(wid, y);
-    if (!cY?.restaurant_id) {
-      setYesterday({ ALMOCO: new Set(), JANTA: new Set() });
+  async function refreshSaved() {
+    setError(null);
+    setOkMsg(null);
+
+    if (!worksiteId || !contract?.restaurant_id) {
+      setSaved({
+        ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
+        JANTA: { orderId: null, employeeIds: [], visitors: [] },
+      });
       return;
     }
 
-    const [ly, jy] = await Promise.all([
-      fetchSavedForShift(wid, cY.restaurant_id, y, "ALMOCO"),
-      fetchSavedForShift(wid, cY.restaurant_id, y, "JANTA"),
+    const rid = contract.restaurant_id;
+
+    const [l, j] = await Promise.all([
+      fetchSavedForShift(worksiteId, rid, mealDate, "ALMOCO"),
+      fetchSavedForShift(worksiteId, rid, mealDate, "JANTA"),
     ]);
 
-    setYesterday({
-      ALMOCO: new Set(ly.employeeIds || []),
-      JANTA: new Set(jy.employeeIds || []),
-    });
+    setSaved({ ALMOCO: l, JANTA: j });
   }
 
   async function bootstrap() {
@@ -449,11 +421,8 @@ export default function RefeicoesPage() {
     setError(null);
     try {
       const userId = await loadUser();
-      if (!userId) return; // sem user ou foi redirecionado
+      if (!userId) return; // ✅ sem user ou foi redirecionado
       await loadWorksites();
-      if (worksiteId) {
-        await loadOverride(worksiteId, userId);
-      }
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
     } finally {
@@ -461,34 +430,38 @@ export default function RefeicoesPage() {
     }
   }
 
-  // reaja a login/logout sem “ficar preso”
   useEffect(() => {
-    const { data } = supabase.auth.onAuthStateChange(() => {
-      bootstrap();
-    });
     bootstrap();
-    return () => {
-      data.subscription.unsubscribe();
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
     (async () => {
-      if (!authUserId) return;
       if (!worksiteId) return;
-
       setLoading(true);
       setError(null);
       setOkMsg(null);
 
       try {
-        await loadEmployeesAndFavorites(worksiteId);
+        const { data } = await supabase.auth.getUser();
+        const userId = data?.user?.id ?? null;
 
-        const c = await fetchContract(worksiteId, mealDate);
-        setContract(c);
+        const c = await loadContract(worksiteId, mealDate);
+        await loadOverride(worksiteId, userId);
 
-        await loadOverride(worksiteId, authUserId);
+        // ✅ ontem primeiro (por funcionário)
+        let priority = new Set<string>();
+        if (c?.restaurant_id) {
+          const y = addDaysISO(mealDate, -1);
+          const [lY, jY] = await Promise.all([
+            fetchSavedForShift(worksiteId, c.restaurant_id, y, "ALMOCO"),
+            fetchSavedForShift(worksiteId, c.restaurant_id, y, "JANTA"),
+          ]);
+          priority = new Set<string>([...(lY.employeeIds || []), ...(jY.employeeIds || [])]);
+        }
+        setYesterdayPriority(priority);
+
+        await loadEmployeesAndFavorites(worksiteId, priority);
 
         setSelectedLunch(new Set());
         setSelectedDinner(new Set());
@@ -496,15 +469,13 @@ export default function RefeicoesPage() {
         setVisitorsDinner([]);
 
         if (c?.restaurant_id) {
-          await refreshSavedFor(worksiteId, c.restaurant_id, mealDate);
+          await refreshSaved();
         } else {
           setSaved({
             ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
             JANTA: { orderId: null, employeeIds: [], visitors: [] },
           });
         }
-
-        await loadYesterdayIds(worksiteId, mealDate);
       } catch (e: any) {
         setError(e?.message || "Falha ao carregar dados.");
       } finally {
@@ -512,7 +483,7 @@ export default function RefeicoesPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [authUserId, worksiteId, mealDate]);
+  }, [worksiteId, mealDate]);
 
   function toggleEmployee(shift: Shift, employeeId: string) {
     if (shift === "ALMOCO") {
@@ -570,37 +541,34 @@ export default function RefeicoesPage() {
     setError(null);
     setOkMsg(null);
 
-    if (!worksiteId) {
-      setError("Selecione a obra.");
+    if (!worksiteId || !contract?.restaurant_id) {
+      setError("Sem contrato ativo para esta obra (restaurant_id não encontrado).");
       return;
     }
 
+    const rid = contract.restaurant_id;
     const y = addDaysISO(mealDate, -1);
+
     try {
-      const cY = await fetchContract(worksiteId, y);
-      const ridY = cY?.restaurant_id || contract?.restaurant_id;
-
-      if (!ridY) {
-        setError("Sem contrato ontem (restaurant_id não encontrado).");
-        return;
-      }
-
       if (target === "ALMOCO") {
-        const snap = await fetchSavedForShift(worksiteId, ridY, y, "ALMOCO");
+        const snap = await fetchSavedForShift(worksiteId, rid, y, "ALMOCO");
         setSelectedLunch(new Set(snap.employeeIds || []));
         setVisitorsLunch(snap.visitors || []);
         setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para ALMOÇO.`);
         return;
       }
       if (target === "JANTA") {
-        const snap = await fetchSavedForShift(worksiteId, ridY, y, "JANTA");
+        const snap = await fetchSavedForShift(worksiteId, rid, y, "JANTA");
         setSelectedDinner(new Set(snap.employeeIds || []));
         setVisitorsDinner(snap.visitors || []);
         setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para JANTA.`);
         return;
       }
 
-      const [l, j] = await Promise.all([fetchSavedForShift(worksiteId, ridY, y, "ALMOCO"), fetchSavedForShift(worksiteId, ridY, y, "JANTA")]);
+      const [l, j] = await Promise.all([
+        fetchSavedForShift(worksiteId, rid, y, "ALMOCO"),
+        fetchSavedForShift(worksiteId, rid, y, "JANTA"),
+      ]);
 
       setSelectedLunch(new Set(l.employeeIds || []));
       setVisitorsLunch(l.visitors || []);
@@ -632,7 +600,7 @@ export default function RefeicoesPage() {
     const visitors = shift === "ALMOCO" ? visitorsLunch : visitorsDinner;
 
     const total = selectedIds.length + visitors.length;
-    if (total <= 0) return setError("Nenhuma refeição marcada para salvar."), undefined;
+    if (total <= 0) return setError("Nada selecionado para salvar."), undefined;
 
     setSaving((p) => ({ ...p, [shift]: true }));
 
@@ -689,19 +657,27 @@ export default function RefeicoesPage() {
         const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
         if (del.error) throw del.error;
 
-        const up = await supabase.from("meal_orders").update({ cutoff_at: cutoffAtISO, updated_by: userId }).eq("id", orderId);
+        const up = await supabase
+          .from("meal_orders")
+          .update({ cutoff_at: cutoffAtISO, updated_by: userId })
+          .eq("id", orderId);
+
         if (up.error) throw up.error;
       }
 
       const rows: any[] = [];
 
-      for (const eid of selectedIds) rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: userId, updated_by: userId });
-      for (const v of visitors) rows.push({ meal_order_id: orderId, visitor_name: v, included: true, created_by: userId, updated_by: userId });
+      for (const eid of selectedIds) {
+        rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: userId, updated_by: userId });
+      }
+      for (const v of visitors) {
+        rows.push({ meal_order_id: orderId, visitor_name: v, included: true, created_by: userId, updated_by: userId });
+      }
 
       const insLines = await supabase.from("meal_order_lines").insert(rows);
       if (insLines.error) throw insLines.error;
 
-      await refreshSavedFor(worksiteId, rid, mealDate);
+      await refreshSaved();
       setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo (${total}).`);
     } catch (e: any) {
       setError(e?.message || "Erro ao salvar.");
@@ -739,7 +715,7 @@ export default function RefeicoesPage() {
       const delOrder = await supabase.from("meal_orders").delete().eq("id", orderId);
       if (delOrder.error) throw delOrder.error;
 
-      await refreshSavedFor(worksiteId, rid, mealDate);
+      await refreshSaved();
       clearSelection(shift);
 
       setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (apagado).`);
@@ -773,42 +749,21 @@ export default function RefeicoesPage() {
     }
   }
 
-  const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
-
-  const sortedEmployees = useMemo(() => {
-    const ySet =
-      mode === "ALMOCO"
-        ? yesterday.ALMOCO
-        : mode === "JANTA"
-        ? yesterday.JANTA
-        : new Set<string>([...Array.from(yesterday.ALMOCO), ...Array.from(yesterday.JANTA)]);
-
-    return [...employees].sort((a, b) => {
-      const af = favoriteIds.has(a.id) ? 1 : 0;
-      const bf = favoriteIds.has(b.id) ? 1 : 0;
-      if (af !== bf) return bf - af;
-
-      const ay = ySet.has(a.id) ? 1 : 0;
-      const by = ySet.has(b.id) ? 1 : 0;
-      if (ay !== by) return by - ay;
-
-      return a.full_name.localeCompare(b.full_name, "pt-BR");
-    });
-  }, [employees, favoriteIds, yesterday, mode]);
-
   const filteredEmployees = useMemo(() => {
     const q = query.trim().toLowerCase();
-    let list = sortedEmployees;
+    let list = employees;
 
     if (q) list = list.filter((e) => e.full_name.toLowerCase().includes(q));
-    if (!onlyMarked) return list;
+    if (!onlySelected) return list;
 
     return list.filter((e) => {
       if (mode === "ALMOCO") return selectedLunch.has(e.id);
       if (mode === "JANTA") return selectedDinner.has(e.id);
       return selectedLunch.has(e.id) || selectedDinner.has(e.id);
     });
-  }, [sortedEmployees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
+  }, [employees, query, onlySelected, mode, selectedLunch, selectedDinner]);
+
+  const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
 
   const bottomTitle = useMemo(() => {
     if (mode === "ALMOCO") return `Salvar Almoço (${totals.lunch})`;
@@ -848,72 +803,25 @@ export default function RefeicoesPage() {
     return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
   }, [mode, canceling, savedCounts]);
 
-  // tela de login (se deslogado)
-  if (!authUserId) {
-    return (
-      <div className="page-root">
-        <div className="page-container" style={{ paddingBottom: 48 }}>
-          <header className="page-header" style={{ justifyContent: "center", alignItems: "center" }}>
-            <div style={{ textAlign: "center" }}>
-              <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 54, height: 54, objectFit: "contain", border: "none", background: "transparent" }} />
-              <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 8 }}>
-                Refeições
-              </div>
-            </div>
-          </header>
-
-          <div className="section-card" style={{ maxWidth: 520, margin: "0 auto" }}>
-            <div className="section-header">
-              <div>
-                <div className="section-title">Entrar</div>
-                <div className="section-subtitle">Acesso da empresa (encarregado/engenheiro).</div>
-              </div>
-            </div>
-
-            {loginErr ? (
-              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
-                {loginErr}
-              </div>
-            ) : null}
-
-            {loginInfo ? (
-              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
-                {loginInfo}
-              </div>
-            ) : null}
-
-            <label style={styles.label}>E-mail</label>
-            <input style={styles.input} value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="seu@email.com" />
-
-            <div style={{ height: 10 }} />
-
-            <button type="button" onClick={sendMagicLink} disabled={loginSending} style={bigBtnStyle("primaryLunch", loginSending)}>
-              {loginSending ? "Enviando..." : "Enviar link de acesso"}
-            </button>
-
-            <div style={{ marginTop: 10, fontSize: 12, color: "var(--gp-muted-soft)" }}>
-              * Usuário de restaurante deve entrar em <b>/refeicoes/restaurante</b>.
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="page-root">
       <div className="page-container" style={{ paddingBottom: 240 }}>
         <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 44, height: 44, objectFit: "contain", border: "none", background: "transparent" }} />
-            <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
-              Refeições
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <img
+              src="/gpasfalto-logo.png"
+              alt="GP Asfalto"
+              style={{ width: 36, height: 36, objectFit: "contain", border: "none", background: "transparent" }}
+            />
+            <div>
+              <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
+                Refeições
+              </div>
+              <div className="brand-text-sub">Pedidos por obra</div>
             </div>
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
-
             <div
               style={{
                 borderRadius: 999,
@@ -927,7 +835,6 @@ export default function RefeicoesPage() {
             >
               {headerDatePill}
             </div>
-
             <button
               type="button"
               onClick={handleSignOut}
@@ -947,6 +854,16 @@ export default function RefeicoesPage() {
         </header>
 
         <div className="section-card">
+          <div className="section-header" style={{ alignItems: "flex-start" }}>
+            <div>
+              <div className="section-title">Pedido</div>
+              <div className="section-subtitle" style={{ marginTop: 2 }}>
+                Selecione a obra, escolha almoço/janta e salve.
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
+          </div>
+
           {error ? (
             <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
               {error}
@@ -981,7 +898,7 @@ export default function RefeicoesPage() {
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Buscar</label>
               <input style={styles.input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nome do funcionário..." />
-              <div style={{ marginTop: 6, ...styles.hint }}>Dica: marque e, se quiser, ative “Mostrar só marcados”.</div>
+              <div style={{ marginTop: 6, ...styles.hint }}>Dica: selecione e, se quiser, ative “Mostrar só selecionados”.</div>
             </div>
 
             <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -997,14 +914,14 @@ export default function RefeicoesPage() {
                 </button>
 
                 <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
-                  Limites: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
-                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override)</span> : null}
+                  Horário limite: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
+                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override ativo)</span> : null}
                 </div>
               </div>
 
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800 }}>
-                <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
-                Mostrar só marcados
+                <input type="checkbox" checked={onlySelected} onChange={(e) => setOnlySelected(e.target.checked)} />
+                Mostrar só selecionados
               </label>
             </div>
 
@@ -1025,10 +942,10 @@ export default function RefeicoesPage() {
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }}>
+                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Selecionados agora / Salvos no banco">
                   Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
                 </div>
-                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }}>
+                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Selecionados agora / Salvos no banco">
                   Janta: {totals.dinner} (salvo: {savedCounts.dinner})
                 </div>
               </div>
@@ -1036,7 +953,13 @@ export default function RefeicoesPage() {
 
             {!contract ? (
               <div style={{ gridColumn: "span 12", borderRadius: 14, border: "1px solid #fde68a", background: "#fffbeb", padding: "10px 12px", color: "#92400e", fontSize: 13 }}>
-                ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode marcar, mas não vai conseguir salvar.
+                ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode selecionar, mas não vai conseguir salvar.
+              </div>
+            ) : null}
+
+            {yesterdayPriority.size > 0 ? (
+              <div style={{ gridColumn: "span 12", fontSize: 12, color: "var(--gp-muted-soft)" }}>
+                Ontem primeiro: {yesterdayPriority.size} funcionário(s) do dia anterior priorizados na lista.
               </div>
             ) : null}
           </div>
@@ -1046,7 +969,7 @@ export default function RefeicoesPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Funcionários</div>
-              <div className="section-subtitle">Toque para marcar/desmarcar no turno selecionado.</div>
+              <div className="section-subtitle">Toque para selecionar/deselecionar no turno escolhido.</div>
             </div>
             <button
               type="button"
@@ -1065,6 +988,7 @@ export default function RefeicoesPage() {
               const fav = favoriteIds.has(e.id);
 
               const card: CSSProperties = { borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 };
+
               const nameStyle: CSSProperties = { fontSize: 14, fontWeight: 900, color: "#0f172a", letterSpacing: "0.02em", textTransform: "uppercase" };
 
               const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
@@ -1099,7 +1023,7 @@ export default function RefeicoesPage() {
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                     <div style={nameStyle}>{e.full_name}</div>
                     {fav ? (
-                      <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }} aria-label="Favorito">
+                      <div title="Favorito" style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>
                         ⭐
                       </div>
                     ) : null}
