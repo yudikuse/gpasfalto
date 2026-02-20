@@ -165,6 +165,10 @@ export default function RefeicoesPage() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
 
+  // ✅ “ontem primeiro”
+  const [yesterdayLunchIds, setYesterdayLunchIds] = useState<Set<string>>(new Set());
+  const [yesterdayDinnerIds, setYesterdayDinnerIds] = useState<Set<string>>(new Set());
+
   const [query, setQuery] = useState("");
   const [onlyMarked, setOnlyMarked] = useState(false);
 
@@ -302,15 +306,9 @@ export default function RefeicoesPage() {
     if (favRes.error) throw favRes.error;
 
     const emps = (empRes.data || []) as Employee[];
+    emps.sort((a, b) => a.full_name.localeCompare(b.full_name, "pt-BR"));
+
     const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
-
-    emps.sort((a, b) => {
-      const af = favIds.has(a.id) ? 1 : 0;
-      const bf = favIds.has(b.id) ? 1 : 0;
-      if (af !== bf) return bf - af;
-      return a.full_name.localeCompare(b.full_name, "pt-BR");
-    });
-
     setFavoriteIds(favIds);
     setEmployees(emps);
   }
@@ -388,6 +386,14 @@ export default function RefeicoesPage() {
     return { orderId, employeeIds: empIds, visitors };
   }
 
+  async function refreshSavedWith(wid: string, rid: string, dateISO: string) {
+    const [l, j] = await Promise.all([
+      fetchSavedForShift(wid, rid, dateISO, "ALMOCO"),
+      fetchSavedForShift(wid, rid, dateISO, "JANTA"),
+    ]);
+    setSaved({ ALMOCO: l, JANTA: j });
+  }
+
   async function refreshSaved() {
     setError(null);
     setOkMsg(null);
@@ -400,14 +406,22 @@ export default function RefeicoesPage() {
       return;
     }
 
-    const rid = contract.restaurant_id;
+    await refreshSavedWith(worksiteId, contract.restaurant_id, mealDate);
+  }
 
-    const [l, j] = await Promise.all([
-      fetchSavedForShift(worksiteId, rid, mealDate, "ALMOCO"),
-      fetchSavedForShift(worksiteId, rid, mealDate, "JANTA"),
-    ]);
-
-    setSaved({ ALMOCO: l, JANTA: j });
+  async function loadYesterdayOrderIds(wid: string, rid: string, dateISO: string) {
+    const y = addDaysISO(dateISO, -1);
+    try {
+      const [l, j] = await Promise.all([
+        fetchSavedForShift(wid, rid, y, "ALMOCO"),
+        fetchSavedForShift(wid, rid, y, "JANTA"),
+      ]);
+      setYesterdayLunchIds(new Set(l.employeeIds || []));
+      setYesterdayDinnerIds(new Set(j.employeeIds || []));
+    } catch {
+      setYesterdayLunchIds(new Set());
+      setYesterdayDinnerIds(new Set());
+    }
   }
 
   async function bootstrap() {
@@ -453,12 +467,17 @@ export default function RefeicoesPage() {
         setVisitorsDinner([]);
 
         if (c?.restaurant_id) {
-          await refreshSaved();
+          await Promise.all([
+            refreshSavedWith(worksiteId, c.restaurant_id, mealDate),
+            loadYesterdayOrderIds(worksiteId, c.restaurant_id, mealDate),
+          ]);
         } else {
           setSaved({
             ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
             JANTA: { orderId: null, employeeIds: [], visitors: [] },
           });
+          setYesterdayLunchIds(new Set());
+          setYesterdayDinnerIds(new Set());
         }
       } catch (e: any) {
         setError(e?.message || "Falha ao carregar dados.");
@@ -641,11 +660,7 @@ export default function RefeicoesPage() {
         const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
         if (del.error) throw del.error;
 
-        const up = await supabase
-          .from("meal_orders")
-          .update({ cutoff_at: cutoffAtISO, updated_by: userId })
-          .eq("id", orderId);
-
+        const up = await supabase.from("meal_orders").update({ cutoff_at: cutoffAtISO, updated_by: userId }).eq("id", orderId);
         if (up.error) throw up.error;
       }
 
@@ -738,14 +753,43 @@ export default function RefeicoesPage() {
     let list = employees;
 
     if (q) list = list.filter((e) => e.full_name.toLowerCase().includes(q));
-    if (!onlyMarked) return list;
 
-    return list.filter((e) => {
-      if (mode === "ALMOCO") return selectedLunch.has(e.id);
-      if (mode === "JANTA") return selectedDinner.has(e.id);
-      return selectedLunch.has(e.id) || selectedDinner.has(e.id);
+    if (onlyMarked) {
+      list = list.filter((e) => {
+        if (mode === "ALMOCO") return selectedLunch.has(e.id);
+        if (mode === "JANTA") return selectedDinner.has(e.id);
+        return selectedLunch.has(e.id) || selectedDinner.has(e.id);
+      });
+    }
+
+    // ✅ sort: “ontem primeiro” (respeitando almoço/janta) -> favoritos -> nome
+    const getYesterdayTier = (id: string) => {
+      const inL = yesterdayLunchIds.has(id);
+      const inD = yesterdayDinnerIds.has(id);
+
+      if (mode === "ALMOCO") return inL ? 0 : 1;
+      if (mode === "JANTA") return inD ? 0 : 1;
+
+      // AMBOS: quem estava nos dois vem primeiro, depois em qualquer um, depois os demais
+      if (inL && inD) return 0;
+      if (inL || inD) return 1;
+      return 2;
+    };
+
+    const sorted = [...list].sort((a, b) => {
+      const ay = getYesterdayTier(a.id);
+      const by = getYesterdayTier(b.id);
+      if (ay !== by) return ay - by;
+
+      const af = favoriteIds.has(a.id) ? 0 : 1;
+      const bf = favoriteIds.has(b.id) ? 0 : 1;
+      if (af !== bf) return af - bf;
+
+      return a.full_name.localeCompare(b.full_name, "pt-BR");
     });
-  }, [employees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
+
+    return sorted;
+  }, [employees, query, onlyMarked, mode, selectedLunch, selectedDinner, favoriteIds, yesterdayLunchIds, yesterdayDinnerIds]);
 
   const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
 
@@ -790,72 +834,87 @@ export default function RefeicoesPage() {
   return (
     <div className="page-root">
       <div className="page-container" style={{ paddingBottom: 240 }}>
-        <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img
-              src="/gpasfalto-logo.png"
-              alt="GP Asfalto"
-              style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }}
-            />
-            <div>
-              <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
-                Refeições
+        {/* ✅ Header “app-like”: logo maior centralizada + logado pequeno em cima */}
+        <header className="page-header" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)", fontWeight: 800 }}>
+              {userEmail ? `Logado: ${userEmail}` : ""}
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  padding: "8px 12px",
+                  fontSize: 13,
+                  fontWeight: 800,
+                }}
+                title="Data selecionada"
+              >
+                {headerDatePill}
               </div>
-              <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
+
+              <button
+                type="button"
+                onClick={handleSignOut}
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  padding: "8px 12px",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+              >
+                Sair
+              </button>
             </div>
           </div>
 
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div
-              style={{
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                padding: "8px 12px",
-                fontSize: 13,
-                fontWeight: 800,
-              }}
-              title="Data selecionada"
-            >
-              {headerDatePill}
+          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6, paddingTop: 2 }}>
+            <img
+              src="/gpasfalto-logo.png"
+              alt="GP Asfalto"
+              style={{ width: 46, height: 46, objectFit: "contain", border: "none", background: "transparent" }}
+            />
+            <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
+              Refeições
             </div>
-            <button
-              type="button"
-              onClick={handleSignOut}
-              style={{
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                padding: "8px 12px",
-                fontSize: 13,
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Sair
-            </button>
           </div>
         </header>
 
         <div className="section-card">
-          <div className="section-header" style={{ alignItems: "flex-start" }}>
-            <div>
-              <div className="section-title">Marcação</div>
-              <div className="section-subtitle" style={{ marginTop: 2 }}>
-                Escolha a obra, marque rápido e no final confira os totais antes de salvar.
-              </div>
-            </div>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
-          </div>
-
           {error ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #fecaca",
+                background: "#fef2f2",
+                color: "#991b1b",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {error}
             </div>
           ) : null}
 
           {okMsg ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #bbf7d0",
+                background: "#f0fdf4",
+                color: "#166534",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {okMsg}
             </div>
           ) : null}
@@ -863,7 +922,12 @@ export default function RefeicoesPage() {
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Obra</label>
-              <select style={styles.select} value={worksiteId} onChange={(e) => setWorksiteId(e.target.value)} disabled={loading || worksites.length === 0}>
+              <select
+                style={styles.select}
+                value={worksiteId}
+                onChange={(e) => setWorksiteId(e.target.value)}
+                disabled={loading || worksites.length === 0}
+              >
                 {worksites.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.name}
@@ -885,7 +949,16 @@ export default function RefeicoesPage() {
               <div style={{ marginTop: 6, ...styles.hint }}>Dica: marque e, se quiser, ative “Mostrar só marcados”.</div>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div
+              style={{
+                gridColumn: "span 12",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" style={segBtnStyle(mode === "ALMOCO", "lunch")} onClick={() => setMode("ALMOCO")}>
                   Almoço
@@ -899,7 +972,7 @@ export default function RefeicoesPage() {
 
                 <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
                   Limites: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
-                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override ativo)</span> : null}
+                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override)</span> : null}
                 </div>
               </div>
 
@@ -909,7 +982,16 @@ export default function RefeicoesPage() {
               </label>
             </div>
 
-            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <div
+              style={{
+                gridColumn: "span 12",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                flexWrap: "wrap",
+                gap: 10,
+              }}
+            >
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
                 <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => copyYesterday(mode)} disabled={loading}>
                   Copiar ontem
@@ -926,17 +1008,49 @@ export default function RefeicoesPage() {
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
+                <div
+                  style={{
+                    borderRadius: 999,
+                    border: "1px solid #86efac",
+                    background: "#ecfdf5",
+                    color: "#166534",
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    fontWeight: 900,
+                  }}
+                  title="Marcados agora / Salvos no banco"
+                >
                   Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
                 </div>
-                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
+                <div
+                  style={{
+                    borderRadius: 999,
+                    border: "1px solid #93c5fd",
+                    background: "#eff6ff",
+                    color: "#1d4ed8",
+                    padding: "6px 10px",
+                    fontSize: 12,
+                    fontWeight: 900,
+                  }}
+                  title="Marcados agora / Salvos no banco"
+                >
                   Janta: {totals.dinner} (salvo: {savedCounts.dinner})
                 </div>
               </div>
             </div>
 
             {!contract ? (
-              <div style={{ gridColumn: "span 12", borderRadius: 14, border: "1px solid #fde68a", background: "#fffbeb", padding: "10px 12px", color: "#92400e", fontSize: 13 }}>
+              <div
+                style={{
+                  gridColumn: "span 12",
+                  borderRadius: 14,
+                  border: "1px solid #fde68a",
+                  background: "#fffbeb",
+                  padding: "10px 12px",
+                  color: "#92400e",
+                  fontSize: 13,
+                }}
+              >
                 ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode marcar, mas não vai conseguir salvar.
               </div>
             ) : null}
@@ -952,7 +1066,15 @@ export default function RefeicoesPage() {
             <button
               type="button"
               onClick={() => addVisitor(mode === "JANTA" ? "JANTA" : "ALMOCO")}
-              style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 900, cursor: "pointer" }}
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
               title="Adicionar visitante sem cadastro"
             >
               + Pessoa
@@ -967,7 +1089,13 @@ export default function RefeicoesPage() {
 
               const card: CSSProperties = { borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 };
 
-              const nameStyle: CSSProperties = { fontSize: 14, fontWeight: 900, color: "#0f172a", letterSpacing: "0.02em", textTransform: "uppercase" };
+              const nameStyle: CSSProperties = {
+                fontSize: 14,
+                fontWeight: 900,
+                color: "#0f172a",
+                letterSpacing: "0.02em",
+                textTransform: "uppercase",
+              };
 
               const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
                 if (tone === "ALMOCO") {
@@ -1000,7 +1128,7 @@ export default function RefeicoesPage() {
                 <div key={e.id} style={card}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                     <div style={nameStyle}>{e.full_name}</div>
-                    {fav ? <div title="Favorito" style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>⭐</div> : null}
+                    {fav ? <div style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>⭐</div> : null}
                   </div>
 
                   <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
@@ -1027,9 +1155,11 @@ export default function RefeicoesPage() {
               );
             })}
 
-            {(visitorsLunch.length > 0 || visitorsDinner.length > 0) ? (
+            {visitorsLunch.length > 0 || visitorsDinner.length > 0 ? (
               <div style={{ borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Pessoas sem cadastro</div>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Pessoas sem cadastro
+                </div>
 
                 <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
                   {visitorsLunch.map((v) => (
