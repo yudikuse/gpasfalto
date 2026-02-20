@@ -43,6 +43,13 @@ function isoTodayLocal(): string {
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
+function timeHHMM(t: string | null) {
+  if (!t) return null;
+  const parts = String(t).split(":");
+  if (parts.length >= 2) return `${parts[0]}:${parts[1]}`;
+  return String(t);
+}
+
 // pega o "mais tarde" (máximo) entre HH:MM / HH:MM:SS
 function maxTime(a: string | null, b: string | null) {
   if (!a) return b;
@@ -60,18 +67,50 @@ function buildAtLocal(mealDateISO: string, hhmmss: string | null) {
   return new Date(y, m - 1, d, hh, mm, ss);
 }
 
+function getOriginSafe() {
+  if (typeof window === "undefined") return "";
+  return window.location.origin;
+}
+
+async function ensureSessionFromUrlIfAny() {
+  if (typeof window === "undefined") return;
+
+  // PKCE flow: ?code=...
+  const code = new URLSearchParams(window.location.search).get("code");
+  if (code) {
+    try {
+      await supabase.auth.exchangeCodeForSession(code);
+    } finally {
+      // limpa query
+      window.history.replaceState({}, "", window.location.pathname);
+    }
+    return;
+  }
+
+  // Implicit flow: #access_token=...&refresh_token=...
+  const hash = window.location.hash?.startsWith("#") ? window.location.hash.slice(1) : "";
+  if (!hash) return;
+
+  const params = new URLSearchParams(hash);
+  const access_token = params.get("access_token");
+  const refresh_token = params.get("refresh_token");
+
+  if (access_token && refresh_token) {
+    await supabase.auth.setSession({ access_token, refresh_token });
+  }
+
+  // limpa hash (sempre)
+  window.history.replaceState({}, "", window.location.pathname);
+}
+
 export default function RestaurantePage() {
   const router = useRouter();
 
-  const [authUserId, setAuthUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
 
-  // login simples (quando estiver deslogado)
   const [loginEmail, setLoginEmail] = useState("");
-  const [loginSending, setLoginSending] = useState(false);
-  const [loginInfo, setLoginInfo] = useState<string | null>(null);
-  const [loginErr, setLoginErr] = useState<string | null>(null);
+  const [sendingLink, setSendingLink] = useState(false);
 
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [restaurantId, setRestaurantId] = useState<string>("");
@@ -85,14 +124,14 @@ export default function RestaurantePage() {
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
   const [totals, setTotals] = useState<Record<Shift, number>>({ ALMOCO: 0, JANTA: 0 });
-  const [byWorksite, setByWorksite] = useState<Record<Shift, Array<{ worksite_id: string; worksite_name: string; qty: number }>>>({
+  const [byWorksite, setByWorksite] = useState<
+    Record<Shift, Array<{ worksite_id: string; worksite_name: string; qty: number }>>
+  >({
     ALMOCO: [],
     JANTA: [],
   });
 
   const [confirmedAll, setConfirmedAll] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
-
-  // limite “global” do restaurante (pra liberar confirmar só depois do último horário)
   const [limitTime, setLimitTime] = useState<Record<Shift, string | null>>({ ALMOCO: null, JANTA: null });
 
   const styles: Record<string, CSSProperties> = {
@@ -129,44 +168,52 @@ export default function RestaurantePage() {
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    router.replace("/refeicoes/restaurante");
+    setUserId(null);
+    setUserEmail("");
+    setRestaurants([]);
+    setRestaurantId("");
+    setTotals({ ALMOCO: 0, JANTA: 0 });
+    setByWorksite({ ALMOCO: [], JANTA: [] });
+    setConfirmedAll({ ALMOCO: false, JANTA: false });
+    setLimitTime({ ALMOCO: null, JANTA: null });
+    router.replace("/refeicoes/restaurante"); // ✅ fica no login do restaurante
   }
 
   async function sendMagicLink() {
     const email = loginEmail.trim().toLowerCase();
     if (!email) return;
 
-    setLoginErr(null);
-    setLoginInfo(null);
-    setLoginSending(true);
+    setError(null);
+    setOkMsg(null);
+    setSendingLink(true);
     try {
-      const origin = window.location.origin;
-      const { error } = await supabase.auth.signInWithOtp({
+      const redirectTo = `${getOriginSafe()}/refeicoes/restaurante`;
+      const res = await supabase.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: `${origin}/refeicoes/restaurante` },
+        options: { emailRedirectTo: redirectTo },
       });
-      if (error) throw error;
-      setLoginInfo("Link enviado. Abra seu e-mail para entrar.");
+      if (res.error) throw res.error;
+      setOkMsg("Link enviado. Abra pelo e-mail (nesta mesma aba/dispositivo).");
     } catch (e: any) {
-      setLoginErr(e?.message || "Não consegui enviar o link.");
+      setError(e?.message || "Falha ao enviar link.");
     } finally {
-      setLoginSending(false);
+      setSendingLink(false);
     }
   }
 
   async function loadUserAndGuard() {
+    await ensureSessionFromUrlIfAny();
+
     const { data } = await supabase.auth.getUser();
-    const u = data?.user || null;
+    const u = data?.user ?? null;
 
     setUserEmail(u?.email || "");
-    setAuthUserId(u?.id || null);
-
     const uid = u?.id || null;
     setUserId(uid);
 
     if (!uid) return null;
 
-    // se NÃO for restaurante, não deixa ficar aqui
+    // ✅ se NÃO for restaurante, não deixa ficar aqui
     const { data: ru, error: ruErr } = await supabase
       .from("meal_restaurant_users")
       .select("restaurant_id")
@@ -209,7 +256,7 @@ export default function RestaurantePage() {
 
     const list = (rs || []) as Restaurant[];
     setRestaurants(list);
-    setRestaurantId((prev) => prev || list[0]?.id || "");
+    if (!restaurantId && list[0]?.id) setRestaurantId(list[0].id);
   }
 
   async function refresh() {
@@ -239,16 +286,21 @@ export default function RestaurantePage() {
         maxLunch = maxTime(maxLunch, c.cutoff_lunch);
         maxDinner = maxTime(maxDinner, c.cutoff_dinner);
       }
-      setLimitTime({ ALMOCO: maxLunch, JANTA: maxDinner });
+      setLimitTime({ ALMOCO: timeHHMM(maxLunch), JANTA: timeHHMM(maxDinner) });
 
       const worksiteIds = Array.from(new Set(crows.map((c) => String(c.worksite_id)).filter(Boolean)));
 
       // mapa de obras (nome)
       const wsMap = new Map<string, Worksite>();
       if (worksiteIds.length > 0) {
-        const { data: ws, error: wErr } = await supabase.from("meal_worksites").select("id,name,city").in("id", worksiteIds);
+        const { data: ws, error: wErr } = await supabase
+          .from("meal_worksites")
+          .select("id,name,city")
+          .in("id", worksiteIds);
         if (wErr) throw wErr;
-        (ws || []).forEach((w: any) => wsMap.set(String(w.id), { id: String(w.id), name: String(w.name), city: w.city ? String(w.city) : null }));
+        (ws || []).forEach((w: any) =>
+          wsMap.set(String(w.id), { id: String(w.id), name: String(w.name), city: w.city ? String(w.city) : null })
+        );
       }
 
       // pedidos do dia
@@ -293,7 +345,7 @@ export default function RestaurantePage() {
         if (!o.confirmed_at) conf[o.shift] = false;
       }
 
-      // se não tem pedidos daquele turno, não confirma
+      // se não tem pedidos daquele turno, mantém como não confirmado (evita “dar ok” sem ver)
       if (orows.filter((x) => x.shift === "ALMOCO").length === 0) conf.ALMOCO = false;
       if (orows.filter((x) => x.shift === "JANTA").length === 0) conf.JANTA = false;
 
@@ -323,45 +375,41 @@ export default function RestaurantePage() {
     }
   }
 
-  // reaja a login/logout sem “ficar preso”
   useEffect(() => {
-    const { data } = supabase.auth.onAuthStateChange(async () => {
-      setError(null);
-      setOkMsg(null);
-      setRestaurants([]);
-      setRestaurantId("");
-      setTotals({ ALMOCO: 0, JANTA: 0 });
-      setByWorksite({ ALMOCO: [], JANTA: [] });
-      setConfirmedAll({ ALMOCO: false, JANTA: false });
-
-      setLoading(true);
-      try {
-        const uid = await loadUserAndGuard();
-        if (!uid) return;
-        await loadRestaurantsForUser(uid);
-      } catch (e: any) {
-        setError(e?.message || "Falha ao carregar.");
-      } finally {
-        setLoading(false);
-      }
-    });
+    let mounted = true;
 
     (async () => {
       setLoading(true);
       setError(null);
       try {
         const uid = await loadUserAndGuard();
-        if (!uid) return;
+        if (!uid || !mounted) return;
         await loadRestaurantsForUser(uid);
       } catch (e: any) {
-        setError(e?.message || "Falha ao carregar.");
+        if (mounted) setError(e?.message || "Falha ao carregar.");
       } finally {
-        setLoading(false);
+        if (mounted) setLoading(false);
       }
     })();
 
+    const { data: sub } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      const u = session?.user ?? null;
+      setUserId(u?.id ?? null);
+      setUserEmail(u?.email ?? "");
+
+      // quando logar via magic link, carrega restaurantes automaticamente
+      if (u?.id) {
+        try {
+          await loadRestaurantsForUser(u.id);
+        } catch {
+          // silencioso
+        }
+      }
+    });
+
     return () => {
-      data.subscription.unsubscribe();
+      mounted = false;
+      sub?.subscription?.unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -376,16 +424,15 @@ export default function RestaurantePage() {
     const today = isoTodayLocal();
     const now = new Date();
 
-    // aqui o botão só libera depois do ÚLTIMO horário (entre as obras)
-    const lunchAt = buildAtLocal(mealDate, limitTime.ALMOCO);
-    const dinnerAt = buildAtLocal(mealDate, limitTime.JANTA);
+    const lunchAt = buildAtLocal(mealDate, limitTime.ALMOCO ? `${limitTime.ALMOCO}:00` : null);
+    const dinnerAt = buildAtLocal(mealDate, limitTime.JANTA ? `${limitTime.JANTA}:00` : null);
 
     const base = (shift: Shift, dt: Date | null) => {
       if (confirmedAll[shift]) return false;
-      if (!dt) return false; // sem limite => bloqueia
+      if (!dt) return false; // sem horário limite => bloqueia
       if (mealDate === today) return now.getTime() >= dt.getTime();
-      if (mealDate < today) return true; // datas passadas: pode confirmar
-      return false; // futuras: bloqueia
+      if (mealDate < today) return true; // passado: pode confirmar
+      return false; // futuro: bloqueia
     };
 
     return { ALMOCO: base("ALMOCO", lunchAt), JANTA: base("JANTA", dinnerAt) };
@@ -399,6 +446,7 @@ export default function RestaurantePage() {
 
     setConfirming((p) => ({ ...p, [shift]: true }));
     try {
+      // tenta atualizar status também; se o enum não aceitar, faz fallback só no confirmed_at
       const attempt = await supabase
         .from("meal_orders")
         .update({
@@ -438,22 +486,20 @@ export default function RestaurantePage() {
     }
   }
 
-  // tela de login (se deslogado)
-  if (!authUserId) {
+  // ✅ Se não está logado, mostra login do restaurante (mesma rota)
+  if (!userId) {
     return (
       <div className="page-root">
-        <div className="page-container" style={{ paddingBottom: 48 }}>
-          <header className="page-header" style={{ justifyContent: "center", alignItems: "center" }}>
-            <div style={{ textAlign: "center" }}>
-              <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 54, height: 54, objectFit: "contain", border: "none", background: "transparent" }} />
-              <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 8 }}>
-                Restaurante
-              </div>
-              <div className="brand-text-sub">Totais do dia • Confirmar</div>
+        <div className="page-container" style={{ paddingBottom: 48, display: "grid", placeItems: "center", minHeight: "80vh" }}>
+          <div style={{ textAlign: "center" }}>
+            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 38, height: 38, objectFit: "contain", border: "none", background: "transparent" }} />
+            <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 10 }}>
+              Restaurante
             </div>
-          </header>
+            <div className="brand-text-sub">Totais do dia • Confirmar</div>
+          </div>
 
-          <div className="section-card" style={{ maxWidth: 520, margin: "0 auto" }}>
+          <div style={{ width: "100%", maxWidth: 360, marginTop: 18 }} className="section-card">
             <div className="section-header">
               <div>
                 <div className="section-title">Entrar</div>
@@ -461,41 +507,48 @@ export default function RestaurantePage() {
               </div>
             </div>
 
-            {loginErr ? (
+            {error ? (
               <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
-                {loginErr}
+                {error}
               </div>
             ) : null}
 
-            {loginInfo ? (
+            {okMsg ? (
               <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
-                {loginInfo}
+                {okMsg}
               </div>
             ) : null}
 
             <label style={styles.label}>E-mail</label>
-            <input style={styles.input} value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="seu@email.com" />
+            <input
+              style={styles.input}
+              value={loginEmail}
+              onChange={(e) => setLoginEmail(e.target.value)}
+              placeholder="seu@email.com"
+              autoComplete="email"
+              inputMode="email"
+            />
 
             <div style={{ height: 10 }} />
 
             <button
               type="button"
               onClick={sendMagicLink}
-              disabled={loginSending}
+              disabled={sendingLink}
               style={{
                 width: "100%",
                 borderRadius: 14,
                 padding: "14px 14px",
                 fontSize: 16,
                 fontWeight: 950,
-                cursor: loginSending ? "not-allowed" : "pointer",
-                opacity: loginSending ? 0.65 : 1,
+                cursor: sendingLink ? "not-allowed" : "pointer",
+                opacity: sendingLink ? 0.7 : 1,
                 border: "1px solid #93c5fd",
                 background: "#2563eb",
                 color: "#fff",
               }}
             >
-              {loginSending ? "Enviando..." : "Enviar link de acesso"}
+              {sendingLink ? "Enviando..." : "Enviar link de acesso"}
             </button>
           </div>
         </div>
@@ -508,7 +561,7 @@ export default function RestaurantePage() {
       <div className="page-container" style={{ paddingBottom: 48 }}>
         <header className="page-header" style={{ position: "relative", justifyContent: "center", alignItems: "center" }}>
           <div style={{ textAlign: "center" }}>
-            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 44, height: 44, objectFit: "contain", border: "none", background: "transparent" }} />
+            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 38, height: 38, objectFit: "contain", border: "none", background: "transparent" }} />
             <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 6 }}>
               Restaurante
             </div>
@@ -516,7 +569,7 @@ export default function RestaurantePage() {
             <div style={{ marginTop: 6, fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
           </div>
 
-          <div style={{ position: "absolute", right: 0, top: 0 }}>
+          <div style={{ position: "absolute", right: 0, top: 0, display: "flex", alignItems: "center", gap: 10 }}>
             <button
               type="button"
               onClick={handleSignOut}
@@ -606,7 +659,7 @@ export default function RestaurantePage() {
           <div className="section-header">
             <div>
               <div className="section-title">Almoço</div>
-              <div className="section-subtitle">Somente quantidades por obra. Confirmar apenas após o horário limite.</div>
+              <div className="section-subtitle">Somente quantidades por obra. Confirmar após o horário limite.</div>
             </div>
           </div>
 
@@ -650,7 +703,7 @@ export default function RestaurantePage() {
           <div className="section-header">
             <div>
               <div className="section-title">Janta</div>
-              <div className="section-subtitle">Somente quantidades por obra. Confirmar apenas após o horário limite.</div>
+              <div className="section-subtitle">Somente quantidades por obra. Confirmar após o horário limite.</div>
             </div>
           </div>
 
