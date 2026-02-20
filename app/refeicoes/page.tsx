@@ -80,7 +80,7 @@ function buildCutoffAtISO(mealDateISO: string, cutoffTime: string | null) {
   const hh = parts[0] ?? 0;
   const mm = parts[1] ?? 0;
   const ss = parts[2] ?? 0;
-  const dt = new Date(y, m - 1, d, hh, mm, ss); // local time
+  const dt = new Date(y, m - 1, d, hh, mm, ss); // local
   return dt.toISOString();
 }
 
@@ -95,7 +95,7 @@ function segBtnStyle(active: boolean, tone: "neutral" | "lunch" | "dinner"): CSS
     background: "#ffffff",
     padding: "8px 12px",
     fontSize: 14,
-    fontWeight: 900,
+    fontWeight: 800,
     cursor: "pointer",
     lineHeight: 1,
     userSelect: "none",
@@ -109,6 +109,7 @@ function segBtnStyle(active: boolean, tone: "neutral" | "lunch" | "dinner"): CSS
   if (tone === "dinner") {
     return { ...base, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8" };
   }
+
   return { ...base, border: "1px solid #cbd5e1", background: "#f8fafc", color: "#0f172a" };
 }
 
@@ -118,7 +119,7 @@ function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost"
     borderRadius: 14,
     padding: "14px 14px",
     fontSize: 16,
-    fontWeight: 950,
+    fontWeight: 900,
     cursor: disabled ? "not-allowed" : "pointer",
     opacity: disabled ? 0.65 : 1,
     border: "1px solid transparent",
@@ -151,14 +152,7 @@ function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost"
 export default function RefeicoesPage() {
   const router = useRouter();
 
-  const [authReady, setAuthReady] = useState(false);
-  const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>("");
-
-  // login inline (pra /refeicoes ser o “login do módulo”)
-  const [loginEmail, setLoginEmail] = useState("");
-  const [loginPass, setLoginPass] = useState("");
-  const [loginLoading, setLoginLoading] = useState(false);
 
   const [worksites, setWorksites] = useState<Worksite[]>([]);
   const [worksiteId, setWorksiteId] = useState<string>("");
@@ -186,12 +180,6 @@ export default function RefeicoesPage() {
     JANTA: { orderId: null, employeeIds: [], visitors: [] },
   });
 
-  // “ontem primeiro” (por turno)
-  const [yesterday, setYesterday] = useState<Record<Shift, SavedSnapshot>>({
-    ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
-    JANTA: { orderId: null, employeeIds: [], visitors: [] },
-  });
-
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
   const [canceling, setCanceling] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
@@ -202,7 +190,7 @@ export default function RefeicoesPage() {
   const styles: Record<string, CSSProperties> = {
     label: {
       fontSize: 12,
-      fontWeight: 900,
+      fontWeight: 800,
       color: "var(--gp-muted)",
       textTransform: "uppercase",
       letterSpacing: "0.08em",
@@ -232,19 +220,6 @@ export default function RefeicoesPage() {
     hint: { fontSize: 12, color: "var(--gp-muted-soft)" },
   };
 
-  // manter auth sincronizado (evita “rede/IP” ser confundido com sessão)
-  useEffect(() => {
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      const u = session?.user ?? null;
-      setUserId(u?.id ?? null);
-      setUserEmail(u?.email ?? "");
-      setAuthReady(true);
-    });
-    return () => {
-      data.subscription.unsubscribe();
-    };
-  }, []);
-
   const totals = useMemo(() => {
     const lunch = selectedLunch.size + visitorsLunch.length;
     const dinner = selectedDinner.size + visitorsDinner.length;
@@ -263,7 +238,6 @@ export default function RefeicoesPage() {
     return { lunch, dinner };
   }, [contract]);
 
-  // default mode: almoço até 11h, depois janta (somente se a data for hoje)
   useEffect(() => {
     const today = isoTodayLocal();
     if (!isSameISODate(mealDate, today)) {
@@ -279,30 +253,30 @@ export default function RefeicoesPage() {
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    router.push("/refeicoes"); // ✅ não vai pro /
+    router.replace("/refeicoes"); // ✅ empresa volta pra /refeicoes
   }
 
-  async function handleLogin() {
-    setError(null);
-    setOkMsg(null);
+  async function loadUser() {
+    const { data } = await supabase.auth.getUser();
+    const u = data?.user;
+    setUserEmail(u?.email || "");
+    const userId = u?.id || null;
+    if (!userId) return null;
 
-    const email = loginEmail.trim();
-    if (!email || !loginPass) {
-      setError("Informe email e senha.");
-      return;
+    // ✅ se esse user for restaurante, não deixa ficar em /refeicoes
+    const { data: ru, error: ruErr } = await supabase
+      .from("meal_restaurant_users")
+      .select("restaurant_id")
+      .eq("user_id", userId)
+      .limit(1)
+      .maybeSingle();
+
+    if (!ruErr && ru?.restaurant_id) {
+      router.replace("/refeicoes/restaurante");
+      return null;
     }
 
-    setLoginLoading(true);
-    try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password: loginPass });
-      if (error) throw error;
-      setOkMsg("Logado.");
-      // auth state change vai atualizar userId/userEmail
-    } catch (e: any) {
-      setError(e?.message || "Falha no login.");
-    } finally {
-      setLoginLoading(false);
-    }
+    return userId;
   }
 
   async function loadWorksites() {
@@ -327,16 +301,24 @@ export default function RefeicoesPage() {
     if (empRes.error) throw empRes.error;
     if (favRes.error) throw favRes.error;
 
-    setEmployees((empRes.data || []) as Employee[]);
-    setFavoriteIds(new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id))));
+    const emps = (empRes.data || []) as Employee[];
+    const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
+
+    emps.sort((a, b) => {
+      const af = favIds.has(a.id) ? 1 : 0;
+      const bf = favIds.has(b.id) ? 1 : 0;
+      if (af !== bf) return bf - af;
+      return a.full_name.localeCompare(b.full_name, "pt-BR");
+    });
+
+    setFavoriteIds(favIds);
+    setEmployees(emps);
   }
 
   async function loadContract(wid: string, dateISO: string) {
     const q = supabase
       .from("meal_contracts")
-      .select(
-        "id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner"
-      )
+      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
       .eq("worksite_id", wid)
       .lte("start_date", dateISO)
       .order("start_date", { ascending: false })
@@ -349,8 +331,8 @@ export default function RefeicoesPage() {
     return (data as any) as Contract | null;
   }
 
-  async function loadOverride(wid: string, uid: string | null) {
-    if (!uid) {
+  async function loadOverride(wid: string, userId: string | null) {
+    if (!userId) {
       setCanOverrideCutoff(false);
       return;
     }
@@ -358,7 +340,7 @@ export default function RefeicoesPage() {
       .from("meal_worksite_members")
       .select("can_override_cutoff")
       .eq("worksite_id", wid)
-      .eq("user_id", uid)
+      .eq("user_id", userId)
       .maybeSingle();
 
     if (error) {
@@ -407,6 +389,9 @@ export default function RefeicoesPage() {
   }
 
   async function refreshSaved() {
+    setError(null);
+    setOkMsg(null);
+
     if (!worksiteId || !contract?.restaurant_id) {
       setSaved({
         ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
@@ -425,40 +410,16 @@ export default function RefeicoesPage() {
     setSaved({ ALMOCO: l, JANTA: j });
   }
 
-  async function refreshYesterday() {
-    if (!worksiteId || !contract?.restaurant_id) {
-      setYesterday({
-        ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
-        JANTA: { orderId: null, employeeIds: [], visitors: [] },
-      });
-      return;
-    }
-
-    const rid = contract.restaurant_id;
-    const y = addDaysISO(mealDate, -1);
-
-    const [l, j] = await Promise.all([
-      fetchSavedForShift(worksiteId, rid, y, "ALMOCO"),
-      fetchSavedForShift(worksiteId, rid, y, "JANTA"),
-    ]);
-
-    setYesterday({ ALMOCO: l, JANTA: j });
-  }
-
   async function bootstrap() {
     setLoading(true);
     setError(null);
     try {
-      const { data } = await supabase.auth.getUser();
-      const u = data?.user ?? null;
-      setUserId(u?.id ?? null);
-      setUserEmail(u?.email ?? "");
-      setAuthReady(true);
-
-      if (!u?.id) return; // sem sessão: fica no login
-
+      const userId = await loadUser();
+      if (!userId) return; // ✅ sem user ou foi redirecionado
       await loadWorksites();
-      if (worksiteId) await loadOverride(worksiteId, u.id);
+      if (worksiteId) {
+        await loadOverride(worksiteId, userId);
+      }
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
     } finally {
@@ -471,22 +432,21 @@ export default function RefeicoesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // quando muda obra/data: recarrega contrato, favoritos, funcionários, saved e “ontem”
   useEffect(() => {
     (async () => {
-      if (!userId) return;
       if (!worksiteId) return;
-
       setLoading(true);
       setError(null);
       setOkMsg(null);
 
       try {
+        const { data } = await supabase.auth.getUser();
+        const userId = data?.user?.id ?? null;
+
         await loadEmployeesAndFavorites(worksiteId);
         const c = await loadContract(worksiteId, mealDate);
         await loadOverride(worksiteId, userId);
 
-        // reset seleção local (não apaga saved)
         setSelectedLunch(new Set());
         setSelectedDinner(new Set());
         setVisitorsLunch([]);
@@ -494,13 +454,8 @@ export default function RefeicoesPage() {
 
         if (c?.restaurant_id) {
           await refreshSaved();
-          await refreshYesterday(); // ✅ ordenação “ontem primeiro”
         } else {
           setSaved({
-            ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
-            JANTA: { orderId: null, employeeIds: [], visitors: [] },
-          });
-          setYesterday({
             ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
             JANTA: { orderId: null, employeeIds: [], visitors: [] },
           });
@@ -512,7 +467,7 @@ export default function RefeicoesPage() {
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [userId, worksiteId, mealDate]);
+  }, [worksiteId, mealDate]);
 
   function toggleEmployee(shift: Shift, employeeId: string) {
     if (shift === "ALMOCO") {
@@ -625,7 +580,6 @@ export default function RefeicoesPage() {
     if (!contract?.restaurant_id) return setError("Sem contrato ativo para esta obra."), undefined;
 
     const rid = contract.restaurant_id;
-
     const selectedIds = shift === "ALMOCO" ? Array.from(selectedLunch) : Array.from(selectedDinner);
     const visitors = shift === "ALMOCO" ? visitorsLunch : visitorsDinner;
 
@@ -635,7 +589,9 @@ export default function RefeicoesPage() {
     setSaving((p) => ({ ...p, [shift]: true }));
 
     try {
-      // cutoff check
+      const { data: ud } = await supabase.auth.getUser();
+      const userId = ud?.user?.id ?? null;
+
       const cutoffTime = shift === "ALMOCO" ? contract.cutoff_lunch : contract.cutoff_dinner;
       const cutoffAtISO = buildCutoffAtISO(mealDate, cutoffTime);
       const allowAfter = Boolean(contract.allow_after_cutoff);
@@ -706,7 +662,6 @@ export default function RefeicoesPage() {
       if (insLines.error) throw insLines.error;
 
       await refreshSaved();
-      await refreshYesterday(); // ✅ mantém “ontem” atualizado pro dia seguinte também
       setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo com sucesso (${total}).`);
     } catch (e: any) {
       setError(e?.message || "Erro ao salvar.");
@@ -725,7 +680,6 @@ export default function RefeicoesPage() {
     }
 
     const rid = contract.restaurant_id;
-
     setCanceling((p) => ({ ...p, [shift]: true }));
 
     try {
@@ -748,7 +702,7 @@ export default function RefeicoesPage() {
       await refreshSaved();
       clearSelection(shift);
 
-      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (apagado). Audit fica registrado.`);
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (apagado).`);
     } catch (e: any) {
       setError(e?.message || "Erro ao cancelar.");
     } finally {
@@ -779,39 +733,11 @@ export default function RefeicoesPage() {
     }
   }
 
-  // ✅ ordenação: favoritos primeiro (manual) + “ontem primeiro” por turno + alfabético
-  const sortedEmployees = useMemo(() => {
-    const list = [...employees];
-    const yLunch = new Set(yesterday.ALMOCO.employeeIds || []);
-    const yDinner = new Set(yesterday.JANTA.employeeIds || []);
-
-    const yRank = (id: string) => {
-      if (mode === "ALMOCO") return yLunch.has(id) ? 1 : 0;
-      if (mode === "JANTA") return yDinner.has(id) ? 1 : 0;
-      return (yLunch.has(id) ? 1 : 0) + (yDinner.has(id) ? 1 : 0);
-    };
-
-    list.sort((a, b) => {
-      const af = favoriteIds.has(a.id) ? 1 : 0;
-      const bf = favoriteIds.has(b.id) ? 1 : 0;
-      if (af !== bf) return bf - af;
-
-      const ay = yRank(a.id);
-      const by = yRank(b.id);
-      if (ay !== by) return by - ay;
-
-      return a.full_name.localeCompare(b.full_name, "pt-BR");
-    });
-
-    return list;
-  }, [employees, favoriteIds, yesterday, mode]);
-
   const filteredEmployees = useMemo(() => {
     const q = query.trim().toLowerCase();
-    let list = sortedEmployees;
+    let list = employees;
 
     if (q) list = list.filter((e) => e.full_name.toLowerCase().includes(q));
-
     if (!onlyMarked) return list;
 
     return list.filter((e) => {
@@ -819,7 +745,7 @@ export default function RefeicoesPage() {
       if (mode === "JANTA") return selectedDinner.has(e.id);
       return selectedLunch.has(e.id) || selectedDinner.has(e.id);
     });
-  }, [sortedEmployees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
+  }, [employees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
 
   const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
 
@@ -861,113 +787,67 @@ export default function RefeicoesPage() {
     return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
   }, [mode, canceling, savedCounts]);
 
-  // --------- LOGIN UI ----------
-  if (!authReady) {
-    return (
-      <div className="page-root">
-        <div className="page-container" style={{ padding: 24 }}>
-          <div style={{ fontSize: 14, color: "var(--gp-muted-soft)" }}>Carregando…</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!userId) {
-    return (
-      <div className="page-root">
-        <div className="page-container" style={{ padding: 24, maxWidth: 520 }}>
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10, marginBottom: 14 }}>
-            <img
-              src="/gpasfalto-logo.png"
-              alt="GP Asfalto"
-              style={{ width: 64, height: 64, objectFit: "contain", border: "none", background: "transparent" }}
-            />
-            <div style={{ fontSize: 28, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>Refeições</div>
-          </div>
-
-          {error ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
-              {error}
-            </div>
-          ) : null}
-
-          {okMsg ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
-              {okMsg}
-            </div>
-          ) : null}
-
-          <div className="section-card">
-            <label style={styles.label}>Email</label>
-            <input style={styles.input} value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="seu@email.com" autoComplete="email" />
-            <div style={{ height: 10 }} />
-            <label style={styles.label}>Senha</label>
-            <input style={styles.input} value={loginPass} onChange={(e) => setLoginPass(e.target.value)} placeholder="••••••••" type="password" autoComplete="current-password" />
-            <div style={{ height: 12 }} />
-            <button type="button" style={bigBtnStyle("primaryDinner", loginLoading)} onClick={handleLogin} disabled={loginLoading}>
-              {loginLoading ? "Entrando..." : "Entrar"}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // --------- APP UI ----------
   return (
     <div className="page-root">
       <div className="page-container" style={{ paddingBottom: 240 }}>
-        {/* Header app-like com logo central maior */}
-        <header className="page-header" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 10 }}>
-          <div style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
-
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <div
-                style={{
-                  borderRadius: 999,
-                  border: "1px solid #e5e7eb",
-                  background: "#fff",
-                  padding: "8px 12px",
-                  fontSize: 13,
-                  fontWeight: 900,
-                }}
-                title="Data selecionada"
-              >
-                {headerDatePill}
-              </div>
-
-              <button
-                type="button"
-                onClick={handleSignOut}
-                style={{
-                  borderRadius: 999,
-                  border: "1px solid #e5e7eb",
-                  background: "#fff",
-                  padding: "8px 12px",
-                  fontSize: 13,
-                  fontWeight: 950,
-                  cursor: "pointer",
-                }}
-              >
-                Sair
-              </button>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 6 }}>
+        <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <img
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
-              style={{ width: 56, height: 56, objectFit: "contain", border: "none", background: "transparent" }}
+              style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }}
             />
-            <div className="brand-text-main" style={{ lineHeight: 1.05 }}>
-              Refeições
+            <div>
+              <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
+                Refeições
+              </div>
+              <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
             </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 800,
+              }}
+              title="Data selecionada"
+            >
+              {headerDatePill}
+            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              Sair
+            </button>
           </div>
         </header>
 
         <div className="section-card">
+          <div className="section-header" style={{ alignItems: "flex-start" }}>
+            <div>
+              <div className="section-title">Marcação</div>
+              <div className="section-subtitle" style={{ marginTop: 2 }}>
+                Escolha a obra, marque rápido e no final confira os totais antes de salvar.
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
+          </div>
+
           {error ? (
             <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
               {error}
@@ -1019,11 +899,11 @@ export default function RefeicoesPage() {
 
                 <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
                   Limites: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
-                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override)</span> : null}
+                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override ativo)</span> : null}
                 </div>
               </div>
 
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 900 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800 }}>
                 <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
                 Mostrar só marcados
               </label>
@@ -1046,10 +926,10 @@ export default function RefeicoesPage() {
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 950 }} title="Marcados agora / Salvos no banco">
+                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
                   Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
                 </div>
-                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 950 }} title="Marcados agora / Salvos no banco">
+                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
                   Janta: {totals.dinner} (salvo: {savedCounts.dinner})
                 </div>
               </div>
@@ -1069,12 +949,11 @@ export default function RefeicoesPage() {
               <div className="section-title">Funcionários</div>
               <div className="section-subtitle">Toque para marcar/desmarcar no turno selecionado.</div>
             </div>
-
             <button
               type="button"
               onClick={() => addVisitor(mode === "JANTA" ? "JANTA" : "ALMOCO")}
-              style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 950, cursor: "pointer" }}
-              title="Adicionar pessoa sem cadastro"
+              style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 900, cursor: "pointer" }}
+              title="Adicionar visitante sem cadastro"
             >
               + Pessoa
             </button>
@@ -1088,27 +967,7 @@ export default function RefeicoesPage() {
 
               const card: CSSProperties = { borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 };
 
-              const nameStyle: CSSProperties = {
-                fontSize: 14,
-                fontWeight: 950,
-                color: "#0f172a",
-                letterSpacing: "0.02em",
-                textTransform: "uppercase",
-              };
-
-              // ⭐ somente estrela (sem “favorito”)
-              const star: CSSProperties = {
-                width: 34,
-                height: 34,
-                borderRadius: 999,
-                display: "grid",
-                placeItems: "center",
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                fontSize: 16,
-                fontWeight: 950,
-                color: "#0f172a",
-              };
+              const nameStyle: CSSProperties = { fontSize: 14, fontWeight: 900, color: "#0f172a", letterSpacing: "0.02em", textTransform: "uppercase" };
 
               const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
                 if (tone === "ALMOCO") {
@@ -1120,7 +979,7 @@ export default function RefeicoesPage() {
                     color: "#166534",
                     padding: "14px 14px",
                     fontSize: 16,
-                    fontWeight: 950,
+                    fontWeight: 900,
                     cursor: "pointer",
                   };
                 }
@@ -1132,7 +991,7 @@ export default function RefeicoesPage() {
                   color: "#1d4ed8",
                   padding: "14px 14px",
                   fontSize: 16,
-                  fontWeight: 950,
+                  fontWeight: 900,
                   cursor: "pointer",
                 };
               };
@@ -1141,7 +1000,7 @@ export default function RefeicoesPage() {
                 <div key={e.id} style={card}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                     <div style={nameStyle}>{e.full_name}</div>
-                    {fav ? <div style={star} title="Favorito">★</div> : null}
+                    {fav ? <div title="Favorito" style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>⭐</div> : null}
                   </div>
 
                   <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
@@ -1170,14 +1029,12 @@ export default function RefeicoesPage() {
 
             {(visitorsLunch.length > 0 || visitorsDinner.length > 0) ? (
               <div style={{ borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 950, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                  Pessoas sem cadastro
-                </div>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Pessoas sem cadastro</div>
 
                 <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
                   {visitorsLunch.map((v) => (
                     <div key={`l-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 900, color: "#166534" }}>🍽️ {v}</div>
+                      <div style={{ fontWeight: 800, color: "#166534" }}>🍽️ {v}</div>
                       <button type="button" onClick={() => setVisitorsLunch((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>
                         Remover
                       </button>
@@ -1185,7 +1042,7 @@ export default function RefeicoesPage() {
                   ))}
                   {visitorsDinner.map((v) => (
                     <div key={`d-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 900, color: "#1d4ed8" }}>🌙 {v}</div>
+                      <div style={{ fontWeight: 800, color: "#1d4ed8" }}>🌙 {v}</div>
                       <button type="button" onClick={() => setVisitorsDinner((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>
                         Remover
                       </button>
@@ -1200,7 +1057,6 @@ export default function RefeicoesPage() {
         </div>
       </div>
 
-      {/* Barra fixa no final */}
       <div
         style={{
           position: "fixed",
@@ -1216,13 +1072,13 @@ export default function RefeicoesPage() {
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 950, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
               <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
               <div style={{ fontSize: 12, color: "#166534" }}>salvo: {savedCounts.lunch} • limite {limits.lunch}</div>
             </div>
 
             <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 950, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
               <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
               <div style={{ fontSize: 12, color: "#1d4ed8" }}>salvo: {savedCounts.dinner} • limite {limits.dinner}</div>
             </div>
