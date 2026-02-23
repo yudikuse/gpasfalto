@@ -158,12 +158,16 @@ export default function RefeicoesPage() {
 
   const [mealDate, setMealDate] = useState<string>(isoTodayLocal());
 
-  const [mode, setMode] = useState<Mode>("AMBOS");
-
   const [contract, setContract] = useState<Contract | null>(null);
+  const [canOverrideCutoff, setCanOverrideCutoff] = useState<boolean>(false);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [search, setSearch] = useState<string>("");
+  const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
+
+  const [query, setQuery] = useState("");
+  const [onlyMarked, setOnlyMarked] = useState(false);
+
+  const [mode, setMode] = useState<Mode>("ALMOCO");
 
   const [selectedLunch, setSelectedLunch] = useState<Set<string>>(new Set());
   const [selectedDinner, setSelectedDinner] = useState<Set<string>>(new Set());
@@ -175,20 +179,12 @@ export default function RefeicoesPage() {
     JANTA: { orderId: null, employeeIds: [], visitors: [] },
   });
 
-  const [loading, setLoading] = useState<boolean>(false);
+  const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
   const [canceling, setCanceling] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
 
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
-
-  const [canOverrideCutoff, setCanOverrideCutoff] = useState<boolean>(false);
-
-  const limits = useMemo(() => {
-    const lunch = contract?.cutoff_lunch ? timeHHMM(contract.cutoff_lunch) : "--:--";
-    const dinner = contract?.cutoff_dinner ? timeHHMM(contract.cutoff_dinner) : "--:--";
-    return { lunch, dinner };
-  }, [contract]);
 
   const styles: Record<string, CSSProperties> = {
     label: {
@@ -220,86 +216,147 @@ export default function RefeicoesPage() {
       background: "#ffffff",
       color: "var(--gp-text)",
     },
-    chip: {
-      borderRadius: 999,
-      padding: "6px 10px",
-      fontSize: 13,
-      fontWeight: 850,
-      border: "1px solid #e5e7eb",
-      background: "#fff",
-      color: "#0f172a",
-      cursor: "pointer",
-      userSelect: "none",
-    },
+    hint: { fontSize: 12, color: "var(--gp-muted-soft)" },
   };
 
-  async function ensureLoggedIn() {
+  const totals = useMemo(() => {
+    const lunch = selectedLunch.size + visitorsLunch.length;
+    const dinner = selectedDinner.size + visitorsDinner.length;
+    return { lunch, dinner, all: lunch + dinner };
+  }, [selectedLunch, selectedDinner, visitorsLunch, visitorsDinner]);
+
+  const savedCounts = useMemo(() => {
+    const l = (saved.ALMOCO.employeeIds?.length || 0) + (saved.ALMOCO.visitors?.length || 0);
+    const j = (saved.JANTA.employeeIds?.length || 0) + (saved.JANTA.visitors?.length || 0);
+    return { lunch: l, dinner: j };
+  }, [saved]);
+
+  const limits = useMemo(() => {
+    const lunch = timeHHMM(contract?.cutoff_lunch ?? null);
+    const dinner = timeHHMM(contract?.cutoff_dinner ?? null);
+    return { lunch, dinner };
+  }, [contract]);
+
+  useEffect(() => {
+    const today = isoTodayLocal();
+    if (!isSameISODate(mealDate, today)) {
+      setMode("ALMOCO");
+      return;
+    }
+    const now = new Date();
+    const hh = now.getHours();
+    const mm = now.getMinutes();
+    const after11 = hh > 11 || (hh === 11 && mm >= 0);
+    setMode(after11 ? "JANTA" : "ALMOCO");
+  }, [mealDate]);
+
+  async function handleSignOut() {
+    await supabase.auth.signOut();
+    router.replace("/refeicoes"); // empresa volta pra /refeicoes
+  }
+
+  async function loadUser() {
+    // força leitura de sessão (evita “tela presa” em alguns fluxos)
+    await supabase.auth.getSession();
+
     const { data } = await supabase.auth.getUser();
     const u = data?.user;
-    if (!u?.id) {
-      router.replace("/refeicoes");
-      return null;
-    }
-    setUserEmail(u.email || "");
-    return u.id;
-  }
+    setUserEmail(u?.email || "");
+    const userId = u?.id || null;
+    if (!userId) return null;
 
-  async function loadWorksites(uid: string) {
-    const { data: links, error: e1 } = await supabase.from("meal_worksite_members").select("worksite_id,can_override_cutoff").eq("user_id", uid);
-    if (e1) throw e1;
-
-    const can = (links || []).some((r: any) => Boolean(r.can_override_cutoff));
-    setCanOverrideCutoff(can);
-
-    const ids = (links || []).map((r: any) => String(r.worksite_id)).filter(Boolean);
-    if (ids.length === 0) {
-      setWorksites([]);
-      setWorksiteId("");
-      return;
-    }
-
-    const { data: ws, error: e2 } = await supabase.from("meal_worksites").select("id,name,city,active").in("id", ids).order("name", { ascending: true });
-    if (e2) throw e2;
-
-    const list = (ws || []) as Worksite[];
-    setWorksites(list);
-    setWorksiteId((prev) => {
-      if (prev && list.some((w) => w.id === prev)) return prev;
-      return list[0]?.id ? String(list[0].id) : "";
-    });
-  }
-
-  async function loadContract() {
-    if (!worksiteId) {
-      setContract(null);
-      return;
-    }
-
-    const { data: c, error: e } = await supabase
-      .from("meal_contracts")
-      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
-      .eq("worksite_id", worksiteId)
-      .order("start_date", { ascending: false })
+    // se esse user for restaurante, não deixa ficar em /refeicoes
+    const { data: ru, error: ruErr } = await supabase
+      .from("meal_restaurant_users")
+      .select("restaurant_id")
+      .eq("user_id", userId)
       .limit(1)
       .maybeSingle();
 
-    if (e) throw e;
-    setContract((c || null) as any);
+    if (!ruErr && ru?.restaurant_id) {
+      router.replace("/refeicoes/restaurante");
+      return null;
+    }
+
+    return userId;
   }
 
-  async function loadEmployees() {
-    const { data: emps, error: e } = await supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name", { ascending: true });
-    if (e) throw e;
-    setEmployees((emps || []) as any);
+  async function loadWorksites() {
+    const { data, error } = await supabase
+      .from("meal_worksites")
+      .select("id,name,city,active")
+      .eq("active", true)
+      .order("name", { ascending: true });
+
+    if (error) throw error;
+    const rows = (data || []) as Worksite[];
+    setWorksites(rows);
+    if (!worksiteId && rows[0]?.id) setWorksiteId(rows[0].id);
   }
 
-  async function fetchSavedForShift(wsId: string, rid: string, dateISO: string, shift: Shift): Promise<SavedSnapshot> {
-    const snap: SavedSnapshot = { orderId: null, employeeIds: [], visitors: [] };
+  async function loadEmployeesAndFavorites(wid: string) {
+    const [empRes, favRes] = await Promise.all([
+      supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name"),
+      supabase.from("meal_worksite_favorites").select("employee_id").eq("worksite_id", wid),
+    ]);
 
-    const { data: o, error: e1 } = await supabase
+    if (empRes.error) throw empRes.error;
+    if (favRes.error) throw favRes.error;
+
+    const emps = (empRes.data || []) as Employee[];
+    const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
+
+    emps.sort((a, b) => {
+      const af = favIds.has(a.id) ? 1 : 0;
+      const bf = favIds.has(b.id) ? 1 : 0;
+      if (af !== bf) return bf - af;
+      return a.full_name.localeCompare(b.full_name, "pt-BR");
+    });
+
+    setFavoriteIds(favIds);
+    setEmployees(emps);
+  }
+
+  async function loadContract(wid: string, dateISO: string) {
+    const q = supabase
+      .from("meal_contracts")
+      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
+      .eq("worksite_id", wid)
+      .lte("start_date", dateISO)
+      .order("start_date", { ascending: false })
+      .limit(1);
+
+    const { data, error } = await q.or(`end_date.is.null,end_date.gte.${dateISO}`).maybeSingle();
+    if (error) throw error;
+
+    setContract((data as any) ?? null);
+    return (data as any) as Contract | null;
+  }
+
+  async function loadOverride(wid: string, userId: string | null) {
+    if (!userId) {
+      setCanOverrideCutoff(false);
+      return;
+    }
+    const { data, error } = await supabase
+      .from("meal_worksite_members")
+      .select("can_override_cutoff")
+      .eq("worksite_id", wid)
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    if (error) {
+      setCanOverrideCutoff(false);
+      return;
+    }
+    setCanOverrideCutoff(Boolean((data as any)?.can_override_cutoff));
+  }
+
+  async function fetchSavedForShift(wid: string, rid: string, dateISO: string, shift: Shift): Promise<SavedSnapshot> {
+    const { data: order, error: e1 } = await supabase
       .from("meal_orders")
       .select("id")
-      .eq("worksite_id", wsId)
+      .eq("worksite_id", wid)
       .eq("restaurant_id", rid)
       .eq("meal_date", dateISO)
       .eq("shift", shift)
@@ -307,28 +364,36 @@ export default function RefeicoesPage() {
       .maybeSingle();
 
     if (e1) throw e1;
-    if (!o?.id) return snap;
 
-    const orderId = String((o as any).id);
-    snap.orderId = orderId;
+    const orderId = (order as any)?.id ? String((order as any).id) : null;
+    if (!orderId) return { orderId: null, employeeIds: [], visitors: [] };
 
-    const { data: lines, error: e2 } = await supabase.from("meal_order_lines").select("employee_id,visitor_name,included").eq("meal_order_id", orderId).eq("included", true);
+    const { data: lines, error: e2 } = await supabase
+      .from("meal_order_lines")
+      .select("employee_id,visitor_name,included")
+      .eq("meal_order_id", orderId)
+      .eq("included", true);
+
     if (e2) throw e2;
 
-    const empIds: string[] = [];
-    const visitors: string[] = [];
-    (lines || []).forEach((r: any) => {
-      if (r.employee_id) empIds.push(String(r.employee_id));
-      if (r.visitor_name) visitors.push(String(r.visitor_name));
-    });
+    const empIds = uniq(
+      (lines || [])
+        .map((r: any) => (r.employee_id ? String(r.employee_id) : ""))
+        .filter(Boolean)
+    );
+    const visitors = uniq(
+      (lines || [])
+        .map((r: any) => (r.visitor_name ? String(r.visitor_name) : ""))
+        .filter(Boolean)
+    );
 
-    snap.employeeIds = uniq(empIds);
-    snap.visitors = uniq(visitors);
-
-    return snap;
+    return { orderId, employeeIds: empIds, visitors };
   }
 
   async function refreshSaved() {
+    setError(null);
+    setOkMsg(null);
+
     if (!worksiteId || !contract?.restaurant_id) {
       setSaved({
         ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
@@ -347,25 +412,145 @@ export default function RefeicoesPage() {
     setSaved({ ALMOCO: l, JANTA: j });
   }
 
-  function clearSelection(shift: Shift) {
-    if (shift === "ALMOCO") {
-      setSelectedLunch(new Set());
-      setVisitorsLunch([]);
-    } else {
-      setSelectedDinner(new Set());
-      setVisitorsDinner([]);
+  async function bootstrap() {
+    setLoading(true);
+    setError(null);
+    try {
+      const userId = await loadUser();
+      if (!userId) return; // sem user ou foi redirecionado
+      await loadWorksites();
+      if (worksiteId) {
+        await loadOverride(worksiteId, userId);
+      }
+    } catch (e: any) {
+      setError(e?.message || "Falha ao carregar.");
+    } finally {
+      setLoading(false);
     }
   }
 
-  async function copyFromYesterday() {
+  useEffect(() => {
+    bootstrap();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      if (!worksiteId) return;
+      setLoading(true);
+      setError(null);
+      setOkMsg(null);
+
+      try {
+        const { data } = await supabase.auth.getUser();
+        const userId = data?.user?.id ?? null;
+
+        await loadEmployeesAndFavorites(worksiteId);
+        const c = await loadContract(worksiteId, mealDate);
+        await loadOverride(worksiteId, userId);
+
+        setSelectedLunch(new Set());
+        setSelectedDinner(new Set());
+        setVisitorsLunch([]);
+        setVisitorsDinner([]);
+
+        if (c?.restaurant_id) {
+          await refreshSaved();
+        } else {
+          setSaved({
+            ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
+            JANTA: { orderId: null, employeeIds: [], visitors: [] },
+          });
+        }
+      } catch (e: any) {
+        setError(e?.message || "Falha ao carregar dados.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [worksiteId, mealDate]);
+
+  function toggleEmployee(shift: Shift, employeeId: string) {
+    if (shift === "ALMOCO") {
+      setSelectedLunch((prev) => {
+        const n = new Set(prev);
+        if (n.has(employeeId)) n.delete(employeeId);
+        else n.add(employeeId);
+        return n;
+      });
+    } else {
+      setSelectedDinner((prev) => {
+        const n = new Set(prev);
+        if (n.has(employeeId)) n.delete(employeeId);
+        else n.add(employeeId);
+        return n;
+      });
+    }
+  }
+
+  function clearSelection(target: Mode) {
+    if (target === "ALMOCO") {
+      setSelectedLunch(new Set());
+      setVisitorsLunch([]);
+      return;
+    }
+    if (target === "JANTA") {
+      setSelectedDinner(new Set());
+      setVisitorsDinner([]);
+      return;
+    }
+    setSelectedLunch(new Set());
+    setSelectedDinner(new Set());
+    setVisitorsLunch([]);
+    setVisitorsDinner([]);
+  }
+
+  function restoreSaved(target: Mode) {
+    if (target === "ALMOCO") {
+      setSelectedLunch(new Set(saved.ALMOCO.employeeIds || []));
+      setVisitorsLunch(saved.ALMOCO.visitors || []);
+      return;
+    }
+    if (target === "JANTA") {
+      setSelectedDinner(new Set(saved.JANTA.employeeIds || []));
+      setVisitorsDinner(saved.JANTA.visitors || []);
+      return;
+    }
+    setSelectedLunch(new Set(saved.ALMOCO.employeeIds || []));
+    setVisitorsLunch(saved.ALMOCO.visitors || []);
+    setSelectedDinner(new Set(saved.JANTA.employeeIds || []));
+    setVisitorsDinner(saved.JANTA.visitors || []);
+  }
+
+  async function copyYesterday(target: Mode) {
     setError(null);
     setOkMsg(null);
 
-    if (!worksiteId || !contract?.restaurant_id) return setError("Sem contrato ativo para esta obra."), undefined;
+    if (!worksiteId || !contract?.restaurant_id) {
+      setError("Sem contrato ativo para esta obra (restaurant_id não encontrado).");
+      return;
+    }
+
+    const rid = contract.restaurant_id;
+    const y = addDaysISO(mealDate, -1);
 
     try {
-      const rid = contract.restaurant_id;
-      const y = addDaysISO(mealDate, -1);
+      if (target === "ALMOCO") {
+        const snap = await fetchSavedForShift(worksiteId, rid, y, "ALMOCO");
+        setSelectedLunch(new Set(snap.employeeIds || []));
+        setVisitorsLunch(snap.visitors || []);
+        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para ALMOÇO.`);
+        return;
+      }
+      if (target === "JANTA") {
+        const snap = await fetchSavedForShift(worksiteId, rid, y, "JANTA");
+        setSelectedDinner(new Set(snap.employeeIds || []));
+        setVisitorsDinner(snap.visitors || []);
+        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para JANTA.`);
+        return;
+      }
+
       const [l, j] = await Promise.all([
         fetchSavedForShift(worksiteId, rid, y, "ALMOCO"),
         fetchSavedForShift(worksiteId, rid, y, "JANTA"),
@@ -455,35 +640,15 @@ export default function RefeicoesPage() {
         if (ins.error) throw ins.error;
         orderId = String((ins.data as any)?.id);
       } else {
-        // apaga linhas antigas
         const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
         if (del.error) throw del.error;
 
-        // ✅ REABRE o pedido ao salvar de novo (se já tinha sido confirmado pelo restaurante)
-        const baseUpdate: any = {
-          cutoff_at: cutoffAtISO,
-          updated_by: userId,
-          submitted_at: null,
-          confirmed_at: null,
-          closed_at: null,
-          order_date: mealDate,
-        };
-
-        // tenta voltar status pra DRAFT (se existir enum)
-        const up1 = await supabase
+        const up = await supabase
           .from("meal_orders")
-          .update({ ...baseUpdate, status: "DRAFT" as any })
+          .update({ cutoff_at: cutoffAtISO, updated_by: userId })
           .eq("id", orderId);
 
-        if (up1.error) {
-          const msg = String(up1.error.message || "");
-          if (msg.includes("invalid input value for enum") || msg.includes("meal_order_status")) {
-            const up2 = await supabase.from("meal_orders").update(baseUpdate).eq("id", orderId);
-            if (up2.error) throw up2.error;
-          } else {
-            throw up1.error;
-          }
-        }
+        if (up.error) throw up.error;
       }
 
       const rows: any[] = [];
@@ -554,135 +719,55 @@ export default function RefeicoesPage() {
     const lunchNames = employees.filter((e) => selectedLunch.has(e.id)).map((e) => e.full_name);
     const dinnerNames = employees.filter((e) => selectedDinner.has(e.id)).map((e) => e.full_name);
 
-    const text =
-      `OBRA: ${wsName}\n` +
-      `DATA: ${formatBRFromISO(mealDate)}\n\n` +
-      `ALMOÇO (${lunchNames.length + visitorsLunch.length}):\n` +
-      (lunchNames.length ? lunchNames.map((x) => `- ${x}`).join("\n") + "\n" : "") +
-      (visitorsLunch.length ? visitorsLunch.map((x) => `- (Visitante) ${x}`).join("\n") + "\n" : "") +
-      `\nJANTA (${dinnerNames.length + visitorsDinner.length}):\n` +
-      (dinnerNames.length ? dinnerNames.map((x) => `- ${x}`).join("\n") + "\n" : "") +
-      (visitorsDinner.length ? visitorsDinner.map((x) => `- (Visitante) ${x}`).join("\n") + "\n" : "");
+    const msg =
+      `📍 Obra: ${wsName}\n` +
+      `📅 Data: ${formatBRFromISO(mealDate)}\n\n` +
+      `🍽️ Almoço (${totals.lunch}):\n` +
+      `${[...lunchNames, ...visitorsLunch].map((x) => `- ${x}`).join("\n") || "-"}\n\n` +
+      `🌙 Janta (${totals.dinner}):\n` +
+      `${[...dinnerNames, ...visitorsDinner].map((x) => `- ${x}`).join("\n") || "-"}`;
 
-    await navigator.clipboard.writeText(text);
-    setOkMsg("Resumo copiado.");
-  }
-
-  useEffect(() => {
-    let alive = true;
-
-    const run = async () => {
-      setLoading(true);
-      setError(null);
-      try {
-        const uid = await ensureLoggedIn();
-        if (!uid) return;
-        await loadWorksites(uid);
-        await loadEmployees();
-      } catch (e: any) {
-        setError(e?.message || "Falha ao carregar.");
-      } finally {
-        if (alive) setLoading(false);
-      }
-    };
-
-    run();
-
-    return () => {
-      alive = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (!worksiteId) return;
-    (async () => {
-      try {
-        setLoading(true);
-        await loadContract();
-      } catch (e: any) {
-        setError(e?.message || "Falha ao carregar contrato.");
-      } finally {
-        setLoading(false);
-      }
-    })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worksiteId]);
-
-  useEffect(() => {
-    if (!worksiteId || !contract?.restaurant_id) return;
-    refreshSaved();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worksiteId, contract?.restaurant_id, mealDate]);
-
-  const filteredEmployees = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return employees;
-    return employees.filter((e) => e.full_name.toLowerCase().includes(q));
-  }, [employees, search]);
-
-  const counts = useMemo(() => {
-    const lunch = selectedLunch.size + visitorsLunch.length;
-    const dinner = selectedDinner.size + visitorsDinner.length;
-    return { lunch, dinner };
-  }, [selectedLunch, selectedDinner, visitorsLunch, visitorsDinner]);
-
-  const showLunch = mode === "ALMOCO" || mode === "AMBOS";
-  const showDinner = mode === "JANTA" || mode === "AMBOS";
-
-  function toggleEmployee(shift: Shift, id: string) {
-    if (shift === "ALMOCO") {
-      setSelectedLunch((prev) => {
-        const n = new Set(prev);
-        if (n.has(id)) n.delete(id);
-        else n.add(id);
-        return n;
-      });
-    } else {
-      setSelectedDinner((prev) => {
-        const n = new Set(prev);
-        if (n.has(id)) n.delete(id);
-        else n.add(id);
-        return n;
-      });
+    try {
+      await navigator.clipboard.writeText(msg);
+      setOkMsg("Resumo copiado.");
+    } catch {
+      setError("Não consegui copiar automaticamente (permita clipboard).");
     }
   }
 
-  function isSelected(shift: Shift, id: string) {
-    return shift === "ALMOCO" ? selectedLunch.has(id) : selectedDinner.has(id);
-  }
+  const filteredEmployees = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    let list = employees;
+
+    if (q) list = list.filter((e) => e.full_name.toLowerCase().includes(q));
+    if (!onlyMarked) return list;
+
+    return list.filter((e) => {
+      if (mode === "ALMOCO") return selectedLunch.has(e.id);
+      if (mode === "JANTA") return selectedDinner.has(e.id);
+      return selectedLunch.has(e.id) || selectedDinner.has(e.id);
+    });
+  }, [employees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
+
+  const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
+
+  const bottomTitle = useMemo(() => {
+    if (mode === "ALMOCO") return `Salvar Almoço (${totals.lunch})`;
+    if (mode === "JANTA") return `Salvar Janta (${totals.dinner})`;
+    return `Salvar (Almoço ${totals.lunch} • Janta ${totals.dinner})`;
+  }, [mode, totals]);
 
   const bottomSaveDisabled = useMemo(() => {
-    if (!contract) return true;
-    if (mode === "ALMOCO") return counts.lunch <= 0;
-    if (mode === "JANTA") return counts.dinner <= 0;
-    return counts.lunch + counts.dinner <= 0;
-  }, [contract, mode, counts]);
-
-  const bottomCancelDisabled = useMemo(() => {
-    if (!contract) return true;
-    if (mode === "ALMOCO") return !saved.ALMOCO.orderId;
-    if (mode === "JANTA") return !saved.JANTA.orderId;
-    return !saved.ALMOCO.orderId && !saved.JANTA.orderId;
-  }, [contract, mode, saved]);
-
-  const bottomSaveLabel = useMemo(() => {
-    if (mode === "ALMOCO") return "Salvar Almoço";
-    if (mode === "JANTA") return "Salvar Janta";
-    return "Salvar Almoço + Janta";
-  }, [mode]);
-
-  const bottomCancelLabel = useMemo(() => {
-    if (mode === "ALMOCO") return "Cancelar Almoço";
-    if (mode === "JANTA") return "Cancelar Janta";
-    return "Cancelar Almoço + Janta";
-  }, [mode]);
+    if (mode === "ALMOCO") return totals.lunch <= 0 || saving.ALMOCO;
+    if (mode === "JANTA") return totals.dinner <= 0 || saving.JANTA;
+    return (totals.lunch <= 0 && totals.dinner <= 0) || saving.ALMOCO || saving.JANTA;
+  }, [mode, totals, saving]);
 
   async function handleBottomSave() {
     if (mode === "ALMOCO") return saveShift("ALMOCO");
     if (mode === "JANTA") return saveShift("JANTA");
-    await saveShift("ALMOCO");
-    await saveShift("JANTA");
+    if (totals.lunch > 0) await saveShift("ALMOCO");
+    if (totals.dinner > 0) await saveShift("JANTA");
   }
 
   async function handleBottomCancel() {
@@ -692,40 +777,95 @@ export default function RefeicoesPage() {
     await cancelShift("JANTA");
   }
 
+  const bottomCancelLabel = useMemo(() => {
+    if (mode === "ALMOCO") return `Cancelar Almoço (salvo: ${savedCounts.lunch})`;
+    if (mode === "JANTA") return `Cancelar Janta (salvo: ${savedCounts.dinner})`;
+    return `Cancelar (salvos: Almoço ${savedCounts.lunch} • Janta ${savedCounts.dinner})`;
+  }, [mode, savedCounts]);
+
+  const bottomCancelDisabled = useMemo(() => {
+    if (mode === "ALMOCO") return canceling.ALMOCO || savedCounts.lunch <= 0;
+    if (mode === "JANTA") return canceling.JANTA || savedCounts.dinner <= 0;
+    return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
+  }, [mode, canceling, savedCounts]);
+
   return (
     <div className="page-root">
-      <div className="page-container" style={{ paddingBottom: 48 }}>
-        <header className="page-header" style={{ position: "relative", justifyContent: "center", alignItems: "center" }}>
-          <div style={{ textAlign: "center" }}>
-            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }} />
-            <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 6 }}>
-              Refeições (Obra)
+      <div className="page-container" style={{ paddingBottom: 240 }}>
+        <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <img
+              src="/gpasfalto-logo.png"
+              alt="GP Asfalto"
+              style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }}
+            />
+            <div>
+              <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
+                Refeições
+              </div>
+              <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
             </div>
-            <div className="brand-text-sub">Selecionar • Salvar • Restaurante confirma</div>
           </div>
 
-          <div style={{ position: "absolute", right: 0, top: 0, display: "flex", alignItems: "center", gap: 10 }}>
-            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 800,
+              }}
+              title="Data selecionada"
+            >
+              {headerDatePill}
+            </div>
+            <button
+              type="button"
+              onClick={handleSignOut}
+              style={{
+                borderRadius: 999,
+                border: "1px solid #e5e7eb",
+                background: "#fff",
+                padding: "8px 12px",
+                fontSize: 13,
+                fontWeight: 900,
+                cursor: "pointer",
+              }}
+            >
+              Sair
+            </button>
           </div>
         </header>
 
-        {error ? (
-          <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
-            {error}
-          </div>
-        ) : null}
-
-        {okMsg ? (
-          <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
-            {okMsg}
-          </div>
-        ) : null}
-
         <div className="section-card">
+          <div className="section-header" style={{ alignItems: "flex-start" }}>
+            <div>
+              <div className="section-title">Marcação</div>
+              <div className="section-subtitle" style={{ marginTop: 2 }}>
+                Escolha a obra, marque rápido e no final confira os totais antes de salvar.
+              </div>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
+          </div>
+
+          {error ? (
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+              {error}
+            </div>
+          ) : null}
+
+          {okMsg ? (
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+              {okMsg}
+            </div>
+          ) : null}
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Obra</label>
-              <select style={styles.select} value={worksiteId} onChange={(e) => setWorksiteId(e.target.value)} disabled={loading || worksites.length <= 1}>
+              <select style={styles.select} value={worksiteId} onChange={(e) => setWorksiteId(e.target.value)} disabled={loading || worksites.length === 0}>
                 {worksites.map((w) => (
                   <option key={w.id} value={w.id}>
                     {w.name}
@@ -738,49 +878,70 @@ export default function RefeicoesPage() {
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data</label>
               <input style={styles.input} type="date" value={mealDate} onChange={(e) => setMealDate(e.target.value)} disabled={loading} />
+              <div style={{ marginTop: 6, ...styles.hint }}>Padrão: abre Almoço até 11h, depois Janta.</div>
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
-              <label style={styles.label}>Modo</label>
+              <label style={styles.label}>Buscar</label>
+              <input style={styles.input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nome do funcionário..." />
+              <div style={{ marginTop: 6, ...styles.hint }}>Dica: marque e, se quiser, ative “Mostrar só marcados”.</div>
+            </div>
+
+            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button type="button" style={segBtnStyle(mode === "AMBOS", "neutral")} onClick={() => setMode("AMBOS")}>
-                  Ambos
-                </button>
                 <button type="button" style={segBtnStyle(mode === "ALMOCO", "lunch")} onClick={() => setMode("ALMOCO")}>
                   Almoço
                 </button>
                 <button type="button" style={segBtnStyle(mode === "JANTA", "dinner")} onClick={() => setMode("JANTA")}>
                   Janta
                 </button>
+                <button type="button" style={segBtnStyle(mode === "AMBOS", "neutral")} onClick={() => setMode("AMBOS")}>
+                  Ambos
+                </button>
+
+                <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
+                  Limites: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
+                  {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override ativo)</span> : null}
+                </div>
+              </div>
+
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800 }}>
+                <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
+                Mostrar só marcados
+              </label>
+            </div>
+
+            <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => copyYesterday(mode)} disabled={loading}>
+                  Copiar ontem
+                </button>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => restoreSaved(mode)} disabled={loading}>
+                  Restaurar salvo
+                </button>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => clearSelection(mode)} disabled={loading}>
+                  Limpar
+                </button>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={copyResumo} disabled={loading}>
+                  Copiar resumo
+                </button>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
+                  Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
+                </div>
+                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
+                  Janta: {totals.dinner} (salvo: {savedCounts.dinner})
+                </div>
               </div>
             </div>
 
-            <div style={{ gridColumn: "span 12" }}>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
-                  <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{counts.lunch}</div>
-                  <div style={{ fontSize: 12, color: "#166534" }}>Limite: {limits.lunch}</div>
-                </div>
-
-                <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
-                  <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
-                  <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{counts.dinner}</div>
-                  <div style={{ fontSize: 12, color: "#1d4ed8" }}>Limite: {limits.dinner}</div>
-                </div>
+            {!contract ? (
+              <div style={{ gridColumn: "span 12", borderRadius: 14, border: "1px solid #fde68a", background: "#fffbeb", padding: "10px 12px", color: "#92400e", fontSize: 13 }}>
+                ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode marcar, mas não vai conseguir salvar.
               </div>
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <button type="button" style={bigBtnStyle("ghost", false)} onClick={copyFromYesterday} disabled={!contract}>
-                Copiar de ontem
-              </button>
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Buscar funcionário</label>
-              <input style={styles.input} value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Digite nome..." />
-            </div>
+            ) : null}
           </div>
         </div>
 
@@ -788,80 +949,159 @@ export default function RefeicoesPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Funcionários</div>
-              <div className="section-subtitle">Marque quem vai comer. Visitantes podem ser adicionados.</div>
+              <div className="section-subtitle">Toque para marcar/desmarcar no turno selecionado.</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => addVisitor(mode === "JANTA" ? "JANTA" : "ALMOCO")}
+              style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 900, cursor: "pointer" }}
+              title="Adicionar visitante sem cadastro"
+            >
+              + Pessoa
+            </button>
+          </div>
+
+          <div style={{ display: "grid", gap: 12 }}>
+            {filteredEmployees.map((e) => {
+              const lunchOn = selectedLunch.has(e.id);
+              const dinnerOn = selectedDinner.has(e.id);
+              const fav = favoriteIds.has(e.id);
+
+              const card: CSSProperties = { borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 };
+
+              const nameStyle: CSSProperties = { fontSize: 14, fontWeight: 900, color: "#0f172a", letterSpacing: "0.02em", textTransform: "uppercase" };
+
+              const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
+                if (tone === "ALMOCO") {
+                  return {
+                    width: "100%",
+                    borderRadius: 14,
+                    border: `1px solid ${active ? "#86efac" : "#d1fae5"}`,
+                    background: active ? "#ecfdf5" : "#f0fdf4",
+                    color: "#166534",
+                    padding: "14px 14px",
+                    fontSize: 16,
+                    fontWeight: 900,
+                    cursor: "pointer",
+                  };
+                }
+                return {
+                  width: "100%",
+                  borderRadius: 14,
+                  border: `1px solid ${active ? "#93c5fd" : "#dbeafe"}`,
+                  background: active ? "#eff6ff" : "#f8fbff",
+                  color: "#1d4ed8",
+                  padding: "14px 14px",
+                  fontSize: 16,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                };
+              };
+
+              return (
+                <div key={e.id} style={card}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                    <div style={nameStyle}>{e.full_name}</div>
+                    {fav ? (
+                      <div title="Favorito" style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>
+                        ⭐
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
+                    {mode === "AMBOS" ? (
+                      <>
+                        <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>
+                          {lunchOn ? "✓ Almoço" : "+ Almoço"}
+                        </button>
+                        <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>
+                          {dinnerOn ? "✓ Janta" : "+ Janta"}
+                        </button>
+                      </>
+                    ) : mode === "ALMOCO" ? (
+                      <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>
+                        {lunchOn ? "✓ Almoço" : "+ Almoço"}
+                      </button>
+                    ) : (
+                      <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>
+                        {dinnerOn ? "✓ Janta" : "+ Janta"}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+
+            {visitorsLunch.length > 0 || visitorsDinner.length > 0 ? (
+              <div style={{ borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Pessoas sem cadastro</div>
+
+                <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
+                  {visitorsLunch.map((v) => (
+                    <div key={`l-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 800, color: "#166534" }}>🍽️ {v}</div>
+                      <button type="button" onClick={() => setVisitorsLunch((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>
+                        Remover
+                      </button>
+                    </div>
+                  ))}
+                  {visitorsDinner.map((v) => (
+                    <div key={`d-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ fontWeight: 800, color: "#1d4ed8" }}>🌙 {v}</div>
+                      <button type="button" onClick={() => setVisitorsDinner((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>
+                        Remover
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          {loading ? <div style={{ marginTop: 12, fontSize: 13, color: "var(--gp-muted-soft)" }}>Carregando…</div> : null}
+        </div>
+      </div>
+
+      <div
+        style={{
+          position: "fixed",
+          left: 0,
+          right: 0,
+          bottom: 0,
+          padding: "12px 12px calc(12px + env(safe-area-inset-bottom))",
+          background: "rgba(255,255,255,0.92)",
+          borderTop: "1px solid #eef2f7",
+          backdropFilter: "blur(10px)",
+        }}
+      >
+        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
+              <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
+              <div style={{ fontSize: 12, color: "#166534" }}>salvo: {savedCounts.lunch} • limite {limits.lunch}</div>
+            </div>
+
+            <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
+              <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
+              <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
+              <div style={{ fontSize: 12, color: "#1d4ed8" }}>salvo: {savedCounts.dinner} • limite {limits.dinner}</div>
             </div>
           </div>
 
-          <div style={{ display: "grid", gap: 10 }}>
-            {filteredEmployees.map((e) => (
-              <div key={e.id} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 8, alignItems: "center", padding: "10px 12px", borderRadius: 14, border: "1px solid #eef2f7", background: "#fff" }}>
-                <div style={{ fontWeight: 850 }}>
-                  {e.full_name} {e.is_third_party ? <span style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>(Terceiro)</span> : null}
-                </div>
-
-                {showLunch ? (
-                  <button
-                    type="button"
-                    style={{
-                      ...styles.chip,
-                      borderColor: isSelected("ALMOCO", e.id) ? "#86efac" : "#e5e7eb",
-                      background: isSelected("ALMOCO", e.id) ? "#ecfdf5" : "#fff",
-                      color: isSelected("ALMOCO", e.id) ? "#166534" : "#0f172a",
-                    }}
-                    onClick={() => toggleEmployee("ALMOCO", e.id)}
-                  >
-                    Almoço
-                  </button>
-                ) : (
-                  <div />
-                )}
-
-                {showDinner ? (
-                  <button
-                    type="button"
-                    style={{
-                      ...styles.chip,
-                      borderColor: isSelected("JANTA", e.id) ? "#93c5fd" : "#e5e7eb",
-                      background: isSelected("JANTA", e.id) ? "#eff6ff" : "#fff",
-                      color: isSelected("JANTA", e.id) ? "#1d4ed8" : "#0f172a",
-                    }}
-                    onClick={() => toggleEmployee("JANTA", e.id)}
-                  >
-                    Janta
-                  </button>
-                ) : (
-                  <div />
-                )}
-              </div>
-            ))}
-          </div>
-
-          <div style={{ height: 10 }} />
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-            <button type="button" style={bigBtnStyle("ghost", false)} onClick={() => addVisitor("ALMOCO")} disabled={!showLunch}>
-              + Visitante (Almoço)
-            </button>
-            <button type="button" style={bigBtnStyle("ghost", false)} onClick={() => addVisitor("JANTA")} disabled={!showDinner}>
-              + Visitante (Janta)
-            </button>
-          </div>
-
-          <div style={{ height: 10 }} />
-
-          <button type="button" style={bigBtnStyle("primaryLunch", saving.ALMOCO)} onClick={() => saveShift("ALMOCO")} disabled={!showLunch || saving.ALMOCO || !contract}>
-            {saving.ALMOCO ? "Salvando..." : "Salvar Almoço"}
+          <button
+            type="button"
+            style={mode === "JANTA" ? bigBtnStyle("primaryDinner", bottomSaveDisabled) : bigBtnStyle("primaryLunch", bottomSaveDisabled)}
+            onClick={handleBottomSave}
+            disabled={bottomSaveDisabled || !contract}
+          >
+            {saving.ALMOCO || saving.JANTA ? "Salvando..." : bottomTitle}
           </button>
 
           <div style={{ height: 10 }} />
 
-          <button type="button" style={bigBtnStyle("primaryDinner", saving.JANTA)} onClick={() => saveShift("JANTA")} disabled={!showDinner || saving.JANTA || !contract}>
-            {saving.JANTA ? "Salvando..." : "Salvar Janta"}
-          </button>
-
-          <div style={{ height: 10 }} />
-
-          <button type="button" style={bigBtnStyle("danger", false)} onClick={handleBottomCancel} disabled={bottomCancelDisabled || !contract}>
+          <button type="button" style={bigBtnStyle("danger", bottomCancelDisabled)} onClick={handleBottomCancel} disabled={bottomCancelDisabled || !contract}>
             {canceling.ALMOCO || canceling.JANTA ? "Cancelando..." : bottomCancelLabel}
           </button>
 
