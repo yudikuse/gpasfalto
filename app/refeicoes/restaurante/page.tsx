@@ -24,7 +24,13 @@ type OrderRow = {
   worksite_id: string;
   shift: Shift;
   confirmed_at: string | null;
-  cutoff_at: string | null; // ✅ necessário pra travar confirmação antes do limite
+};
+
+type ContractRow = {
+  cutoff_lunch: string | null; // time
+  cutoff_dinner: string | null; // time
+  start_date: string | null;
+  end_date: string | null;
 };
 
 function pad2(n: number) {
@@ -33,6 +39,34 @@ function pad2(n: number) {
 function isoTodayLocal(): string {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+function toHHMM(t: string | null) {
+  if (!t) return null;
+  const parts = String(t).split(":");
+  if (parts.length < 2) return null;
+  const hh = pad2(Number(parts[0] || 0));
+  const mm = pad2(Number(parts[1] || 0));
+  return `${hh}:${mm}`;
+}
+
+function hhmmFromISO(iso: string | null) {
+  if (!iso) return "--:--";
+  const d = new Date(iso);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function minutesFromHHMM(hhmm: string | null) {
+  if (!hhmm) return null;
+  const [h, m] = hhmm.split(":").map((x) => Number(x));
+  if (Number.isNaN(h) || Number.isNaN(m)) return null;
+  return h * 60 + m;
+}
+
+function buildCutoffISO_BRT(mealDateISO: string, hhmm: string | null) {
+  if (!hhmm) return null;
+  // força horário do Brasil (-03:00) independentemente do timezone da máquina
+  return `${mealDateISO}T${hhmm}:00-03:00`;
 }
 
 export default function RestaurantePage() {
@@ -63,17 +97,11 @@ export default function RestaurantePage() {
 
   const [confirmedAll, setConfirmedAll] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
 
-  // ✅ cutoff do turno (pega o MAIOR cutoff_at entre as obras do turno)
+  // ✅ cutoff por turno (calculado a partir do meal_contracts)
   const [cutoffAtByShift, setCutoffAtByShift] = useState<Record<Shift, string | null>>({
     ALMOCO: null,
     JANTA: null,
   });
-
-  function hhmmFromISO(iso: string | null) {
-    if (!iso) return "--:--";
-    const d = new Date(iso);
-    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
-  }
 
   const styles: Record<string, CSSProperties> = {
     label: {
@@ -202,10 +230,45 @@ export default function RestaurantePage() {
 
     setLoading(true);
     try {
-      // pedidos do dia (não depende de contrato)
+      // ✅ pega cutoff do contrato (fonte de verdade)
+      const { data: contracts, error: cErr } = await supabase
+        .from("meal_contracts")
+        .select("cutoff_lunch,cutoff_dinner,start_date,end_date")
+        .eq("restaurant_id", restaurantId)
+        .lte("start_date", mealDate)
+        .or(`end_date.is.null,end_date.gte.${mealDate}`);
+
+      if (cErr) throw cErr;
+
+      let maxLunch: string | null = null;
+      let maxDinner: string | null = null;
+
+      for (const c of (contracts || []) as ContractRow[]) {
+        const l = toHHMM(c.cutoff_lunch);
+        const d = toHHMM(c.cutoff_dinner);
+
+        const lm = minutesFromHHMM(l);
+        const dm = minutesFromHHMM(d);
+
+        if (lm !== null) {
+          const cur = minutesFromHHMM(maxLunch);
+          if (cur === null || lm > cur) maxLunch = l!;
+        }
+        if (dm !== null) {
+          const cur = minutesFromHHMM(maxDinner);
+          if (cur === null || dm > cur) maxDinner = d!;
+        }
+      }
+
+      setCutoffAtByShift({
+        ALMOCO: buildCutoffISO_BRT(mealDate, maxLunch),
+        JANTA: buildCutoffISO_BRT(mealDate, maxDinner),
+      });
+
+      // pedidos do dia
       const { data: orders, error: oErr } = await supabase
         .from("meal_orders")
-        .select("id,worksite_id,shift,confirmed_at,cutoff_at") // ✅ inclui cutoff_at
+        .select("id,worksite_id,shift,confirmed_at")
         .eq("restaurant_id", restaurantId)
         .eq("meal_date", mealDate);
 
@@ -213,9 +276,6 @@ export default function RestaurantePage() {
 
       const orows = (orders || []) as OrderRow[];
       const orderIds = orows.map((o) => String(o.id));
-
-      // ✅ cutoff máximo por turno (entre todas as obras do turno)
-      const maxCutoff: Record<Shift, string | null> = { ALMOCO: null, JANTA: null };
 
       // mapa de obras pelo que apareceu nos pedidos
       const worksiteIds = Array.from(new Set(orows.map((o) => String(o.worksite_id)).filter(Boolean)));
@@ -261,15 +321,6 @@ export default function RestaurantePage() {
         agg[o.shift].set(wid, (agg[o.shift].get(wid) || 0) + qty);
 
         if (!o.confirmed_at) conf[o.shift] = false;
-
-        // ✅ atualiza maxCutoff do turno
-        const c = o.cutoff_at ? String(o.cutoff_at) : null;
-        if (c) {
-          const cur = maxCutoff[o.shift];
-          if (!cur || new Date(c).getTime() > new Date(cur).getTime()) {
-            maxCutoff[o.shift] = c;
-          }
-        }
       }
 
       if (!hasShift.ALMOCO) conf.ALMOCO = false;
@@ -294,7 +345,6 @@ export default function RestaurantePage() {
       });
 
       setConfirmedAll(conf);
-      setCutoffAtByShift(maxCutoff); // ✅ guarda cutoff por turno
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
     } finally {
@@ -340,7 +390,7 @@ export default function RestaurantePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restaurantId, mealDate, userId]);
 
-  // ✅ só permite confirmar após o cutoff (para o dia de hoje)
+  // ✅ só permite confirmar após o cutoff
   const confirmWindow = useMemo(() => {
     const today = isoTodayLocal();
     const now = new Date();
@@ -349,15 +399,14 @@ export default function RestaurantePage() {
 
     for (const sh of ["ALMOCO", "JANTA"] as Shift[]) {
       if (mealDate < today) {
-        passed[sh] = true; // datas passadas: pode confirmar
+        passed[sh] = true; // data passada: ok
         continue;
       }
       if (mealDate > today) {
-        passed[sh] = false; // datas futuras: não pode
+        passed[sh] = false; // data futura: não
         continue;
       }
 
-      // hoje: só após cutoff do turno
       const iso = cutoffAtByShift[sh];
       if (!iso) {
         passed[sh] = false;
@@ -384,7 +433,6 @@ export default function RestaurantePage() {
 
     setConfirming((p) => ({ ...p, [shift]: true }));
     try {
-      // ✅ trava confirmação antes do horário limite
       if (!confirmWindow[shift]) {
         throw new Error(`Só pode confirmar após ${hhmmFromISO(cutoffAtByShift[shift])}.`);
       }
