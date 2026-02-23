@@ -24,6 +24,7 @@ type OrderRow = {
   worksite_id: string;
   shift: Shift;
   confirmed_at: string | null;
+  cutoff_at: string | null; // ✅ necessário pra travar confirmação antes do limite
 };
 
 function pad2(n: number) {
@@ -61,6 +62,18 @@ export default function RestaurantePage() {
   });
 
   const [confirmedAll, setConfirmedAll] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
+
+  // ✅ cutoff do turno (pega o MAIOR cutoff_at entre as obras do turno)
+  const [cutoffAtByShift, setCutoffAtByShift] = useState<Record<Shift, string | null>>({
+    ALMOCO: null,
+    JANTA: null,
+  });
+
+  function hhmmFromISO(iso: string | null) {
+    if (!iso) return "--:--";
+    const d = new Date(iso);
+    return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  }
 
   const styles: Record<string, CSSProperties> = {
     label: {
@@ -192,7 +205,7 @@ export default function RestaurantePage() {
       // pedidos do dia (não depende de contrato)
       const { data: orders, error: oErr } = await supabase
         .from("meal_orders")
-        .select("id,worksite_id,shift,confirmed_at")
+        .select("id,worksite_id,shift,confirmed_at,cutoff_at") // ✅ inclui cutoff_at
         .eq("restaurant_id", restaurantId)
         .eq("meal_date", mealDate);
 
@@ -200,6 +213,9 @@ export default function RestaurantePage() {
 
       const orows = (orders || []) as OrderRow[];
       const orderIds = orows.map((o) => String(o.id));
+
+      // ✅ cutoff máximo por turno (entre todas as obras do turno)
+      const maxCutoff: Record<Shift, string | null> = { ALMOCO: null, JANTA: null };
 
       // mapa de obras pelo que apareceu nos pedidos
       const worksiteIds = Array.from(new Set(orows.map((o) => String(o.worksite_id)).filter(Boolean)));
@@ -245,6 +261,15 @@ export default function RestaurantePage() {
         agg[o.shift].set(wid, (agg[o.shift].get(wid) || 0) + qty);
 
         if (!o.confirmed_at) conf[o.shift] = false;
+
+        // ✅ atualiza maxCutoff do turno
+        const c = o.cutoff_at ? String(o.cutoff_at) : null;
+        if (c) {
+          const cur = maxCutoff[o.shift];
+          if (!cur || new Date(c).getTime() > new Date(cur).getTime()) {
+            maxCutoff[o.shift] = c;
+          }
+        }
       }
 
       if (!hasShift.ALMOCO) conf.ALMOCO = false;
@@ -269,6 +294,7 @@ export default function RestaurantePage() {
       });
 
       setConfirmedAll(conf);
+      setCutoffAtByShift(maxCutoff); // ✅ guarda cutoff por turno
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
     } finally {
@@ -314,12 +340,41 @@ export default function RestaurantePage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [restaurantId, mealDate, userId]);
 
+  // ✅ só permite confirmar após o cutoff (para o dia de hoje)
+  const confirmWindow = useMemo(() => {
+    const today = isoTodayLocal();
+    const now = new Date();
+
+    const passed: Record<Shift, boolean> = { ALMOCO: false, JANTA: false };
+
+    for (const sh of ["ALMOCO", "JANTA"] as Shift[]) {
+      if (mealDate < today) {
+        passed[sh] = true; // datas passadas: pode confirmar
+        continue;
+      }
+      if (mealDate > today) {
+        passed[sh] = false; // datas futuras: não pode
+        continue;
+      }
+
+      // hoje: só após cutoff do turno
+      const iso = cutoffAtByShift[sh];
+      if (!iso) {
+        passed[sh] = false;
+        continue;
+      }
+      passed[sh] = now.getTime() >= new Date(iso).getTime();
+    }
+
+    return passed;
+  }, [mealDate, cutoffAtByShift]);
+
   const canConfirm = useMemo(() => {
     return {
-      ALMOCO: totals.ALMOCO > 0 && !confirmedAll.ALMOCO,
-      JANTA: totals.JANTA > 0 && !confirmedAll.JANTA,
+      ALMOCO: totals.ALMOCO > 0 && !confirmedAll.ALMOCO && confirmWindow.ALMOCO,
+      JANTA: totals.JANTA > 0 && !confirmedAll.JANTA && confirmWindow.JANTA,
     };
-  }, [totals, confirmedAll]);
+  }, [totals, confirmedAll, confirmWindow]);
 
   async function confirmShift(shift: Shift) {
     setError(null);
@@ -329,6 +384,11 @@ export default function RestaurantePage() {
 
     setConfirming((p) => ({ ...p, [shift]: true }));
     try {
+      // ✅ trava confirmação antes do horário limite
+      if (!confirmWindow[shift]) {
+        throw new Error(`Só pode confirmar após ${hhmmFromISO(cutoffAtByShift[shift])}.`);
+      }
+
       const attempt = await supabase
         .from("meal_orders")
         .update({
@@ -520,13 +580,17 @@ export default function RestaurantePage() {
               <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
                 <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.ALMOCO}</div>
-                <div style={{ fontSize: 12, color: "#166534" }}>{confirmedAll.ALMOCO ? "✅ Confirmado" : "⏳ Aguardando confirmação"}</div>
+                <div style={{ fontSize: 12, color: "#166534" }}>
+                  {confirmedAll.ALMOCO ? "✅ Confirmado" : confirmWindow.ALMOCO ? "⏳ Aguardando confirmação" : `🔒 Confirma após ${hhmmFromISO(cutoffAtByShift.ALMOCO)}`}
+                </div>
               </div>
 
               <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
                 <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
                 <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.JANTA}</div>
-                <div style={{ fontSize: 12, color: "#1d4ed8" }}>{confirmedAll.JANTA ? "✅ Confirmado" : "⏳ Aguardando confirmação"}</div>
+                <div style={{ fontSize: 12, color: "#1d4ed8" }}>
+                  {confirmedAll.JANTA ? "✅ Confirmado" : confirmWindow.JANTA ? "⏳ Aguardando confirmação" : `🔒 Confirma após ${hhmmFromISO(cutoffAtByShift.JANTA)}`}
+                </div>
               </div>
             </div>
           </div>
