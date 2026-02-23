@@ -148,10 +148,26 @@ function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost"
   return { ...base, background: "#fff", color: "#0f172a", borderColor: "#e5e7eb" };
 }
 
+// ✅ Opção A: código -> email técnico (sem e-mail real)
+function normalizeCodeToEmail(codeRaw: string) {
+  const code = (codeRaw || "").trim().toLowerCase();
+  if (!code) return "";
+  if (code.includes("@")) return code; // aceita email (admin/debug)
+  const clean = code.replace(/[^a-z0-9]/g, ""); // ENC-01 -> enc01
+  return `${clean}@gpasfalto.local`;
+}
+
 export default function RefeicoesPage() {
   const router = useRouter();
 
   const [userEmail, setUserEmail] = useState<string>("");
+  const [userId, setUserId] = useState<string | null>(null);
+
+  // ✅ Login por CÓDIGO + PIN (encarregado)
+  const [loginCode, setLoginCode] = useState("");
+  const [loginPin, setLoginPin] = useState("");
+  const [showPin, setShowPin] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const [worksites, setWorksites] = useState<Worksite[]>([]);
   const [worksiteId, setWorksiteId] = useState<string>("");
@@ -252,7 +268,33 @@ export default function RefeicoesPage() {
 
   async function handleSignOut() {
     await supabase.auth.signOut();
+    setUserId(null);
+    setUserEmail("");
     router.replace("/refeicoes"); // empresa volta pra /refeicoes
+  }
+
+  async function doLoginWithCodePin() {
+    setError(null);
+    setOkMsg(null);
+
+    const email = normalizeCodeToEmail(loginCode);
+    const pin = (loginPin || "").trim();
+
+    if (!loginCode.trim()) return setError("Informe o código (ex: ENC01)."), undefined;
+    if (!pin) return setError("Informe o PIN."), undefined;
+
+    setLoggingIn(true);
+    try {
+      const { error: e } = await supabase.auth.signInWithPassword({ email, password: pin });
+      if (e) throw e;
+
+      setOkMsg("Login OK.");
+      await bootstrap();
+    } catch (e: any) {
+      setError(e?.message || "Falha no login.");
+    } finally {
+      setLoggingIn(false);
+    }
   }
 
   async function loadUser() {
@@ -262,31 +304,25 @@ export default function RefeicoesPage() {
     const { data } = await supabase.auth.getUser();
     const u = data?.user;
     setUserEmail(u?.email || "");
-    const userId = u?.id || null;
-    if (!userId) return null;
+    const uid = u?.id || null;
+    setUserId(uid);
+
+    if (!uid) return null;
 
     // se esse user for restaurante, não deixa ficar em /refeicoes
-    const { data: ru, error: ruErr } = await supabase
-      .from("meal_restaurant_users")
-      .select("restaurant_id")
-      .eq("user_id", userId)
-      .limit(1)
-      .maybeSingle();
+    const { data: ru, error: ruErr } = await supabase.from("meal_restaurant_users").select("restaurant_id").eq("user_id", uid).limit(1).maybeSingle();
 
     if (!ruErr && ru?.restaurant_id) {
+      setUserId(null);
       router.replace("/refeicoes/restaurante");
       return null;
     }
 
-    return userId;
+    return uid;
   }
 
   async function loadWorksites() {
-    const { data, error } = await supabase
-      .from("meal_worksites")
-      .select("id,name,city,active")
-      .eq("active", true)
-      .order("name", { ascending: true });
+    const { data, error } = await supabase.from("meal_worksites").select("id,name,city,active").eq("active", true).order("name", { ascending: true });
 
     if (error) throw error;
     const rows = (data || []) as Worksite[];
@@ -333,17 +369,12 @@ export default function RefeicoesPage() {
     return (data as any) as Contract | null;
   }
 
-  async function loadOverride(wid: string, userId: string | null) {
-    if (!userId) {
+  async function loadOverride(wid: string, uid: string | null) {
+    if (!uid) {
       setCanOverrideCutoff(false);
       return;
     }
-    const { data, error } = await supabase
-      .from("meal_worksite_members")
-      .select("can_override_cutoff")
-      .eq("worksite_id", wid)
-      .eq("user_id", userId)
-      .maybeSingle();
+    const { data, error } = await supabase.from("meal_worksite_members").select("can_override_cutoff").eq("worksite_id", wid).eq("user_id", uid).maybeSingle();
 
     if (error) {
       setCanOverrideCutoff(false);
@@ -404,10 +435,7 @@ export default function RefeicoesPage() {
 
     const rid = contract.restaurant_id;
 
-    const [l, j] = await Promise.all([
-      fetchSavedForShift(worksiteId, rid, mealDate, "ALMOCO"),
-      fetchSavedForShift(worksiteId, rid, mealDate, "JANTA"),
-    ]);
+    const [l, j] = await Promise.all([fetchSavedForShift(worksiteId, rid, mealDate, "ALMOCO"), fetchSavedForShift(worksiteId, rid, mealDate, "JANTA")]);
 
     setSaved({ ALMOCO: l, JANTA: j });
   }
@@ -416,11 +444,11 @@ export default function RefeicoesPage() {
     setLoading(true);
     setError(null);
     try {
-      const userId = await loadUser();
-      if (!userId) return; // sem user ou foi redirecionado
+      const uid = await loadUser();
+      if (!uid) return; // sem user ou foi redirecionado (ou ainda não logou)
       await loadWorksites();
       if (worksiteId) {
-        await loadOverride(worksiteId, userId);
+        await loadOverride(worksiteId, uid);
       }
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
@@ -431,6 +459,14 @@ export default function RefeicoesPage() {
 
   useEffect(() => {
     bootstrap();
+
+    const { data } = supabase.auth.onAuthStateChange((_event) => {
+      bootstrap();
+    });
+
+    return () => {
+      data.subscription.unsubscribe();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -443,11 +479,11 @@ export default function RefeicoesPage() {
 
       try {
         const { data } = await supabase.auth.getUser();
-        const userId = data?.user?.id ?? null;
+        const uid = data?.user?.id ?? null;
 
         await loadEmployeesAndFavorites(worksiteId);
         const c = await loadContract(worksiteId, mealDate);
-        await loadOverride(worksiteId, userId);
+        await loadOverride(worksiteId, uid);
 
         setSelectedLunch(new Set());
         setSelectedDinner(new Set());
@@ -551,10 +587,7 @@ export default function RefeicoesPage() {
         return;
       }
 
-      const [l, j] = await Promise.all([
-        fetchSavedForShift(worksiteId, rid, y, "ALMOCO"),
-        fetchSavedForShift(worksiteId, rid, y, "JANTA"),
-      ]);
+      const [l, j] = await Promise.all([fetchSavedForShift(worksiteId, rid, y, "ALMOCO"), fetchSavedForShift(worksiteId, rid, y, "JANTA")]);
 
       setSelectedLunch(new Set(l.employeeIds || []));
       setVisitorsLunch(l.visitors || []);
@@ -592,7 +625,7 @@ export default function RefeicoesPage() {
 
     try {
       const { data: ud } = await supabase.auth.getUser();
-      const userId = ud?.user?.id ?? null;
+      const uid = ud?.user?.id ?? null;
 
       const cutoffTime = shift === "ALMOCO" ? contract.cutoff_lunch : contract.cutoff_dinner;
       const cutoffAtISO = buildCutoffAtISO(mealDate, cutoffTime);
@@ -630,8 +663,8 @@ export default function RefeicoesPage() {
             shift,
             status: "DRAFT",
             cutoff_at: cutoffAtISO,
-            created_by: userId,
-            updated_by: userId,
+            created_by: uid,
+            updated_by: uid,
             order_date: mealDate,
           })
           .select("id")
@@ -646,17 +679,13 @@ export default function RefeicoesPage() {
         // ✅ REABRE o pedido ao salvar de novo (se já estava confirmado)
         const baseUpdate: any = {
           cutoff_at: cutoffAtISO,
-          updated_by: userId,
+          updated_by: uid,
           submitted_at: null,
           confirmed_at: null,
           closed_at: null,
         };
 
-        // tenta voltar status pra DRAFT (se o enum existir)
-        const up1 = await supabase
-          .from("meal_orders")
-          .update({ ...baseUpdate, status: "DRAFT" as any })
-          .eq("id", orderId);
+        const up1 = await supabase.from("meal_orders").update({ ...baseUpdate, status: "DRAFT" as any }).eq("id", orderId);
 
         if (up1.error) {
           const msg = String(up1.error.message || "");
@@ -672,10 +701,10 @@ export default function RefeicoesPage() {
       const rows: any[] = [];
 
       for (const eid of selectedIds) {
-        rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: userId, updated_by: userId });
+        rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: uid, updated_by: uid });
       }
       for (const v of visitors) {
-        rows.push({ meal_order_id: orderId, visitor_name: v, included: true, created_by: userId, updated_by: userId });
+        rows.push({ meal_order_id: orderId, visitor_name: v, included: true, created_by: uid, updated_by: uid });
       }
 
       const insLines = await supabase.from("meal_order_lines").insert(rows);
@@ -807,16 +836,110 @@ export default function RefeicoesPage() {
     return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
   }, [mode, canceling, savedCounts]);
 
+  // ✅ LOGIN UI (Código + PIN) — primeira vez
+  if (!userId) {
+    return (
+      <div className="page-root">
+        <div className="page-container" style={{ paddingBottom: 48 }}>
+          <header className="page-header" style={{ justifyContent: "center", alignItems: "center" }}>
+            <div style={{ textAlign: "center" }}>
+              <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }} />
+              <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 6 }}>
+                Refeições
+              </div>
+              <div className="brand-text-sub">Acesso do encarregado</div>
+            </div>
+          </header>
+
+          <div className="section-card" style={{ maxWidth: 420, margin: "0 auto" }}>
+            <div className="section-header">
+              <div>
+                <div className="section-title">Entrar</div>
+                <div className="section-subtitle">Use Código + PIN.</div>
+              </div>
+            </div>
+
+            {error ? (
+              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+                {error}
+              </div>
+            ) : null}
+
+            {okMsg ? (
+              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+                {okMsg}
+              </div>
+            ) : null}
+
+            <label style={styles.label}>Código</label>
+            <input style={styles.input} value={loginCode} onChange={(e) => setLoginCode(e.target.value)} placeholder="Ex: ENC01" autoCapitalize="characters" />
+
+            <div style={{ height: 10 }} />
+
+            <label style={styles.label}>PIN</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                style={{ ...styles.input, flex: 1 }}
+                type={showPin ? "text" : "password"}
+                value={loginPin}
+                onChange={(e) => setLoginPin(e.target.value)}
+                placeholder="••••••"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPin((p) => !p)}
+                style={{
+                  borderRadius: 14,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  padding: "12px 12px",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {showPin ? "Ocultar" : "Mostrar"}
+              </button>
+            </div>
+
+            <div style={{ height: 10 }} />
+
+            <button
+              type="button"
+              onClick={doLoginWithCodePin}
+              disabled={loggingIn}
+              style={{
+                width: "100%",
+                borderRadius: 14,
+                border: "1px solid #93c5fd",
+                background: "#2563eb",
+                color: "#fff",
+                padding: "12px 12px",
+                fontSize: 15,
+                fontWeight: 950,
+                cursor: loggingIn ? "not-allowed" : "pointer",
+                opacity: loggingIn ? 0.7 : 1,
+              }}
+            >
+              {loggingIn ? "Entrando..." : "Entrar"}
+            </button>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--gp-muted-soft)" }}>
+              Ex.: <b>ENC01</b> / PIN (definido pelo admin).
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="page-root">
       <div className="page-container" style={{ paddingBottom: 240 }}>
         <header className="page-header" style={{ alignItems: "center", justifyContent: "space-between", gap: 12 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <img
-              src="/gpasfalto-logo.png"
-              alt="GP Asfalto"
-              style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }}
-            />
+            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }} />
             <div>
               <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
                 Refeições
@@ -986,7 +1109,6 @@ export default function RefeicoesPage() {
               const fav = favoriteIds.has(e.id);
 
               const card: CSSProperties = { borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 };
-
               const nameStyle: CSSProperties = { fontSize: 14, fontWeight: 900, color: "#0f172a", letterSpacing: "0.02em", textTransform: "uppercase" };
 
               const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
@@ -1108,12 +1230,7 @@ export default function RefeicoesPage() {
             </div>
           </div>
 
-          <button
-            type="button"
-            style={mode === "JANTA" ? bigBtnStyle("primaryDinner", bottomSaveDisabled) : bigBtnStyle("primaryLunch", bottomSaveDisabled)}
-            onClick={handleBottomSave}
-            disabled={bottomSaveDisabled || !contract}
-          >
+          <button type="button" style={mode === "JANTA" ? bigBtnStyle("primaryDinner", bottomSaveDisabled) : bigBtnStyle("primaryLunch", bottomSaveDisabled)} onClick={handleBottomSave} disabled={bottomSaveDisabled || !contract}>
             {saving.ALMOCO || saving.JANTA ? "Salvando..." : bottomTitle}
           </button>
 
