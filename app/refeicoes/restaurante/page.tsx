@@ -129,7 +129,28 @@ export default function RestaurantePage() {
   }
 
   async function ensureSessionFromUrl() {
-    // força o supabase-js a processar hash/token da magic link quando existir
+    // processa o retorno da magic link (hash token OU PKCE code)
+    if (typeof window === "undefined") return;
+
+    const url = new URL(window.location.href);
+    const code = url.searchParams.get("code");
+
+    // Fluxo PKCE (code na querystring) — compatível mesmo se exchangeCodeForSession não existir
+    if (code) {
+      const ex = (supabase.auth as any).exchangeCodeForSession;
+      if (typeof ex === "function") {
+        const { error: exErr } = await ex.call(supabase.auth, code);
+        if (!exErr) {
+          // limpa o code da URL pra evitar reprocessar
+          url.searchParams.delete("code");
+          url.searchParams.delete("type");
+          window.history.replaceState({}, document.title, url.toString());
+        }
+        return;
+      }
+    }
+
+    // Fluxo clássico (access_token no hash) + fallback geral
     await supabase.auth.getSession();
   }
 
@@ -173,12 +194,21 @@ export default function RestaurantePage() {
       return;
     }
 
-    const { data: rs, error: e2 } = await supabase.from("meal_restaurants").select("id,name,city,active").in("id", ids).order("name", { ascending: true });
+    const { data: rs, error: e2 } = await supabase
+      .from("meal_restaurants")
+      .select("id,name,city,active")
+      .in("id", ids)
+      .order("name", { ascending: true });
     if (e2) throw e2;
 
     const list = (rs || []) as Restaurant[];
     setRestaurants(list);
-    if (!restaurantId && list[0]?.id) setRestaurantId(list[0].id);
+
+    // garante seleção válida
+    setRestaurantId((prev) => {
+      if (prev && list.some((r) => r.id === prev)) return prev;
+      return list[0]?.id ? String(list[0].id) : "";
+    });
   }
 
   async function refresh() {
