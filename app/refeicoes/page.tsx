@@ -1,4 +1,3 @@
-// FILE: app/refeicoes/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
@@ -164,10 +163,9 @@ export default function RefeicoesPage() {
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
-  const [yesterdayPriority, setYesterdayPriority] = useState<Set<string>>(new Set());
 
   const [query, setQuery] = useState("");
-  const [onlySelected, setOnlySelected] = useState(false);
+  const [onlyMarked, setOnlyMarked] = useState(false);
 
   const [mode, setMode] = useState<Mode>("ALMOCO");
 
@@ -254,17 +252,20 @@ export default function RefeicoesPage() {
 
   async function handleSignOut() {
     await supabase.auth.signOut();
-    router.replace("/refeicoes"); // ✅ empresa volta pra /refeicoes
+    router.replace("/refeicoes"); // empresa volta pra /refeicoes
   }
 
   async function loadUser() {
+    // força leitura de sessão (evita “tela presa” em alguns fluxos)
+    await supabase.auth.getSession();
+
     const { data } = await supabase.auth.getUser();
     const u = data?.user;
     setUserEmail(u?.email || "");
     const userId = u?.id || null;
     if (!userId) return null;
 
-    // ✅ se esse user for restaurante, não deixa ficar em /refeicoes
+    // se esse user for restaurante, não deixa ficar em /refeicoes
     const { data: ru, error: ruErr } = await supabase
       .from("meal_restaurant_users")
       .select("restaurant_id")
@@ -293,6 +294,45 @@ export default function RefeicoesPage() {
     if (!worksiteId && rows[0]?.id) setWorksiteId(rows[0].id);
   }
 
+  async function loadEmployeesAndFavorites(wid: string) {
+    const [empRes, favRes] = await Promise.all([
+      supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name"),
+      supabase.from("meal_worksite_favorites").select("employee_id").eq("worksite_id", wid),
+    ]);
+
+    if (empRes.error) throw empRes.error;
+    if (favRes.error) throw favRes.error;
+
+    const emps = (empRes.data || []) as Employee[];
+    const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
+
+    emps.sort((a, b) => {
+      const af = favIds.has(a.id) ? 1 : 0;
+      const bf = favIds.has(b.id) ? 1 : 0;
+      if (af !== bf) return bf - af;
+      return a.full_name.localeCompare(b.full_name, "pt-BR");
+    });
+
+    setFavoriteIds(favIds);
+    setEmployees(emps);
+  }
+
+  async function loadContract(wid: string, dateISO: string) {
+    const q = supabase
+      .from("meal_contracts")
+      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
+      .eq("worksite_id", wid)
+      .lte("start_date", dateISO)
+      .order("start_date", { ascending: false })
+      .limit(1);
+
+    const { data, error } = await q.or(`end_date.is.null,end_date.gte.${dateISO}`).maybeSingle();
+    if (error) throw error;
+
+    setContract((data as any) ?? null);
+    return (data as any) as Contract | null;
+  }
+
   async function loadOverride(wid: string, userId: string | null) {
     if (!userId) {
       setCanOverrideCutoff(false);
@@ -310,22 +350,6 @@ export default function RefeicoesPage() {
       return;
     }
     setCanOverrideCutoff(Boolean((data as any)?.can_override_cutoff));
-  }
-
-  async function loadContract(wid: string, dateISO: string) {
-    const q = supabase
-      .from("meal_contracts")
-      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
-      .eq("worksite_id", wid)
-      .lte("start_date", dateISO)
-      .order("start_date", { ascending: false })
-      .limit(1);
-
-    const { data, error } = await q.or(`end_date.is.null,end_date.gte.${dateISO}`).maybeSingle();
-    if (error) throw error;
-
-    setContract((data as any) ?? null);
-    return (data as any) as Contract | null;
   }
 
   async function fetchSavedForShift(wid: string, rid: string, dateISO: string, shift: Shift): Promise<SavedSnapshot> {
@@ -366,34 +390,6 @@ export default function RefeicoesPage() {
     return { orderId, employeeIds: empIds, visitors };
   }
 
-  async function loadEmployeesAndFavorites(wid: string, priorityIds?: Set<string>) {
-    const [empRes, favRes] = await Promise.all([
-      supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name"),
-      supabase.from("meal_worksite_favorites").select("employee_id").eq("worksite_id", wid),
-    ]);
-
-    if (empRes.error) throw empRes.error;
-    if (favRes.error) throw favRes.error;
-
-    const emps = (empRes.data || []) as Employee[];
-    const favIds = new Set<string>((favRes.data || []).map((r: any) => String(r.employee_id)));
-
-    emps.sort((a, b) => {
-      const ap = priorityIds?.has(a.id) ? 1 : 0;
-      const bp = priorityIds?.has(b.id) ? 1 : 0;
-      if (ap !== bp) return bp - ap;
-
-      const af = favIds.has(a.id) ? 1 : 0;
-      const bf = favIds.has(b.id) ? 1 : 0;
-      if (af !== bf) return bf - af;
-
-      return a.full_name.localeCompare(b.full_name, "pt-BR");
-    });
-
-    setFavoriteIds(favIds);
-    setEmployees(emps);
-  }
-
   async function refreshSaved() {
     setError(null);
     setOkMsg(null);
@@ -421,8 +417,11 @@ export default function RefeicoesPage() {
     setError(null);
     try {
       const userId = await loadUser();
-      if (!userId) return; // ✅ sem user ou foi redirecionado
+      if (!userId) return; // sem user ou foi redirecionado
       await loadWorksites();
+      if (worksiteId) {
+        await loadOverride(worksiteId, userId);
+      }
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
     } finally {
@@ -446,22 +445,9 @@ export default function RefeicoesPage() {
         const { data } = await supabase.auth.getUser();
         const userId = data?.user?.id ?? null;
 
+        await loadEmployeesAndFavorites(worksiteId);
         const c = await loadContract(worksiteId, mealDate);
         await loadOverride(worksiteId, userId);
-
-        // ✅ ontem primeiro (por funcionário)
-        let priority = new Set<string>();
-        if (c?.restaurant_id) {
-          const y = addDaysISO(mealDate, -1);
-          const [lY, jY] = await Promise.all([
-            fetchSavedForShift(worksiteId, c.restaurant_id, y, "ALMOCO"),
-            fetchSavedForShift(worksiteId, c.restaurant_id, y, "JANTA"),
-          ]);
-          priority = new Set<string>([...(lY.employeeIds || []), ...(jY.employeeIds || [])]);
-        }
-        setYesterdayPriority(priority);
-
-        await loadEmployeesAndFavorites(worksiteId, priority);
 
         setSelectedLunch(new Set());
         setSelectedDinner(new Set());
@@ -581,7 +567,7 @@ export default function RefeicoesPage() {
   }
 
   async function addVisitor(targetShift: Shift) {
-    const name = window.prompt("Nome da pessoa (sem cadastro):")?.trim();
+    const name = window.prompt("Nome do visitante (sem cadastro):")?.trim();
     if (!name) return;
 
     if (targetShift === "ALMOCO") setVisitorsLunch((p) => uniq([...p, name]));
@@ -600,7 +586,7 @@ export default function RefeicoesPage() {
     const visitors = shift === "ALMOCO" ? visitorsLunch : visitorsDinner;
 
     const total = selectedIds.length + visitors.length;
-    if (total <= 0) return setError("Nada selecionado para salvar."), undefined;
+    if (total <= 0) return setError("Nenhuma refeição marcada para salvar."), undefined;
 
     setSaving((p) => ({ ...p, [shift]: true }));
 
@@ -678,7 +664,7 @@ export default function RefeicoesPage() {
       if (insLines.error) throw insLines.error;
 
       await refreshSaved();
-      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo (${total}).`);
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo com sucesso (${total}).`);
     } catch (e: any) {
       setError(e?.message || "Erro ao salvar.");
     } finally {
@@ -754,14 +740,14 @@ export default function RefeicoesPage() {
     let list = employees;
 
     if (q) list = list.filter((e) => e.full_name.toLowerCase().includes(q));
-    if (!onlySelected) return list;
+    if (!onlyMarked) return list;
 
     return list.filter((e) => {
       if (mode === "ALMOCO") return selectedLunch.has(e.id);
       if (mode === "JANTA") return selectedDinner.has(e.id);
       return selectedLunch.has(e.id) || selectedDinner.has(e.id);
     });
-  }, [employees, query, onlySelected, mode, selectedLunch, selectedDinner]);
+  }, [employees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
 
   const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
 
@@ -811,13 +797,13 @@ export default function RefeicoesPage() {
             <img
               src="/gpasfalto-logo.png"
               alt="GP Asfalto"
-              style={{ width: 36, height: 36, objectFit: "contain", border: "none", background: "transparent" }}
+              style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }}
             />
             <div>
               <div className="brand-text-main" style={{ lineHeight: 1.1 }}>
                 Refeições
               </div>
-              <div className="brand-text-sub">Pedidos por obra</div>
+              <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
             </div>
           </div>
 
@@ -856,9 +842,9 @@ export default function RefeicoesPage() {
         <div className="section-card">
           <div className="section-header" style={{ alignItems: "flex-start" }}>
             <div>
-              <div className="section-title">Pedido</div>
+              <div className="section-title">Marcação</div>
               <div className="section-subtitle" style={{ marginTop: 2 }}>
-                Selecione a obra, escolha almoço/janta e salve.
+                Escolha a obra, marque rápido e no final confira os totais antes de salvar.
               </div>
             </div>
             <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
@@ -898,7 +884,7 @@ export default function RefeicoesPage() {
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Buscar</label>
               <input style={styles.input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nome do funcionário..." />
-              <div style={{ marginTop: 6, ...styles.hint }}>Dica: selecione e, se quiser, ative “Mostrar só selecionados”.</div>
+              <div style={{ marginTop: 6, ...styles.hint }}>Dica: marque e, se quiser, ative “Mostrar só marcados”.</div>
             </div>
 
             <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -914,14 +900,14 @@ export default function RefeicoesPage() {
                 </button>
 
                 <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
-                  Horário limite: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
+                  Limites: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
                   {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override ativo)</span> : null}
                 </div>
               </div>
 
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800 }}>
-                <input type="checkbox" checked={onlySelected} onChange={(e) => setOnlySelected(e.target.checked)} />
-                Mostrar só selecionados
+                <input type="checkbox" checked={onlyMarked} onChange={(e) => setOnlyMarked(e.target.checked)} />
+                Mostrar só marcados
               </label>
             </div>
 
@@ -942,10 +928,10 @@ export default function RefeicoesPage() {
               </div>
 
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Selecionados agora / Salvos no banco">
+                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
                   Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
                 </div>
-                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Selecionados agora / Salvos no banco">
+                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }} title="Marcados agora / Salvos no banco">
                   Janta: {totals.dinner} (salvo: {savedCounts.dinner})
                 </div>
               </div>
@@ -953,13 +939,7 @@ export default function RefeicoesPage() {
 
             {!contract ? (
               <div style={{ gridColumn: "span 12", borderRadius: 14, border: "1px solid #fde68a", background: "#fffbeb", padding: "10px 12px", color: "#92400e", fontSize: 13 }}>
-                ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode selecionar, mas não vai conseguir salvar.
-              </div>
-            ) : null}
-
-            {yesterdayPriority.size > 0 ? (
-              <div style={{ gridColumn: "span 12", fontSize: 12, color: "var(--gp-muted-soft)" }}>
-                Ontem primeiro: {yesterdayPriority.size} funcionário(s) do dia anterior priorizados na lista.
+                ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode marcar, mas não vai conseguir salvar.
               </div>
             ) : null}
           </div>
@@ -969,13 +949,13 @@ export default function RefeicoesPage() {
           <div className="section-header">
             <div>
               <div className="section-title">Funcionários</div>
-              <div className="section-subtitle">Toque para selecionar/deselecionar no turno escolhido.</div>
+              <div className="section-subtitle">Toque para marcar/desmarcar no turno selecionado.</div>
             </div>
             <button
               type="button"
               onClick={() => addVisitor(mode === "JANTA" ? "JANTA" : "ALMOCO")}
               style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 900, cursor: "pointer" }}
-              title="Adicionar pessoa sem cadastro"
+              title="Adicionar visitante sem cadastro"
             >
               + Pessoa
             </button>
