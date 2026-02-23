@@ -40,7 +40,6 @@ function isoTodayLocal(): string {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
-
 function toHHMM(t: string | null) {
   if (!t) return null;
   const parts = String(t).split(":");
@@ -49,24 +48,34 @@ function toHHMM(t: string | null) {
   const mm = pad2(Number(parts[1] || 0));
   return `${hh}:${mm}`;
 }
-
 function hhmmFromISO(iso: string | null) {
   if (!iso) return "--:--";
   const d = new Date(iso);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
-
 function minutesFromHHMM(hhmm: string | null) {
   if (!hhmm) return null;
   const [h, m] = hhmm.split(":").map((x) => Number(x));
   if (Number.isNaN(h) || Number.isNaN(m)) return null;
   return h * 60 + m;
 }
-
 function buildCutoffISO_BRT(mealDateISO: string, hhmm: string | null) {
   if (!hhmm) return null;
   // força horário do Brasil (-03:00) independentemente do timezone da máquina
   return `${mealDateISO}T${hhmm}:00-03:00`;
+}
+
+// ✅ Opção A: código -> email técnico (sem e-mail real)
+function normalizeCodeToEmail(codeRaw: string) {
+  const code = (codeRaw || "").trim().toLowerCase();
+  if (!code) return "";
+
+  // Se alguém colar um e-mail mesmo, aceita (admin/debug)
+  if (code.includes("@")) return code;
+
+  // Mantém só letras/números (ENC-01 vira enc01)
+  const clean = code.replace(/[^a-z0-9]/g, "");
+  return `${clean}@gpasfalto.local`;
 }
 
 export default function RestaurantePage() {
@@ -75,8 +84,11 @@ export default function RestaurantePage() {
   const [userEmail, setUserEmail] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
 
-  const [loginEmail, setLoginEmail] = useState("");
-  const [sendingLink, setSendingLink] = useState(false);
+  // ✅ Login por Código + PIN
+  const [loginCode, setLoginCode] = useState("");
+  const [loginPin, setLoginPin] = useState("");
+  const [showPin, setShowPin] = useState(false);
+  const [loggingIn, setLoggingIn] = useState(false);
 
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [restaurantId, setRestaurantId] = useState<string>("");
@@ -139,43 +151,43 @@ export default function RestaurantePage() {
     await supabase.auth.signOut();
     setUserId(null);
     setUserEmail("");
-    router.replace("/refeicoes/restaurante"); // restaurante volta pro próprio login
+    router.replace("/refeicoes/restaurante");
   }
 
-  async function sendMagicLink() {
-    setError(null);
-    setOkMsg(null);
-
-    const email = loginEmail.trim().toLowerCase();
-    if (!email) {
-      setError("Informe um e-mail.");
-      return;
-    }
-
-    setSendingLink(true);
-    try {
-      const redirectTo = `${window.location.origin}/refeicoes/restaurante`;
-      const { error: e } = await supabase.auth.signInWithOtp({
-        email,
-        options: { emailRedirectTo: redirectTo },
-      });
-      if (e) throw e;
-
-      setOkMsg("Link enviado. Abra o e-mail e clique no botão de acesso.");
-    } catch (e: any) {
-      setError(e?.message || "Falha ao enviar link.");
-    } finally {
-      setSendingLink(false);
-    }
-  }
-
-  async function ensureSessionFromUrl() {
-    // força o supabase-js a processar hash/token da magic link quando existir
+  async function ensureSession() {
+    // mantém sessão viva (e resolve refresh)
     await supabase.auth.getSession();
   }
 
+  async function doLoginWithCodePin() {
+    setError(null);
+    setOkMsg(null);
+
+    const email = normalizeCodeToEmail(loginCode);
+    const pin = (loginPin || "").trim();
+
+    if (!loginCode.trim()) return setError("Informe o código (ex: REST01)."), undefined;
+    if (!pin) return setError("Informe o PIN."), undefined;
+
+    setLoggingIn(true);
+    try {
+      const { error: e } = await supabase.auth.signInWithPassword({
+        email,
+        password: pin,
+      });
+      if (e) throw e;
+
+      setOkMsg("Login OK.");
+      // onAuthStateChange vai carregar tela
+    } catch (e: any) {
+      setError(e?.message || "Falha no login.");
+    } finally {
+      setLoggingIn(false);
+    }
+  }
+
   async function loadUserAndGuard() {
-    await ensureSessionFromUrl();
+    await ensureSession();
 
     const { data } = await supabase.auth.getUser();
     const u = data?.user ?? null;
@@ -214,7 +226,11 @@ export default function RestaurantePage() {
       return;
     }
 
-    const { data: rs, error: e2 } = await supabase.from("meal_restaurants").select("id,name,city,active").in("id", ids).order("name", { ascending: true });
+    const { data: rs, error: e2 } = await supabase
+      .from("meal_restaurants")
+      .select("id,name,city,active")
+      .in("id", ids)
+      .order("name", { ascending: true });
     if (e2) throw e2;
 
     const list = (rs || []) as Restaurant[];
@@ -352,7 +368,7 @@ export default function RestaurantePage() {
     }
   }
 
-  // init + listener (resolve “loga e volta pro login”)
+  // init + listener
   useEffect(() => {
     let alive = true;
 
@@ -399,11 +415,11 @@ export default function RestaurantePage() {
 
     for (const sh of ["ALMOCO", "JANTA"] as Shift[]) {
       if (mealDate < today) {
-        passed[sh] = true; // data passada: ok
+        passed[sh] = true;
         continue;
       }
       if (mealDate > today) {
-        passed[sh] = false; // data futura: não
+        passed[sh] = false;
         continue;
       }
 
@@ -476,14 +492,18 @@ export default function RestaurantePage() {
     }
   }
 
-  // LOGIN UI (quando não está autenticado)
+  // ✅ LOGIN UI (Código + PIN)
   if (!userId) {
     return (
       <div className="page-root">
         <div className="page-container" style={{ paddingBottom: 48 }}>
           <header className="page-header" style={{ justifyContent: "center", alignItems: "center" }}>
             <div style={{ textAlign: "center" }}>
-              <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }} />
+              <img
+                src="/gpasfalto-logo.png"
+                alt="GP Asfalto"
+                style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }}
+              />
               <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 6 }}>
                 Restaurante
               </div>
@@ -495,31 +515,86 @@ export default function RestaurantePage() {
             <div className="section-header">
               <div>
                 <div className="section-title">Entrar</div>
-                <div className="section-subtitle">Acesso do restaurante.</div>
+                <div className="section-subtitle">Use Código + PIN.</div>
               </div>
             </div>
 
             {error ? (
-              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+              <div
+                style={{
+                  borderRadius: 14,
+                  padding: "10px 12px",
+                  border: "1px solid #fecaca",
+                  background: "#fef2f2",
+                  color: "#991b1b",
+                  fontSize: 14,
+                  marginBottom: 12,
+                }}
+              >
                 {error}
               </div>
             ) : null}
 
             {okMsg ? (
-              <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+              <div
+                style={{
+                  borderRadius: 14,
+                  padding: "10px 12px",
+                  border: "1px solid #bbf7d0",
+                  background: "#f0fdf4",
+                  color: "#166534",
+                  fontSize: 14,
+                  marginBottom: 12,
+                }}
+              >
                 {okMsg}
               </div>
             ) : null}
 
-            <label style={styles.label}>E-mail</label>
-            <input style={styles.input} value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="seu@email.com" />
+            <label style={styles.label}>Código</label>
+            <input
+              style={styles.input}
+              value={loginCode}
+              onChange={(e) => setLoginCode(e.target.value)}
+              placeholder="Ex: REST01"
+              autoCapitalize="characters"
+            />
+
+            <div style={{ height: 10 }} />
+
+            <label style={styles.label}>PIN</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                style={{ ...styles.input, flex: 1 }}
+                type={showPin ? "text" : "password"}
+                value={loginPin}
+                onChange={(e) => setLoginPin(e.target.value)}
+                placeholder="••••••"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPin((p) => !p)}
+                style={{
+                  borderRadius: 14,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  padding: "12px 12px",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {showPin ? "Ocultar" : "Mostrar"}
+              </button>
+            </div>
 
             <div style={{ height: 10 }} />
 
             <button
               type="button"
-              onClick={sendMagicLink}
-              disabled={sendingLink}
+              onClick={doLoginWithCodePin}
+              disabled={loggingIn}
               style={{
                 width: "100%",
                 borderRadius: 14,
@@ -529,24 +604,33 @@ export default function RestaurantePage() {
                 padding: "12px 12px",
                 fontSize: 15,
                 fontWeight: 950,
-                cursor: sendingLink ? "not-allowed" : "pointer",
-                opacity: sendingLink ? 0.7 : 1,
+                cursor: loggingIn ? "not-allowed" : "pointer",
+                opacity: loggingIn ? 0.7 : 1,
               }}
             >
-              {sendingLink ? "Enviando..." : "Enviar link de acesso"}
+              {loggingIn ? "Entrando..." : "Entrar"}
             </button>
+
+            <div style={{ marginTop: 10, fontSize: 12, color: "var(--gp-muted-soft)" }}>
+              Ex.: <b>REST01</b> / PIN (definido pelo admin).
+            </div>
           </div>
         </div>
       </div>
     );
   }
 
+  // ✅ LOGADO
   return (
     <div className="page-root">
       <div className="page-container" style={{ paddingBottom: 48 }}>
         <header className="page-header" style={{ position: "relative", justifyContent: "center", alignItems: "center" }}>
           <div style={{ textAlign: "center" }}>
-            <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }} />
+            <img
+              src="/gpasfalto-logo.png"
+              alt="GP Asfalto"
+              style={{ width: 34, height: 34, objectFit: "contain", border: "none", background: "transparent" }}
+            />
             <div className="brand-text-main" style={{ lineHeight: 1.1, marginTop: 6 }}>
               Restaurante
             </div>
