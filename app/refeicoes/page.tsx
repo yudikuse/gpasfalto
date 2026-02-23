@@ -643,12 +643,30 @@ export default function RefeicoesPage() {
         const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
         if (del.error) throw del.error;
 
-        const up = await supabase
+        // ✅ REABRE o pedido ao salvar de novo (se já estava confirmado)
+        const baseUpdate: any = {
+          cutoff_at: cutoffAtISO,
+          updated_by: userId,
+          submitted_at: null,
+          confirmed_at: null,
+          closed_at: null,
+        };
+
+        // tenta voltar status pra DRAFT (se o enum existir)
+        const up1 = await supabase
           .from("meal_orders")
-          .update({ cutoff_at: cutoffAtISO, updated_by: userId })
+          .update({ ...baseUpdate, status: "DRAFT" as any })
           .eq("id", orderId);
 
-        if (up.error) throw up.error;
+        if (up1.error) {
+          const msg = String(up1.error.message || "");
+          if (msg.includes("invalid input value for enum") || msg.includes("meal_order_status")) {
+            const up2 = await supabase.from("meal_orders").update(baseUpdate).eq("id", orderId);
+            if (up2.error) throw up2.error;
+          } else {
+            throw up1.error;
+          }
+        }
       }
 
       const rows: any[] = [];
