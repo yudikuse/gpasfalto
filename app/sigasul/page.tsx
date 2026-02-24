@@ -23,7 +23,6 @@ type Row = {
 
   status: string;
 
-  // novas colunas
   data_ts: string | null;
   data_age_min: number | null;
   ingest_lag_min: number | null;
@@ -76,7 +75,7 @@ export default function SigaSulDashboardPage() {
   const [comFilter, setComFilter] = useState<string>("TODOS");
   const [opFilter, setOpFilter] = useState<string>("TODOS");
   const [search, setSearch] = useState("");
-  const [onlyIdle, setOnlyIdle] = useState(false); // parado ligado ONLINE
+  const [onlyIdle, setOnlyIdle] = useState(false);
 
   async function load() {
     setErr(null);
@@ -118,8 +117,10 @@ export default function SigaSulDashboardPage() {
       setErr(error.message);
       setRows([]);
     } else {
-      setRows((data ?? []) as Row[]);
+      // ✅ Corrige o erro do build: converte para unknown antes
+      setRows(((data ?? []) as unknown) as Row[]);
     }
+
     setLoading(false);
   }
 
@@ -185,7 +186,7 @@ export default function SigaSulDashboardPage() {
       <div className="flex flex-col gap-1">
         <h1 className="text-xl font-bold">SigaSul — Tempo real (por obra)</h1>
         <div className="text-sm text-zinc-600">
-          Comunicação e operação separadas (evita “offline + ignição ligada”). Fonte:{" "}
+          Comunicação e operação separadas. Fonte:{" "}
           <code className="px-1 rounded bg-zinc-100">sigasul_dashboard_latest</code>
         </div>
       </div>
