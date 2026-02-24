@@ -331,3 +331,6 @@ export async function GET(req: Request) {
     return Response.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
+export async function POST(req: Request) {
+  return GET(req);
+}
