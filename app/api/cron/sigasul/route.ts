@@ -5,7 +5,6 @@ export const dynamic = "force-dynamic";
 import { createClient } from "@supabase/supabase-js";
 
 type Cerca = { pos_cerca_id: number; pos_cerca_nome: string };
-type Telemetria = Record<string, any>;
 
 function chunk<T>(arr: T[], size: number) {
   const out: T[][] = [];
@@ -16,14 +15,12 @@ function chunk<T>(arr: T[], size: number) {
 function parseBRToISO(dt: string | null | undefined, offset = "-03:00") {
   if (!dt) return null;
 
-  // "DD/MM/YYYY HH:MM:SS"
   const m1 = dt.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
   if (m1) {
     const [, dd, mm, yyyy, HH, MI, SS] = m1;
     return `${yyyy}-${mm}-${dd}T${HH}:${MI}:${SS}${offset}`;
   }
 
-  // "YYYY-MM-DD HH:MM:SS"
   const m2 = dt.match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2}):(\d{2})$/);
   if (m2) {
     const [, yyyy, mm, dd, HH, MI, SS] = m2;
@@ -51,38 +48,60 @@ function parseUTCToISO(dt: string | null | undefined) {
   return null;
 }
 
-function getTele(p: any): Telemetria {
-  return (p?.pos_telemetria ?? p?.telemetria ?? p?.tele ?? {}) as Telemetria;
+function getTele(p: any): Record<string, any> {
+  return (p?.pos_telemetria ?? p?.telemetria ?? p?.tele ?? {}) as Record<string, any>;
 }
 
 function pickObraFromCercas(
   cercas: Cerca[] | null | undefined,
   cercaMap: Map<number, { obra: string; pos_cerca_nome: string }>
 ) {
-  if (!Array.isArray(cercas) || cercas.length === 0) return { cerca_id_ativa: null, cerca_nome_ativa: null, obra: null };
+  if (!Array.isArray(cercas) || cercas.length === 0) {
+    return { cerca_id_ativa: null, cerca_nome_ativa: null, obra: null };
+  }
 
-  // Preferir a primeira cerca (menor) que esteja mapeada pra obra
   for (const c of cercas) {
     const hit = cercaMap.get(Number(c.pos_cerca_id));
     if (hit) {
-      return { cerca_id_ativa: Number(c.pos_cerca_id), cerca_nome_ativa: c.pos_cerca_nome ?? hit.pos_cerca_nome, obra: hit.obra };
+      return {
+        cerca_id_ativa: Number(c.pos_cerca_id),
+        cerca_nome_ativa: c.pos_cerca_nome ?? hit.pos_cerca_nome,
+        obra: hit.obra,
+      };
     }
   }
 
-  // Senão, guarda a primeira cerca (mesmo sem obra)
   const first = cercas[0];
-  return { cerca_id_ativa: Number(first.pos_cerca_id), cerca_nome_ativa: first.pos_cerca_nome ?? null, obra: null };
+  return {
+    cerca_id_ativa: Number(first.pos_cerca_id),
+    cerca_nome_ativa: first.pos_cerca_nome ?? null,
+    obra: null,
+  };
+}
+
+function extractPositions(json: any): any[] | null {
+  if (Array.isArray(json)) return json;
+  if (Array.isArray(json?.data)) return json.data;
+  if (Array.isArray(json?.results)) return json.results;
+  if (Array.isArray(json?.positions)) return json.positions;
+  if (Array.isArray(json?.itens)) return json.itens;
+  return null;
 }
 
 export async function GET(req: Request) {
   try {
     const url = new URL(req.url);
+    const debug = url.searchParams.get("debug") === "1";
 
-    // Proteção simples (pra não ficar público)
+    // Segurança (header do cron ou querystring)
     const cronSecret = process.env.CRON_SECRET || "";
     if (cronSecret) {
-      const secret = url.searchParams.get("secret") || "";
-      if (secret !== cronSecret) {
+      const authHeader = req.headers.get("authorization") || "";
+      const secretQS = url.searchParams.get("secret") || "";
+      const okHeader = authHeader === `Bearer ${cronSecret}`;
+      const okQS = secretQS === cronSecret;
+
+      if (!okHeader && !okQS) {
         return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
       }
     }
@@ -104,7 +123,7 @@ export async function GET(req: Request) {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    // 1) Lê estado
+    // Estado
     const { data: state, error: stateErr } = await supabase
       .from("sigasul_ingest_state")
       .select("last_pos_id_ref")
@@ -112,10 +131,9 @@ export async function GET(req: Request) {
       .maybeSingle();
 
     if (stateErr) throw stateErr;
-
     const lastId = state?.last_pos_id_ref ?? null;
 
-    // 2) Carrega mapa de cercas -> obra (ativo)
+    // Cercas -> obra
     const { data: cercasMapRows, error: cercasErr } = await supabase
       .from("sigasul_cerca_map")
       .select("pos_cerca_id, pos_cerca_nome, obra")
@@ -128,13 +146,23 @@ export async function GET(req: Request) {
       cercaMap.set(Number(r.pos_cerca_id), { obra: r.obra, pos_cerca_nome: r.pos_cerca_nome });
     }
 
-    // 3) Busca no SigaSul (tentando alguns formatos; se não existir, cai no default)
-    const candidates = [
-      lastId ? `${SIGASUL_BASE_URL}/api/v2/positions/controls/all/${lastId}` : null,
-      lastId ? `${SIGASUL_BASE_URL}/api/v2/positions/controls/all?last=${lastId}` : null,
+    // Candidatos (v2, v1, sem versão) + com/sem lastId
+    const bases = [
       `${SIGASUL_BASE_URL}/api/v2/positions/controls/all/`,
-    ].filter(Boolean) as string[];
+      `${SIGASUL_BASE_URL}/api/v1/positions/controls/all/`,
+      `${SIGASUL_BASE_URL}/api/positions/controls/all/`,
+    ];
 
+    const candidates: string[] = [];
+    for (const base of bases) {
+      if (lastId) {
+        candidates.push(`${base}${lastId}`);
+        candidates.push(`${base}?last=${lastId}`);
+      }
+      candidates.push(base);
+    }
+
+    const attempts: any[] = [];
     let positions: any[] | null = null;
     let usedUrl: string | null = null;
 
@@ -142,47 +170,76 @@ export async function GET(req: Request) {
       const ac = new AbortController();
       const t = setTimeout(() => ac.abort(), 20000);
 
-      const resp = await fetch(u, {
-        method: "GET",
-        headers: {
-          "x-auth-token": SIGASUL_API_TOKEN,
-          "accept": "application/json",
-        },
-        signal: ac.signal,
-      }).catch((e) => {
+      let status = 0;
+      let text = "";
+      try {
+        const resp = await fetch(u, {
+          method: "GET",
+          headers: {
+            "x-auth-token": SIGASUL_API_TOKEN,
+            accept: "application/json",
+          },
+          signal: ac.signal,
+        });
+
+        status = resp.status;
+        text = await resp.text(); // pegar texto pra debug
+        const json = (() => {
+          try {
+            return JSON.parse(text);
+          } catch {
+            return null;
+          }
+        })();
+
+        const arr = extractPositions(json);
+        attempts.push({
+          url: u,
+          status,
+          ok: resp.ok,
+          content_type: resp.headers.get("content-type"),
+          body_head: debug ? text.slice(0, 250) : undefined,
+          detected_array: Array.isArray(arr),
+          array_len: Array.isArray(arr) ? arr.length : null,
+        });
+
+        if (Array.isArray(arr)) {
+          positions = arr;
+          usedUrl = u;
+          break;
+        }
+      } catch (e: any) {
+        attempts.push({
+          url: u,
+          status,
+          ok: false,
+          error: e?.message || String(e),
+        });
+      } finally {
         clearTimeout(t);
-        throw e;
-      });
-
-      clearTimeout(t);
-
-      if (!resp.ok) continue;
-
-      const json = await resp.json().catch(() => null);
-      if (Array.isArray(json)) {
-        positions = json;
-        usedUrl = u;
-        break;
       }
     }
 
     if (!positions) {
       await supabase
         .from("sigasul_ingest_state")
-        .update({ last_run_at: new Date().toISOString(), last_status: "error", last_error: "fetch_failed" })
+        .update({
+          last_run_at: new Date().toISOString(),
+          last_status: "error",
+          last_error: "fetch_failed",
+        })
         .eq("stream_key", "positions_controls_v2");
 
-      return Response.json({ ok: false, error: "fetch_failed" }, { status: 502 });
+      return Response.json({ ok: false, error: "fetch_failed", attempts: debug ? attempts : undefined }, { status: 502 });
     }
 
-    // 4) Normaliza e prepara rows
+    // Normaliza + grava
     let maxId = lastId ?? 0;
 
     const rows = positions
       .map((p) => {
         const pos_id_ref = Number(p?.pos_id_ref);
         if (!pos_id_ref || Number.isNaN(pos_id_ref)) return null;
-
         if (pos_id_ref > maxId) maxId = pos_id_ref;
 
         const cercas = (p?.pos_cercas ?? []) as Cerca[];
@@ -210,7 +267,7 @@ export async function GET(req: Request) {
 
           gps_at: parseBRToISO(pos_data_hora_gps, TZ_OFFSET),
           gps_utc_at: parseUTCToISO(pos_data_hora_gps_utc),
-          receb_at: parseBRToISO(pos_data_hora_receb, "-03:00"), // receb é Brasília
+          receb_at: parseBRToISO(pos_data_hora_receb, "-03:00"),
 
           pos_latitude: p?.pos_latitude ?? null,
           pos_longitude: p?.pos_longitude ?? null,
@@ -240,21 +297,17 @@ export async function GET(req: Request) {
       })
       .filter(Boolean) as any[];
 
-    // 5) Upsert em chunks (dedup por pos_id_ref)
     const chunks = chunk(rows, 500);
     let attempted = 0;
 
     for (const c of chunks) {
       attempted += c.length;
-
       const { error } = await supabase
         .from("sigasul_positions_raw")
         .upsert(c, { onConflict: "pos_id_ref", ignoreDuplicates: true });
-
       if (error) throw error;
     }
 
-    // 6) Atualiza estado
     await supabase
       .from("sigasul_ingest_state")
       .update({
@@ -272,11 +325,9 @@ export async function GET(req: Request) {
       max_id_seen: maxId,
       rows_received: positions.length,
       rows_attempted_upsert: attempted,
+      attempts: debug ? attempts : undefined,
     });
   } catch (err: any) {
-    return Response.json(
-      { ok: false, error: err?.message || String(err) },
-      { status: 500 }
-    );
+    return Response.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
