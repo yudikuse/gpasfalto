@@ -148,23 +148,14 @@ function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost"
   return { ...base, background: "#fff", color: "#0f172a", borderColor: "#e5e7eb" };
 }
 
-// ✅ Opção A: código -> email técnico (sem e-mail real)
-function normalizeCodeToEmail(codeRaw: string) {
-  const code = (codeRaw || "").trim().toLowerCase();
-  if (!code) return "";
-  if (code.includes("@")) return code; // aceita email (admin/debug)
-  const clean = code.replace(/[^a-z0-9]/g, ""); // ENC-01 -> enc01
-  return `${clean}@gpasfalto.local`;
-}
-
 export default function RefeicoesPage() {
   const router = useRouter();
 
   const [userEmail, setUserEmail] = useState<string>("");
   const [userId, setUserId] = useState<string | null>(null);
 
-  // ✅ Login por CÓDIGO + PIN (encarregado)
-  const [loginCode, setLoginCode] = useState("");
+  // ✅ Login por EMAIL + PIN
+  const [loginEmail, setLoginEmail] = useState("");
   const [loginPin, setLoginPin] = useState("");
   const [showPin, setShowPin] = useState(false);
   const [loggingIn, setLoggingIn] = useState(false);
@@ -270,26 +261,25 @@ export default function RefeicoesPage() {
     await supabase.auth.signOut();
     setUserId(null);
     setUserEmail("");
-    router.replace("/refeicoes"); // empresa volta pra /refeicoes
+    router.replace("/refeicoes");
   }
 
-  async function doLoginWithCodePin() {
+  async function doLoginWithEmailPin() {
     setError(null);
     setOkMsg(null);
 
-    const email = normalizeCodeToEmail(loginCode);
+    const email = loginEmail.trim().toLowerCase();
     const pin = (loginPin || "").trim();
 
-    if (!loginCode.trim()) return setError("Informe o código (ex: ENC01)."), undefined;
+    if (!email) return setError("Informe o e-mail."), undefined;
     if (!pin) return setError("Informe o PIN."), undefined;
 
     setLoggingIn(true);
     try {
       const { error: e } = await supabase.auth.signInWithPassword({ email, password: pin });
       if (e) throw e;
-
       setOkMsg("Login OK.");
-      await bootstrap();
+      // bootstrap será chamado via onAuthStateChange
     } catch (e: any) {
       setError(e?.message || "Falha no login.");
     } finally {
@@ -298,11 +288,10 @@ export default function RefeicoesPage() {
   }
 
   async function loadUser() {
-    // força leitura de sessão (evita “tela presa” em alguns fluxos)
     await supabase.auth.getSession();
-
     const { data } = await supabase.auth.getUser();
     const u = data?.user;
+
     setUserEmail(u?.email || "");
     const uid = u?.id || null;
     setUserId(uid);
@@ -323,8 +312,8 @@ export default function RefeicoesPage() {
 
   async function loadWorksites() {
     const { data, error } = await supabase.from("meal_worksites").select("id,name,city,active").eq("active", true).order("name", { ascending: true });
-
     if (error) throw error;
+
     const rows = (data || []) as Worksite[];
     setWorksites(rows);
     if (!worksiteId && rows[0]?.id) setWorksiteId(rows[0].id);
@@ -375,7 +364,6 @@ export default function RefeicoesPage() {
       return;
     }
     const { data, error } = await supabase.from("meal_worksite_members").select("can_override_cutoff").eq("worksite_id", wid).eq("user_id", uid).maybeSingle();
-
     if (error) {
       setCanOverrideCutoff(false);
       return;
@@ -407,16 +395,8 @@ export default function RefeicoesPage() {
 
     if (e2) throw e2;
 
-    const empIds = uniq(
-      (lines || [])
-        .map((r: any) => (r.employee_id ? String(r.employee_id) : ""))
-        .filter(Boolean)
-    );
-    const visitors = uniq(
-      (lines || [])
-        .map((r: any) => (r.visitor_name ? String(r.visitor_name) : ""))
-        .filter(Boolean)
-    );
+    const empIds = uniq((lines || []).map((r: any) => (r.employee_id ? String(r.employee_id) : "")).filter(Boolean));
+    const visitors = uniq((lines || []).map((r: any) => (r.visitor_name ? String(r.visitor_name) : "")).filter(Boolean));
 
     return { orderId, employeeIds: empIds, visitors };
   }
@@ -436,7 +416,6 @@ export default function RefeicoesPage() {
     const rid = contract.restaurant_id;
 
     const [l, j] = await Promise.all([fetchSavedForShift(worksiteId, rid, mealDate, "ALMOCO"), fetchSavedForShift(worksiteId, rid, mealDate, "JANTA")]);
-
     setSaved({ ALMOCO: l, JANTA: j });
   }
 
@@ -445,7 +424,8 @@ export default function RefeicoesPage() {
     setError(null);
     try {
       const uid = await loadUser();
-      if (!uid) return; // sem user ou foi redirecionado (ou ainda não logou)
+      if (!uid) return;
+
       await loadWorksites();
       if (worksiteId) {
         await loadOverride(worksiteId, uid);
@@ -460,7 +440,7 @@ export default function RefeicoesPage() {
   useEffect(() => {
     bootstrap();
 
-    const { data } = supabase.auth.onAuthStateChange((_event) => {
+    const { data } = supabase.auth.onAuthStateChange(() => {
       bootstrap();
     });
 
@@ -699,13 +679,8 @@ export default function RefeicoesPage() {
       }
 
       const rows: any[] = [];
-
-      for (const eid of selectedIds) {
-        rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: uid, updated_by: uid });
-      }
-      for (const v of visitors) {
-        rows.push({ meal_order_id: orderId, visitor_name: v, included: true, created_by: uid, updated_by: uid });
-      }
+      for (const eid of selectedIds) rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: uid, updated_by: uid });
+      for (const v of visitors) rows.push({ meal_order_id: orderId, visitor_name: v, included: true, created_by: uid, updated_by: uid });
 
       const insLines = await supabase.from("meal_order_lines").insert(rows);
       if (insLines.error) throw insLines.error;
@@ -836,7 +811,7 @@ export default function RefeicoesPage() {
     return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
   }, [mode, canceling, savedCounts]);
 
-  // ✅ LOGIN UI (Código + PIN) — primeira vez
+  // ✅ LOGIN UI (E-mail + PIN)
   if (!userId) {
     return (
       <div className="page-root">
@@ -855,7 +830,7 @@ export default function RefeicoesPage() {
             <div className="section-header">
               <div>
                 <div className="section-title">Entrar</div>
-                <div className="section-subtitle">Use Código + PIN.</div>
+                <div className="section-subtitle">Use E-mail + PIN.</div>
               </div>
             </div>
 
@@ -871,33 +846,18 @@ export default function RefeicoesPage() {
               </div>
             ) : null}
 
-            <label style={styles.label}>Código</label>
-            <input style={styles.input} value={loginCode} onChange={(e) => setLoginCode(e.target.value)} placeholder="Ex: ENC01" autoCapitalize="characters" />
+            <label style={styles.label}>E-mail</label>
+            <input style={styles.input} value={loginEmail} onChange={(e) => setLoginEmail(e.target.value)} placeholder="seu@email.com" autoCapitalize="none" />
 
             <div style={{ height: 10 }} />
 
             <label style={styles.label}>PIN</label>
             <div style={{ display: "flex", gap: 8 }}>
-              <input
-                style={{ ...styles.input, flex: 1 }}
-                type={showPin ? "text" : "password"}
-                value={loginPin}
-                onChange={(e) => setLoginPin(e.target.value)}
-                placeholder="••••••"
-              />
+              <input style={{ ...styles.input, flex: 1 }} type={showPin ? "text" : "password"} value={loginPin} onChange={(e) => setLoginPin(e.target.value)} placeholder="••••••" />
               <button
                 type="button"
                 onClick={() => setShowPin((p) => !p)}
-                style={{
-                  borderRadius: 14,
-                  border: "1px solid #e5e7eb",
-                  background: "#fff",
-                  padding: "12px 12px",
-                  fontSize: 13,
-                  fontWeight: 900,
-                  cursor: "pointer",
-                  whiteSpace: "nowrap",
-                }}
+                style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", padding: "12px 12px", fontSize: 13, fontWeight: 900, cursor: "pointer", whiteSpace: "nowrap" }}
               >
                 {showPin ? "Ocultar" : "Mostrar"}
               </button>
@@ -907,7 +867,7 @@ export default function RefeicoesPage() {
 
             <button
               type="button"
-              onClick={doLoginWithCodePin}
+              onClick={doLoginWithEmailPin}
               disabled={loggingIn}
               style={{
                 width: "100%",
@@ -924,10 +884,6 @@ export default function RefeicoesPage() {
             >
               {loggingIn ? "Entrando..." : "Entrar"}
             </button>
-
-            <div style={{ marginTop: 10, fontSize: 12, color: "var(--gp-muted-soft)" }}>
-              Ex.: <b>ENC01</b> / PIN (definido pelo admin).
-            </div>
           </div>
         </div>
       </div>
@@ -949,32 +905,10 @@ export default function RefeicoesPage() {
           </div>
 
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <div
-              style={{
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                padding: "8px 12px",
-                fontSize: 13,
-                fontWeight: 800,
-              }}
-              title="Data selecionada"
-            >
+            <div style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 800 }} title="Data selecionada">
               {headerDatePill}
             </div>
-            <button
-              type="button"
-              onClick={handleSignOut}
-              style={{
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                padding: "8px 12px",
-                fontSize: 13,
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
+            <button type="button" onClick={handleSignOut} style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 900, cursor: "pointer" }}>
               Sair
             </button>
           </div>
@@ -1203,18 +1137,7 @@ export default function RefeicoesPage() {
         </div>
       </div>
 
-      <div
-        style={{
-          position: "fixed",
-          left: 0,
-          right: 0,
-          bottom: 0,
-          padding: "12px 12px calc(12px + env(safe-area-inset-bottom))",
-          background: "rgba(255,255,255,0.92)",
-          borderTop: "1px solid #eef2f7",
-          backdropFilter: "blur(10px)",
-        }}
-      >
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, padding: "12px 12px calc(12px + env(safe-area-inset-bottom))", background: "rgba(255,255,255,0.92)", borderTop: "1px solid #eef2f7", backdropFilter: "blur(10px)" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
             <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
