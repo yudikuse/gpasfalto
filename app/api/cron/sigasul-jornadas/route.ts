@@ -3,280 +3,250 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const revalidate = 0;
 
-type JornadaEvent = {
-  id_evento?: number | string | null;
-  id_evento_controle?: number | string | null;
-  data_inicio?: string | null;
-  data_fim?: string | null;
-  id_tipo_evento?: number | string | null;
-  nome_tipo_evento?: string | null;
-  placa?: string | null;
-  latitude?: string | number | null;
-  longitude?: string | number | null;
+type JornadaEvento = {
+  id_evento?: number;
+  id_evento_controle?: number;
+  data_inicio?: string;
+  data_fim?: string;
+  id_tipo_evento?: number;
+  nome_tipo_evento?: string;
+  placa?: string;
+  latitude?: string | number;
+  longitude?: string | number;
 };
 
 type Jornada = {
-  id_jornada?: number | string | null;
-  data_inicial?: string | null;
-  data_final?: string | null;
-  nome_motorista?: string | null;
-  id_motorista?: number | string | null;
-  cartao_motorista?: string | null;
-  id_cliente?: number | string | null;
-  nome_cliente?: string | null;
-  eventos?: JornadaEvent[] | null;
+  id_jornada?: number;
+  data_inicial?: string;
+  data_final?: string;
+  nome_motorista?: string;
+  id_motorista?: number;
+  cartao_motorista?: string;
+  id_cliente?: number;
+  nome_cliente?: string;
+  eventos?: JornadaEvento[];
 };
 
-function toStr(v: unknown) {
-  if (v === null || v === undefined) return null;
-  return String(v);
+function json(data: any, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
-function pickAuthHeader(apiToken: string) {
-  // Se o env já vier "Bearer xxx", usa como está; senão prefixa.
-  return /^Bearer\s+/i.test(apiToken) ? apiToken : `Bearer ${apiToken}`;
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
 }
 
-function jsonError(error: unknown) {
-  if (error instanceof Error) return error.message;
+function getCronSecretFromReq(req: Request): string | null {
+  const u = new URL(req.url);
+  const qs = u.searchParams.get("secret");
+  if (qs) return qs;
+  const auth = req.headers.get("authorization") || req.headers.get("Authorization");
+  if (auth && auth.toLowerCase().startsWith("bearer ")) return auth.slice(7).trim();
+  return null;
+}
+
+async function fetchSigaSul(url: string, token: string) {
+  // Mantém simples: 1 tentativa (rate limit deles é chato).
+  // Se seu outro route funciona, a auth via Bearer deve estar correta.
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    cache: "no-store",
+  });
+
+  const text = await res.text();
+  let data: any = null;
   try {
-    return JSON.stringify(error);
+    data = text ? JSON.parse(text) : null;
   } catch {
-    return String(error);
+    data = null;
   }
+
+  return { res, text, data };
 }
 
 export async function GET(req: Request) {
-  const url = new URL(req.url);
-  const secret = url.searchParams.get("secret") ?? "";
-
-  const CRON_SECRET = process.env.CRON_SECRET ?? "";
-  if (!CRON_SECRET || secret !== CRON_SECRET) {
-    return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  }
-
-  const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
-  const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY ?? "";
-  const SIGASUL_BASE_URL = (process.env.SIGASUL_BASE_URL ?? "").replace(/\/$/, "");
-  const SIGASUL_API_TOKEN = process.env.SIGASUL_API_TOKEN ?? "";
-
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    return Response.json(
-      { ok: false, error: "missing_supabase_env" },
-      { status: 500 }
-    );
-  }
-  if (!SIGASUL_BASE_URL || !SIGASUL_API_TOKEN) {
-    return Response.json(
-      { ok: false, error: "missing_sigasul_env" },
-      { status: 500 }
-    );
-  }
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-
-  const streamKey = "jornadas_events_v2";
-
-  // 1) Lê o estado (último id_evento_controle processado)
-  let lastEventoControle: string | null = null;
   try {
-    const { data: st, error: stErr } = await supabase
+    const CRON_SECRET = process.env.CRON_SECRET || "";
+    const gotSecret = getCronSecretFromReq(req);
+
+    if (CRON_SECRET && gotSecret !== CRON_SECRET) {
+      return json({ ok: false, error: "unauthorized" }, 401);
+    }
+
+    const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const SIGASUL_BASE_URL = (process.env.SIGASUL_BASE_URL || "https://gestao.sigasul.com.br").replace(/\/+$/, "");
+    const SIGASUL_API_TOKEN = process.env.SIGASUL_API_TOKEN;
+
+    if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+      return json({ ok: false, error: "missing_supabase_env" }, 500);
+    }
+    if (!SIGASUL_API_TOKEN) {
+      return json({ ok: false, error: "missing_sigasul_api_token" }, 500);
+    }
+
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    const streamKey = "jornadas_events_v2";
+
+    // 1) lê estado
+    let lastEventoControle: number | null = null;
+    const st = await supabase
       .from("sigasul_jornadas_ingest_state")
       .select("last_evento_controle")
       .eq("stream_key", streamKey)
       .maybeSingle();
 
-    if (stErr) throw stErr;
-    lastEventoControle = st?.last_evento_controle ? String(st.last_evento_controle) : null;
-  } catch (e) {
-    // se não conseguiu ler estado, ainda tenta o endpoint base, mas registra erro no retorno
-    lastEventoControle = null;
-  }
+    if (st.error) {
+      return json({ ok: false, error: "state_read_failed", detail: st.error.message }, 200);
+    }
+    lastEventoControle = (st.data?.last_evento_controle ?? null) as number | null;
 
-  // 2) Monta URL
-  // - Primeira vez: /api/jornadas/events/control
-  // - Incremental: /api/v2/jornadas/events/control/{idevento}
-  const usedUrl = lastEventoControle
-    ? `${SIGASUL_BASE_URL}/api/v2/jornadas/events/control/${encodeURIComponent(lastEventoControle)}`
-    : `${SIGASUL_BASE_URL}/api/jornadas/events/control`;
+    // 2) monta URL (usa v2 SEMPRE)
+    // Doc: /api/v2/jornadas/events/control/{idevento}
+    const idevento = lastEventoControle ?? 0;
+    const usedUrl = `${SIGASUL_BASE_URL}/api/v2/jornadas/events/control/${idevento}`;
 
-  // 3) Busca na SigaSul
-  let jornadas: Jornada[] = [];
-  try {
-    const resp = await fetch(usedUrl, {
-      method: "GET",
-      headers: {
-        Authorization: pickAuthHeader(SIGASUL_API_TOKEN),
-        Accept: "application/json",
-      },
-      cache: "no-store",
-    });
+    // 3) fetch sigasul
+    const { res, text, data } = await fetchSigaSul(usedUrl, SIGASUL_API_TOKEN);
 
-    if (!resp.ok) {
-      const body = await resp.text().catch(() => "");
-      // Atualiza estado com erro
+    if (!res.ok) {
+      // grava erro no state
       await supabase
         .from("sigasul_jornadas_ingest_state")
         .update({
           last_run_at: new Date().toISOString(),
-          last_status: "error",
-          last_error: `sigasul_http_${resp.status}: ${body}`.slice(0, 5000),
+          last_status: `http_${res.status}`,
+          last_error: text?.slice(0, 2000) || null,
         })
         .eq("stream_key", streamKey);
 
-      return Response.json(
+      return json(
         {
           ok: false,
-          error: `sigasul_http_${resp.status}`,
-          detail: body || "Unauthorized",
+          error: `sigasul_http_${res.status}`,
+          detail: text,
           used_url: usedUrl,
           last_evento_controle_before: lastEventoControle,
         },
-        { status: 502 }
+        200
       );
     }
 
-    const json = (await resp.json()) as unknown;
-    if (!Array.isArray(json)) {
-      throw new Error("unexpected_sigasul_response_not_array");
-    }
-    jornadas = json as Jornada[];
-  } catch (e) {
-    await supabase
-      .from("sigasul_jornadas_ingest_state")
-      .update({
-        last_run_at: new Date().toISOString(),
-        last_status: "error",
-        last_error: `fetch_failed: ${jsonError(e)}`.slice(0, 5000),
-      })
-      .eq("stream_key", streamKey);
-
-    return Response.json(
-      { ok: false, error: "fetch_failed", detail: jsonError(e), used_url: usedUrl },
-      { status: 502 }
-    );
-  }
-
-  // 4) Flatten (1 row por evento)
-  const rows: any[] = [];
-  let maxIdEventoControle: string | null = null;
-
-  for (const j of jornadas) {
-    const eventos = Array.isArray(j.eventos) ? j.eventos : [];
-    for (const ev of eventos) {
-      const idEventoControle = toStr(ev.id_evento_controle);
-
-      if (idEventoControle) {
-        if (!maxIdEventoControle) maxIdEventoControle = idEventoControle;
-        else {
-          // compara como número se possível; senão compara string
-          const a = Number(maxIdEventoControle);
-          const b = Number(idEventoControle);
-          if (!Number.isNaN(a) && !Number.isNaN(b)) {
-            if (b > a) maxIdEventoControle = idEventoControle;
-          } else {
-            if (idEventoControle > maxIdEventoControle) maxIdEventoControle = idEventoControle;
-          }
-        }
-      }
-
-      rows.push({
-        id_evento_controle: idEventoControle, // PK
-        id_evento: toStr(ev.id_evento),
-        id_jornada: toStr(j.id_jornada),
-
-        data_inicial_jornada: j.data_inicial ?? null,
-        data_final_jornada: j.data_final ?? null,
-        nome_motorista: j.nome_motorista ?? null,
-        id_motorista: toStr(j.id_motorista),
-        cartao_motorista: j.cartao_motorista ?? null,
-        id_cliente: toStr(j.id_cliente),
-        nome_cliente: j.nome_cliente ?? null,
-
-        data_inicio: ev.data_inicio ?? null,
-        data_fim: ev.data_fim ?? null,
-        id_tipo_evento: toStr(ev.id_tipo_evento),
-        nome_tipo_evento: ev.nome_tipo_evento ?? null,
-        placa: ev.placa ?? null,
-        latitude: toStr(ev.latitude),
-        longitude: toStr(ev.longitude),
-
-        payload: {
-          jornada: j,
-          evento: ev,
+    if (!Array.isArray(data)) {
+      return json(
+        {
+          ok: false,
+          error: "unexpected_payload",
+          used_url: usedUrl,
+          sample: typeof data,
+          raw: (text || "").slice(0, 1000),
         },
-      });
+        200
+      );
     }
-  }
 
-  // 5) Upsert no Supabase (por id_evento_controle)
-  let attempted = 0;
-  try {
-    if (rows.length > 0) {
-      // faz em chunks para não estourar payload
-      const chunkSize = 500;
-      for (let i = 0; i < rows.length; i += chunkSize) {
-        const chunk = rows.slice(i, i + chunkSize);
-        attempted += chunk.length;
+    const jornadas = data as Jornada[];
 
-        const { error: upErr } = await supabase
-          .from("sigasul_jornadas_events_raw")
-          .upsert(chunk, { onConflict: "id_evento_controle", ignoreDuplicates: true });
+    // 4) flatten eventos
+    const rows = [];
+    let maxEventoControle = lastEventoControle ?? 0;
 
-        if (upErr) throw upErr;
+    for (const j of jornadas) {
+      const eventos = Array.isArray(j.eventos) ? j.eventos : [];
+      for (const e of eventos) {
+        const idc = Number(e.id_evento_controle ?? 0) || 0;
+        if (idc > maxEventoControle) maxEventoControle = idc;
+
+        rows.push({
+          id_evento_controle: idc,
+          id_evento: e.id_evento ?? null,
+          id_jornada: j.id_jornada ?? null,
+          data_inicial_jornada: j.data_inicial ?? null,
+          data_final_jornada: j.data_final ?? null,
+          nome_motorista: j.nome_motorista ?? null,
+          id_motorista: j.id_motorista ?? null,
+          cartao_motorista: j.cartao_motorista ?? null,
+          id_cliente: j.id_cliente ?? null,
+          nome_cliente: j.nome_cliente ?? null,
+          data_inicio: e.data_inicio ?? null,
+          data_fim: e.data_fim ?? null,
+          id_tipo_evento: e.id_tipo_evento ?? null,
+          nome_tipo_evento: e.nome_tipo_evento ?? null,
+          placa: e.placa ?? null,
+          latitude: e.latitude != null ? String(e.latitude) : null,
+          longitude: e.longitude != null ? String(e.longitude) : null,
+          payload: { jornada: j, evento: e },
+        });
       }
     }
-  } catch (e) {
+
+    // 5) upsert
+    let attempted = 0;
+    for (const c of chunk(rows, 500)) {
+      attempted += c.length;
+      const up = await supabase
+        .from("sigasul_jornadas_events_raw")
+        .upsert(c as any, { onConflict: "id_evento_controle", ignoreDuplicates: true });
+
+      if (up.error) {
+        await supabase
+          .from("sigasul_jornadas_ingest_state")
+          .update({
+            last_run_at: new Date().toISOString(),
+            last_status: "upsert_error",
+            last_error: up.error.message,
+          })
+          .eq("stream_key", streamKey);
+
+        return json(
+          {
+            ok: false,
+            error: "upsert_failed",
+            detail: up.error.message,
+            used_url: usedUrl,
+            rows_received: rows.length,
+            rows_attempted_upsert: attempted,
+          },
+          200
+        );
+      }
+    }
+
+    // 6) atualiza state
     await supabase
       .from("sigasul_jornadas_ingest_state")
       .update({
-        last_run_at: new Date().toISOString(),
-        last_status: "error",
-        last_error: `upsert_failed: ${jsonError(e)}`.slice(0, 5000),
-      })
-      .eq("stream_key", streamKey);
-
-    return Response.json(
-      {
-        ok: false,
-        error: "upsert_failed",
-        detail: jsonError(e),
-        used_url: usedUrl,
-        jornadas_received: jornadas.length,
-        eventos_attempted_upsert: attempted,
-        max_evento_controle_seen: maxIdEventoControle,
-      },
-      { status: 500 }
-    );
-  }
-
-  // 6) Atualiza state (somente se veio algum evento com id_evento_controle)
-  try {
-    await supabase
-      .from("sigasul_jornadas_ingest_state")
-      .update({
-        last_evento_controle: maxIdEventoControle ?? lastEventoControle,
+        last_evento_controle: maxEventoControle,
         last_run_at: new Date().toISOString(),
         last_status: "ok",
         last_error: null,
       })
       .eq("stream_key", streamKey);
-  } catch {
-    // não derruba a execução
-  }
 
-  return Response.json({
-    ok: true,
-    used_url: usedUrl,
-    last_evento_controle_before: lastEventoControle,
-    max_evento_controle_seen: maxIdEventoControle,
-    jornadas_received: jornadas.length,
-    eventos_attempted_upsert: attempted,
-  });
+    return json({
+      ok: true,
+      used_url: usedUrl,
+      last_evento_controle_before: lastEventoControle,
+      last_evento_controle_after: maxEventoControle,
+      jornadas_received: jornadas.length,
+      rows_received: rows.length,
+      rows_attempted_upsert: attempted,
+    });
+  } catch (err: any) {
+    return json({ ok: false, error: err?.message || String(err) }, 200);
+  }
 }
 
 export async function POST(req: Request) {
