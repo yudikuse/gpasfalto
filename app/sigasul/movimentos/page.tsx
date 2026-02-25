@@ -34,19 +34,15 @@ function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
+function fmtBR(d: Date) {
+  return d.toLocaleString("pt-BR");
+}
+
 function minutesToHHMM(mins: number) {
   const m = Math.max(0, Math.round(mins));
   const h = Math.floor(m / 60);
   const r = m % 60;
   return `${pad2(h)}:${pad2(r)}`;
-}
-
-function getDayBounds(dateStr: string) {
-  // dateStr: "YYYY-MM-DD" (local)
-  const [y, mo, d] = dateStr.split("-").map((x) => parseInt(x, 10));
-  const start = new Date(y, mo - 1, d, 0, 0, 0, 0);
-  const end = new Date(y, mo - 1, d, 23, 59, 59, 999);
-  return { start, end };
 }
 
 function getWindow(dateStr: string, hhStart = 6, hhEnd = 19) {
@@ -56,20 +52,20 @@ function getWindow(dateStr: string, hhStart = 6, hhEnd = 19) {
   return { w0, w1 };
 }
 
-function statusColorCls(s: string) {
-  const t = (s || "").toUpperCase();
-  if (t === "DESLOCANDO") return "bg-emerald-500";
-  if (t === "LIGADO_PARADO") return "bg-red-500";
-  if (t === "DESLIGADO") return "bg-zinc-300";
-  return "bg-purple-500";
+function statusColor(status: string) {
+  const t = (status || "").toUpperCase();
+  if (t === "DESLOCANDO") return "#22c55e"; // verde
+  if (t === "LIGADO_PARADO") return "#ef4444"; // vermelho
+  if (t === "DESLIGADO") return "#d4d4d8"; // cinza
+  return "#a855f7"; // roxo (desconhecido)
 }
 
-function dotCls(com: string | null) {
+function dotColor(com: string | null) {
   const t = (com || "").toUpperCase();
-  if (t === "ONLINE") return "bg-emerald-500";
-  if (t === "OFFLINE") return "bg-red-500";
-  if (t === "SINCRONIZANDO") return "bg-purple-500";
-  return "bg-zinc-400";
+  if (t === "ONLINE") return "#22c55e";
+  if (t === "OFFLINE") return "#ef4444";
+  if (t === "SINCRONIZANDO") return "#a855f7";
+  return "#a1a1aa";
 }
 
 export default function SigaSulMovimentosPage() {
@@ -87,6 +83,9 @@ export default function SigaSulMovimentosPage() {
 
   const [intervals, setIntervals] = useState<IntervalRow[]>([]);
   const [latest, setLatest] = useState<Record<string, LatestRow>>({});
+
+  const { w0, w1 } = useMemo(() => getWindow(dateStr, 6, 19), [dateStr]);
+  const windowMinutes = useMemo(() => Math.max(1, (w1.getTime() - w0.getTime()) / 60000), [w0, w1]);
 
   async function loadObras() {
     const { data, error } = await supabase.from("obras").select("obra").eq("ativo", true).order("obra");
@@ -107,8 +106,6 @@ export default function SigaSulMovimentosPage() {
       setErr("Sem sessão do Supabase (faça login no app).");
       return;
     }
-
-    const { w0, w1 } = getWindow(dateStr, 6, 19);
 
     let q = supabase
       .from("sigasul_intervals")
@@ -164,13 +161,27 @@ export default function SigaSulMovimentosPage() {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 30000); // 30s (intervalos atualizam a cada 5 min, mas mantém vivo)
+    const t = setInterval(load, 30000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateStr, obra]);
 
-  const { w0, w1 } = useMemo(() => getWindow(dateStr, 6, 19), [dateStr]);
-  const windowMinutes = useMemo(() => Math.max(1, (w1.getTime() - w0.getTime()) / 60000), [w0, w1]);
+  const ticks = useMemo(() => {
+    // linhas a cada 30 min, label só a cada 1h (pra não poluir)
+    const out: { mins: number; label: string | null }[] = [];
+    for (let hh = 6; hh <= 19; hh++) {
+      const d0 = new Date(w0);
+      d0.setHours(hh, 0, 0, 0);
+      out.push({ mins: (d0.getTime() - w0.getTime()) / 60000, label: `${pad2(hh)}:00` });
+
+      if (hh !== 19) {
+        const d1 = new Date(w0);
+        d1.setHours(hh, 30, 0, 0);
+        out.push({ mins: (d1.getTime() - w0.getTime()) / 60000, label: null });
+      }
+    }
+    return out;
+  }, [w0]);
 
   const grouped = useMemo(() => {
     const byEquip = new Map<string, IntervalRow[]>();
@@ -178,86 +189,80 @@ export default function SigaSulMovimentosPage() {
       if (!byEquip.has(r.pos_equip_id)) byEquip.set(r.pos_equip_id, []);
       byEquip.get(r.pos_equip_id)!.push(r);
     }
-    return Array.from(byEquip.entries()).map(([pos_equip_id, rows]) => {
-      rows.sort((a, b) => new Date(a.ts_start).getTime() - new Date(b.ts_start).getTime());
-      const codigo = rows[0]?.codigo_equipamento || rows[0]?.pos_placa || pos_equip_id;
-      const placa = rows[0]?.pos_placa || "-";
 
-      let secDesloc = 0;
-      let secIdle = 0;
-      let secOff = 0;
-      let secUnk = 0;
+    return Array.from(byEquip.entries())
+      .map(([pos_equip_id, rows]) => {
+        rows.sort((a, b) => new Date(a.ts_start).getTime() - new Date(b.ts_start).getTime());
+        const codigo = rows[0]?.codigo_equipamento || rows[0]?.pos_placa || pos_equip_id;
+        const placa = rows[0]?.pos_placa || "-";
 
-      for (const x of rows) {
-        const s = (x.status_operacao || "").toUpperCase();
-        if (s === "DESLOCANDO") secDesloc += x.dt_sec;
-        else if (s === "LIGADO_PARADO") secIdle += x.dt_sec;
-        else if (s === "DESLIGADO") secOff += x.dt_sec;
-        else secUnk += x.dt_sec;
-      }
+        let secDesloc = 0;
+        let secParado = 0;
 
-      return {
-        pos_equip_id,
-        codigo,
-        placa,
-        rows,
-        secDesloc,
-        secIdle,
-        secOff,
-        secUnk,
-      };
-    });
+        for (const x of rows) {
+          const s = (x.status_operacao || "").toUpperCase();
+          if (s === "DESLOCANDO") secDesloc += x.dt_sec;
+          if (s === "LIGADO_PARADO") secParado += x.dt_sec;
+        }
+
+        return { pos_equip_id, codigo, placa, rows, secDesloc, secParado };
+      })
+      .sort((a, b) => String(a.codigo).localeCompare(String(b.codigo), "pt-BR"));
   }, [intervals]);
 
-  const ticks = useMemo(() => {
-    const t: { label: string; leftPct: number }[] = [];
-    for (let hh = 6; hh <= 19; hh++) {
-      const d = new Date(w0);
-      d.setHours(hh, 0, 0, 0);
-      const mins = (d.getTime() - w0.getTime()) / 60000;
-      const leftPct = (mins / windowMinutes) * 100;
-      t.push({ label: `${pad2(hh)}:00`, leftPct });
-      if (hh !== 19) {
-        const d2 = new Date(w0);
-        d2.setHours(hh, 30, 0, 0);
-        const mins2 = (d2.getTime() - w0.getTime()) / 60000;
-        const leftPct2 = (mins2 / windowMinutes) * 100;
-        t.push({ label: `${pad2(hh)}:30`, leftPct: leftPct2 });
-      }
-    }
-    return t;
-  }, [w0, windowMinutes]);
+  const styles: Record<string, React.CSSProperties> = {
+    page: { padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" },
+    h1: { fontSize: 26, fontWeight: 800, margin: "0 0 6px 0" },
+    sub: { fontSize: 13, color: "#52525b", marginBottom: 12 },
+    controls: { display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginBottom: 12 },
+    label: { fontSize: 12, color: "#52525b", marginBottom: 4 },
+    input: { border: "1px solid #d4d4d8", borderRadius: 8, padding: "8px 10px", fontSize: 14, background: "white" },
+    btn: { border: "1px solid #d4d4d8", borderRadius: 8, padding: "9px 12px", fontSize: 14, fontWeight: 700, background: "white", cursor: "pointer" },
+    box: { border: "1px solid #e4e4e7", borderRadius: 12, overflow: "auto", background: "white" },
+    tableMin: { minWidth: 1400 },
+    headerRow: { display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #e4e4e7", background: "#fafafa" },
+    cellLeft: { padding: 12, fontSize: 12, fontWeight: 800, color: "#52525b" },
+    cellRight: { padding: 12 },
+    tickArea: { position: "relative", height: 34 },
+    tickLine: { position: "absolute", top: 0, bottom: 0, width: 1, background: "#e4e4e7" },
+    tickLabel: { position: "absolute", top: 0, fontSize: 11, color: "#71717a", transform: "translateX(-50%)" },
+
+    row: { display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #f0f0f0" },
+    leftPad: { padding: 12 },
+    equipTitle: { display: "flex", gap: 8, alignItems: "center", fontWeight: 800, fontSize: 14 },
+    dot: { width: 10, height: 10, borderRadius: 999, display: "inline-block" },
+    placa: { fontSize: 12, color: "#52525b", marginTop: 4 },
+    mini: { fontSize: 12, color: "#52525b", marginTop: 8 },
+
+    barOuter: { position: "relative", height: 30, borderRadius: 10, background: "#f4f4f5", overflow: "hidden" },
+    seg: { position: "absolute", top: 0, bottom: 0 },
+  };
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex flex-col gap-1">
-        <h1 className="text-xl font-bold">SigaSul — Movimentos (Timeline)</h1>
-        <div className="text-sm text-zinc-600">
+    <div style={styles.page}>
+      <div>
+        <div style={styles.h1}>SigaSul — Movimentos (Timeline)</div>
+        <div style={styles.sub}>
           Verde = deslocando (proxy trabalho) · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido
         </div>
       </div>
 
       {err && (
-        <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-          <div className="font-semibold">Erro</div>
+        <div style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", padding: 12, borderRadius: 10, marginBottom: 12 }}>
+          <div style={{ fontWeight: 800, marginBottom: 4 }}>Erro</div>
           <div>{err}</div>
         </div>
       )}
 
-      <div className="flex flex-col md:flex-row gap-2 md:items-end">
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-zinc-600">Data</label>
-          <input
-            type="date"
-            className="border rounded px-2 py-2 text-sm"
-            value={dateStr}
-            onChange={(e) => setDateStr(e.target.value)}
-          />
+      <div style={styles.controls}>
+        <div>
+          <div style={styles.label}>Data</div>
+          <input type="date" style={styles.input} value={dateStr} onChange={(e) => setDateStr(e.target.value)} />
         </div>
 
-        <div className="flex flex-col gap-1">
-          <label className="text-xs text-zinc-600">Obra</label>
-          <select className="border rounded px-2 py-2 text-sm" value={obra} onChange={(e) => setObra(e.target.value)}>
+        <div>
+          <div style={styles.label}>Obra</div>
+          <select style={styles.input as any} value={obra} onChange={(e) => setObra(e.target.value)}>
             {obras.map((o) => (
               <option key={o} value={o}>
                 {o}
@@ -266,64 +271,63 @@ export default function SigaSulMovimentosPage() {
           </select>
         </div>
 
-        <button className="border rounded px-3 py-2 text-sm font-semibold" onClick={load} disabled={loading}>
+        <button style={styles.btn} onClick={load} disabled={loading}>
           {loading ? "Atualizando..." : "Atualizar agora"}
         </button>
       </div>
 
-      <div className="overflow-auto rounded-lg border">
-        <div className="min-w-[1250px]">
-          {/* Header com ticks */}
-          <div className="grid grid-cols-[220px_1fr] border-b bg-zinc-50">
-            <div className="p-3 text-xs font-semibold text-zinc-600">Equipamento</div>
-            <div className="p-3">
-              <div className="relative h-6">
-                {ticks.map((t) => (
-                  <div key={t.label} className="absolute top-0" style={{ left: `${t.leftPct}%` }}>
-                    <div className="text-[10px] text-zinc-500 -translate-x-1/2">{t.label}</div>
-                  </div>
-                ))}
+      <div style={styles.box}>
+        <div style={styles.tableMin}>
+          {/* header */}
+          <div style={styles.headerRow}>
+            <div style={styles.cellLeft}>Equipamento</div>
+            <div style={styles.cellRight}>
+              <div style={styles.tickArea}>
+                {ticks.map((t, idx) => {
+                  const leftPct = (t.mins / windowMinutes) * 100;
+                  return (
+                    <div key={idx}>
+                      <div style={{ ...styles.tickLine, left: `${leftPct}%` }} />
+                      {t.label && <div style={{ ...styles.tickLabel, left: `${leftPct}%` }}>{t.label}</div>}
+                    </div>
+                  );
+                })}
               </div>
             </div>
           </div>
 
-          {/* Linhas */}
+          {/* rows */}
           {grouped.map((g) => {
             const l = latest[g.pos_equip_id];
-            const dot = dotCls(l?.status_comunicacao || null);
+            const dot = dotColor(l?.status_comunicacao || null);
 
             return (
-              <div key={g.pos_equip_id} className="grid grid-cols-[220px_1fr] border-b">
-                <div className="p-3">
-                  <div className="flex items-center gap-2">
-                    <span className={`inline-block h-2.5 w-2.5 rounded-full ${dot}`} />
-                    <div className="font-semibold text-sm">{g.codigo}</div>
+              <div key={g.pos_equip_id} style={styles.row}>
+                <div style={styles.leftPad}>
+                  <div style={styles.equipTitle}>
+                    <span style={{ ...styles.dot, background: dot }} />
+                    <span>{g.codigo}</span>
                   </div>
-                  <div className="text-xs text-zinc-600 mt-1">{g.placa}</div>
-                  <div className="text-xs text-zinc-600 mt-2">
-                    <span className="font-semibold">Desloc:</span> {minutesToHHMM(g.secDesloc / 60)}{" "}
-                    <span className="mx-1">·</span>
-                    <span className="font-semibold">Parado:</span> {minutesToHHMM(g.secIdle / 60)}
+                  <div style={styles.placa}>{g.placa}</div>
+                  <div style={styles.mini}>
+                    <b>Desloc:</b> {minutesToHHMM(g.secDesloc / 60)} <span style={{ margin: "0 6px" }}>·</span>
+                    <b>Parado:</b> {minutesToHHMM(g.secParado / 60)}
                   </div>
                 </div>
 
-                <div className="p-3">
-                  <div className="relative h-8 rounded bg-zinc-100 overflow-hidden">
-                    {/* linhas verticais a cada 30 min */}
-                    {ticks.map((t) => (
-                      <div
-                        key={t.label}
-                        className="absolute top-0 bottom-0 w-px bg-zinc-200"
-                        style={{ left: `${t.leftPct}%` }}
-                      />
-                    ))}
+                <div style={{ padding: 12 }}>
+                  <div style={styles.barOuter}>
+                    {/* linhas verticais */}
+                    {ticks.map((t, idx) => {
+                      const leftPct = (t.mins / windowMinutes) * 100;
+                      return <div key={idx} style={{ ...styles.tickLine, left: `${leftPct}%`, background: "#e5e7eb" }} />;
+                    })}
 
                     {/* segmentos */}
                     {g.rows.map((r, idx) => {
                       const s = new Date(r.ts_start);
                       const e = new Date(r.ts_end);
 
-                      // clamp na janela
                       const start = Math.max(s.getTime(), w0.getTime());
                       const end = Math.min(e.getTime(), w1.getTime());
                       if (end <= start) return null;
@@ -337,9 +341,13 @@ export default function SigaSulMovimentosPage() {
                       return (
                         <div
                           key={`${r.pos_equip_id}-${r.ts_start}-${idx}`}
-                          className={`absolute top-0 bottom-0 ${statusColorCls(r.status_operacao)}`}
-                          style={{ left: `${leftPct}%`, width: `${widthPct}%` }}
-                          title={`${r.status_operacao} | ${fmt(new Date(r.ts_start))} → ${fmt(new Date(r.ts_end))} | ${r.obra ?? "SEM_OBRA"}`}
+                          style={{
+                            ...styles.seg,
+                            left: `${leftPct}%`,
+                            width: `${widthPct}%`,
+                            background: statusColor(r.status_operacao),
+                          }}
+                          title={`${r.status_operacao} | ${fmtBR(new Date(r.ts_start))} → ${fmtBR(new Date(r.ts_end))} | ${r.obra ?? "SEM_OBRA"}`}
                         />
                       );
                     })}
@@ -350,14 +358,12 @@ export default function SigaSulMovimentosPage() {
           })}
 
           {grouped.length === 0 && (
-            <div className="p-4 text-sm text-zinc-600">{loading ? "Carregando..." : "Sem dados no período/obra selecionados."}</div>
+            <div style={{ padding: 14, color: "#52525b" }}>
+              {loading ? "Carregando..." : "Sem dados no período/obra selecionados."}
+            </div>
           )}
         </div>
       </div>
     </div>
   );
-}
-
-function fmt(d: Date) {
-  return d.toLocaleString("pt-BR");
 }
