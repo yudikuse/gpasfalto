@@ -24,6 +24,7 @@ type LatestRow = {
 };
 
 type ObraRow = { obra: string };
+type DeviceRow = { pos_equip_id: string; codigo_equipamento: string | null; placa: string | null; ativo: boolean };
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -33,18 +34,15 @@ const supabase = createClient(
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
-
 function fmtBR(d: Date) {
   return d.toLocaleString("pt-BR");
 }
-
 function minutesToHHMM(mins: number) {
   const m = Math.max(0, Math.round(mins));
   const h = Math.floor(m / 60);
   const r = m % 60;
   return `${pad2(h)}:${pad2(r)}`;
 }
-
 function getWindow(dateStr: string, hhStart = 6, hhEnd = 19) {
   const [y, mo, d] = dateStr.split("-").map((x) => parseInt(x, 10));
   const w0 = new Date(y, mo - 1, d, hhStart, 0, 0, 0);
@@ -57,9 +55,8 @@ function statusColor(status: string) {
   if (t === "DESLOCANDO") return "#22c55e"; // verde
   if (t === "LIGADO_PARADO") return "#ef4444"; // vermelho
   if (t === "DESLIGADO") return "#d4d4d8"; // cinza
-  return "#a855f7"; // roxo (desconhecido)
+  return "#a855f7"; // roxo
 }
-
 function dotColor(com: string | null) {
   const t = (com || "").toUpperCase();
   if (t === "ONLINE") return "#22c55e";
@@ -68,7 +65,7 @@ function dotColor(com: string | null) {
   return "#a1a1aa";
 }
 
-export default function SigaSulMovimentosPage() {
+export default function GPAsfaltoMovimentosPage() {
   const todayStr = useMemo(() => {
     const d = new Date();
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
@@ -83,6 +80,7 @@ export default function SigaSulMovimentosPage() {
 
   const [intervals, setIntervals] = useState<IntervalRow[]>([]);
   const [latest, setLatest] = useState<Record<string, LatestRow>>({});
+  const [devices, setDevices] = useState<DeviceRow[]>([]);
 
   const { w0, w1 } = useMemo(() => getWindow(dateStr, 6, 19), [dateStr]);
   const windowMinutes = useMemo(() => Math.max(1, (w1.getTime() - w0.getTime()) / 60000), [w0, w1]);
@@ -96,6 +94,15 @@ export default function SigaSulMovimentosPage() {
     }
   }
 
+  async function loadDevices() {
+    const { data, error } = await supabase
+      .from("sigasul_device_map")
+      .select("pos_equip_id,codigo_equipamento,placa,ativo")
+      .eq("ativo", true)
+      .order("codigo_equipamento");
+    if (!error) setDevices(((data ?? []) as unknown) as DeviceRow[]);
+  }
+
   async function load() {
     setErr(null);
     setLoading(true);
@@ -107,12 +114,12 @@ export default function SigaSulMovimentosPage() {
       return;
     }
 
+    // 1) intervalos
     let q = supabase
       .from("sigasul_intervals")
       .select("pos_equip_id,codigo_equipamento,pos_placa,obra,ts_start,ts_end,dt_sec,status_operacao")
       .gte("ts_start", w0.toISOString())
       .lte("ts_start", w1.toISOString())
-      .order("codigo_equipamento", { ascending: true })
       .order("ts_start", { ascending: true });
 
     if (obra !== "TODAS") q = q.eq("obra", obra);
@@ -129,26 +136,23 @@ export default function SigaSulMovimentosPage() {
     const rows = ((data ?? []) as unknown) as IntervalRow[];
     setIntervals(rows);
 
-    const ids = Array.from(new Set(rows.map((r) => r.pos_equip_id).filter(Boolean)));
-    if (ids.length === 0) {
-      setLatest({});
-      setLoading(false);
-      return;
-    }
+    // 2) latest: pega de TODOS os devices ativos (pra não sumir ninguém)
+    const ids = devices.map((d) => d.pos_equip_id).filter(Boolean);
+    if (ids.length > 0) {
+      const { data: latestRows, error: latestErr } = await supabase
+        .from("sigasul_dashboard_latest")
+        .select("pos_equip_id,status_comunicacao,status_operacao,obra_final,data_ts")
+        .in("pos_equip_id", ids);
 
-    const { data: latestRows, error: latestErr } = await supabase
-      .from("sigasul_dashboard_latest")
-      .select("pos_equip_id,status_comunicacao,status_operacao,obra_final,data_ts")
-      .in("pos_equip_id", ids);
-
-    if (latestErr) {
-      setLatest({});
-    } else {
-      const map: Record<string, LatestRow> = {};
-      for (const r of ((latestRows ?? []) as unknown) as LatestRow[]) {
-        map[r.pos_equip_id] = r;
+      if (latestErr) {
+        setLatest({});
+      } else {
+        const map: Record<string, LatestRow> = {};
+        for (const r of ((latestRows ?? []) as unknown) as LatestRow[]) map[r.pos_equip_id] = r;
+        setLatest(map);
       }
-      setLatest(map);
+    } else {
+      setLatest({});
     }
 
     setLoading(false);
@@ -156,18 +160,19 @@ export default function SigaSulMovimentosPage() {
 
   useEffect(() => {
     loadObras();
+    loadDevices();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
+    if (devices.length === 0) return;
     load();
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateStr, obra]);
+  }, [dateStr, obra, devices.length]);
 
   const ticks = useMemo(() => {
-    // linhas a cada 30 min, label só a cada 1h (pra não poluir)
     const out: { mins: number; label: string | null }[] = [];
     for (let hh = 6; hh <= 19; hh++) {
       const d0 = new Date(w0);
@@ -183,53 +188,77 @@ export default function SigaSulMovimentosPage() {
     return out;
   }, [w0]);
 
-  const grouped = useMemo(() => {
-    const byEquip = new Map<string, IntervalRow[]>();
+  const byEquip = useMemo(() => {
+    const m = new Map<string, IntervalRow[]>();
     for (const r of intervals) {
-      if (!byEquip.has(r.pos_equip_id)) byEquip.set(r.pos_equip_id, []);
-      byEquip.get(r.pos_equip_id)!.push(r);
+      if (!m.has(r.pos_equip_id)) m.set(r.pos_equip_id, []);
+      m.get(r.pos_equip_id)!.push(r);
     }
+    for (const [k, v] of m.entries()) {
+      v.sort((a, b) => new Date(a.ts_start).getTime() - new Date(b.ts_start).getTime());
+      m.set(k, v);
+    }
+    return m;
+  }, [intervals]);
 
-    return Array.from(byEquip.entries())
-      .map(([pos_equip_id, rows]) => {
-        rows.sort((a, b) => new Date(a.ts_start).getTime() - new Date(b.ts_start).getTime());
-        const codigo = rows[0]?.codigo_equipamento || rows[0]?.pos_placa || pos_equip_id;
-        const placa = rows[0]?.pos_placa || "-";
-
+  const rowsToShow = useMemo(() => {
+    // sempre mostrar todos os ativos; se obra != TODAS, filtra por:
+    // - teve intervalo nessa obra no dia OU latest.obra_final = obra
+    return devices
+      .filter((d) => {
+        if (obra === "TODAS") return true;
+        const hadInterval = (byEquip.get(d.pos_equip_id) ?? []).some((x) => (x.obra ?? "") === obra);
+        const l = latest[d.pos_equip_id];
+        const isThereNow = (l?.obra_final ?? "") === obra;
+        return hadInterval || isThereNow;
+      })
+      .map((d) => {
+        const segs = byEquip.get(d.pos_equip_id) ?? [];
         let secDesloc = 0;
         let secParado = 0;
-
-        for (const x of rows) {
+        for (const x of segs) {
           const s = (x.status_operacao || "").toUpperCase();
           if (s === "DESLOCANDO") secDesloc += x.dt_sec;
           if (s === "LIGADO_PARADO") secParado += x.dt_sec;
         }
-
-        return { pos_equip_id, codigo, placa, rows, secDesloc, secParado };
+        return { device: d, segs, secDesloc, secParado };
       })
-      .sort((a, b) => String(a.codigo).localeCompare(String(b.codigo), "pt-BR"));
-  }, [intervals]);
+      .sort((a, b) => String(a.device.codigo_equipamento ?? a.device.placa ?? a.device.pos_equip_id).localeCompare(
+        String(b.device.codigo_equipamento ?? b.device.placa ?? b.device.pos_equip_id),
+        "pt-BR"
+      ));
+  }, [devices, byEquip, latest, obra]);
 
   const styles: Record<string, React.CSSProperties> = {
-    page: { padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif" },
-    h1: { fontSize: 26, fontWeight: 800, margin: "0 0 6px 0" },
-    sub: { fontSize: 13, color: "#52525b", marginBottom: 12 },
-    controls: { display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end", marginBottom: 12 },
+    page: { padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif", background: "#f6f7fb", minHeight: "100vh" },
+    topbar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
+    brand: { display: "flex", gap: 12, alignItems: "center" },
+    logo: {
+      width: 42, height: 42, borderRadius: 12,
+      background: "linear-gradient(135deg,#111827,#2563eb)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      color: "white", fontWeight: 900, letterSpacing: 0.5
+    },
+    h1: { fontSize: 22, fontWeight: 900, margin: 0 },
+    sub: { fontSize: 12, color: "#52525b", marginTop: 2 },
+    card: { background: "white", border: "1px solid #e5e7eb", borderRadius: 14, padding: 14, boxShadow: "0 1px 0 rgba(0,0,0,0.03)" },
+    controls: { display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-end" },
     label: { fontSize: 12, color: "#52525b", marginBottom: 4 },
-    input: { border: "1px solid #d4d4d8", borderRadius: 8, padding: "8px 10px", fontSize: 14, background: "white" },
-    btn: { border: "1px solid #d4d4d8", borderRadius: 8, padding: "9px 12px", fontSize: 14, fontWeight: 700, background: "white", cursor: "pointer" },
-    box: { border: "1px solid #e4e4e7", borderRadius: 12, overflow: "auto", background: "white" },
+    input: { border: "1px solid #d4d4d8", borderRadius: 10, padding: "8px 10px", fontSize: 14, background: "white" },
+    btn: { border: "1px solid #d4d4d8", borderRadius: 10, padding: "9px 12px", fontSize: 14, fontWeight: 800, background: "white", cursor: "pointer" },
+
+    box: { border: "1px solid #e5e7eb", borderRadius: 14, overflow: "auto", background: "white" },
     tableMin: { minWidth: 1400 },
-    headerRow: { display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #e4e4e7", background: "#fafafa" },
-    cellLeft: { padding: 12, fontSize: 12, fontWeight: 800, color: "#52525b" },
+    headerRow: { display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #e5e7eb", background: "#fafafa" },
+    cellLeft: { padding: 12, fontSize: 12, fontWeight: 900, color: "#52525b" },
     cellRight: { padding: 12 },
     tickArea: { position: "relative", height: 34 },
-    tickLine: { position: "absolute", top: 0, bottom: 0, width: 1, background: "#e4e4e7" },
+    tickLine: { position: "absolute", top: 0, bottom: 0, width: 1, background: "#e5e7eb" },
     tickLabel: { position: "absolute", top: 0, fontSize: 11, color: "#71717a", transform: "translateX(-50%)" },
 
-    row: { display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #f0f0f0" },
+    row: { display: "grid", gridTemplateColumns: "260px 1fr", borderBottom: "1px solid #f2f2f2" },
     leftPad: { padding: 12 },
-    equipTitle: { display: "flex", gap: 8, alignItems: "center", fontWeight: 800, fontSize: 14 },
+    equipTitle: { display: "flex", gap: 8, alignItems: "center", fontWeight: 900, fontSize: 14 },
     dot: { width: 10, height: 10, borderRadius: 999, display: "inline-block" },
     placa: { fontSize: 12, color: "#52525b", marginTop: 4 },
     mini: { fontSize: 12, color: "#52525b", marginTop: 8 },
@@ -240,45 +269,55 @@ export default function SigaSulMovimentosPage() {
 
   return (
     <div style={styles.page}>
-      <div>
-        <div style={styles.h1}>SigaSul — Movimentos (Timeline)</div>
-        <div style={styles.sub}>
-          Verde = deslocando (proxy trabalho) · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido
+      <div style={styles.topbar}>
+        <div style={styles.brand}>
+          <div style={styles.logo}>GP</div>
+          <div>
+            <h1 style={styles.h1}>GP Asfalto — Movimentos (Timeline)</h1>
+            <div style={styles.sub}>
+              Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido
+            </div>
+          </div>
         </div>
       </div>
 
       {err && (
-        <div style={{ border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", padding: 12, borderRadius: 10, marginBottom: 12 }}>
-          <div style={{ fontWeight: 800, marginBottom: 4 }}>Erro</div>
+        <div style={{ ...styles.card, border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", marginBottom: 12 }}>
+          <div style={{ fontWeight: 900, marginBottom: 4 }}>Erro</div>
           <div>{err}</div>
         </div>
       )}
 
-      <div style={styles.controls}>
-        <div>
-          <div style={styles.label}>Data</div>
-          <input type="date" style={styles.input} value={dateStr} onChange={(e) => setDateStr(e.target.value)} />
-        </div>
+      <div style={{ ...styles.card, marginBottom: 12 }}>
+        <div style={styles.controls}>
+          <div>
+            <div style={styles.label}>Data</div>
+            <input type="date" style={styles.input} value={dateStr} onChange={(e) => setDateStr(e.target.value)} />
+          </div>
 
-        <div>
-          <div style={styles.label}>Obra</div>
-          <select style={styles.input as any} value={obra} onChange={(e) => setObra(e.target.value)}>
-            {obras.map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
-        </div>
+          <div>
+            <div style={styles.label}>Obra</div>
+            <select style={styles.input as any} value={obra} onChange={(e) => setObra(e.target.value)}>
+              {obras.map((o) => (
+                <option key={o} value={o}>
+                  {o}
+                </option>
+              ))}
+            </select>
+          </div>
 
-        <button style={styles.btn} onClick={load} disabled={loading}>
-          {loading ? "Atualizando..." : "Atualizar agora"}
-        </button>
+          <button style={styles.btn} onClick={load} disabled={loading}>
+            {loading ? "Atualizando..." : "Atualizar agora"}
+          </button>
+
+          <div style={{ marginLeft: "auto", fontSize: 12, color: "#52525b" }}>
+            Equipamentos listados: <b>{rowsToShow.length}</b>
+          </div>
+        </div>
       </div>
 
       <div style={styles.box}>
         <div style={styles.tableMin}>
-          {/* header */}
           <div style={styles.headerRow}>
             <div style={styles.cellLeft}>Equipamento</div>
             <div style={styles.cellRight}>
@@ -296,35 +335,34 @@ export default function SigaSulMovimentosPage() {
             </div>
           </div>
 
-          {/* rows */}
-          {grouped.map((g) => {
-            const l = latest[g.pos_equip_id];
+          {rowsToShow.map(({ device, segs, secDesloc, secParado }) => {
+            const l = latest[device.pos_equip_id];
             const dot = dotColor(l?.status_comunicacao || null);
+            const nome = device.codigo_equipamento || device.placa || device.pos_equip_id;
+            const placa = device.placa || "-";
 
             return (
-              <div key={g.pos_equip_id} style={styles.row}>
+              <div key={device.pos_equip_id} style={styles.row}>
                 <div style={styles.leftPad}>
                   <div style={styles.equipTitle}>
                     <span style={{ ...styles.dot, background: dot }} />
-                    <span>{g.codigo}</span>
+                    <span>{nome}</span>
                   </div>
-                  <div style={styles.placa}>{g.placa}</div>
+                  <div style={styles.placa}>{placa}</div>
                   <div style={styles.mini}>
-                    <b>Desloc:</b> {minutesToHHMM(g.secDesloc / 60)} <span style={{ margin: "0 6px" }}>·</span>
-                    <b>Parado:</b> {minutesToHHMM(g.secParado / 60)}
+                    <b>Desloc:</b> {minutesToHHMM(secDesloc / 60)} <span style={{ margin: "0 6px" }}>·</span>
+                    <b>Parado:</b> {minutesToHHMM(secParado / 60)}
                   </div>
                 </div>
 
                 <div style={{ padding: 12 }}>
                   <div style={styles.barOuter}>
-                    {/* linhas verticais */}
                     {ticks.map((t, idx) => {
                       const leftPct = (t.mins / windowMinutes) * 100;
-                      return <div key={idx} style={{ ...styles.tickLine, left: `${leftPct}%`, background: "#e5e7eb" }} />;
+                      return <div key={idx} style={{ ...styles.tickLine, left: `${leftPct}%` }} />;
                     })}
 
-                    {/* segmentos */}
-                    {g.rows.map((r, idx) => {
+                    {segs.map((r, idx) => {
                       const s = new Date(r.ts_start);
                       const e = new Date(r.ts_end);
 
@@ -340,7 +378,7 @@ export default function SigaSulMovimentosPage() {
 
                       return (
                         <div
-                          key={`${r.pos_equip_id}-${r.ts_start}-${idx}`}
+                          key={`${device.pos_equip_id}-${r.ts_start}-${idx}`}
                           style={{
                             ...styles.seg,
                             left: `${leftPct}%`,
@@ -357,7 +395,7 @@ export default function SigaSulMovimentosPage() {
             );
           })}
 
-          {grouped.length === 0 && (
+          {rowsToShow.length === 0 && (
             <div style={{ padding: 14, color: "#52525b" }}>
               {loading ? "Carregando..." : "Sem dados no período/obra selecionados."}
             </div>
