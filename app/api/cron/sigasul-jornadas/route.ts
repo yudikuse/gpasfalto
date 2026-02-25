@@ -3,7 +3,19 @@ import { createClient } from "@supabase/supabase-js";
 
 export const runtime = "nodejs";
 
-type JornadaApi = {
+type JornadaApiEvent = {
+  id_evento?: number;
+  id_evento_controle?: number;
+  data_inicio?: string;
+  data_fim?: string;
+  id_tipo_evento?: number;
+  nome_tipo_evento?: string;
+  placa?: string;
+  latitude?: string | number;
+  longitude?: string | number;
+};
+
+type JornadaApiItem = {
   id_jornada?: number;
   data_inicial?: string;
   data_final?: string;
@@ -12,220 +24,307 @@ type JornadaApi = {
   cartao_motorista?: string;
   id_cliente?: number;
   nome_cliente?: string;
-  eventos?: Array<{
-    id_evento?: number;
-    id_evento_controle?: number;
-    data_inicio?: string;
-    data_fim?: string;
-    id_tipo_evento?: number;
-    nome_tipo_evento?: string;
-    placa?: string;
-    latitude?: string;
-    longitude?: string;
-  }>;
+  eventos?: JornadaApiEvent[];
 };
 
-function getEnv(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`missing_env_${name}`);
-  return v;
+function json(body: any, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
 }
 
-function getBearerFromAuthHeader(auth: string | null): string | null {
-  if (!auth) return null;
-  const m = auth.match(/^Bearer\s+(.+)$/i);
-  return m?.[1]?.trim() || null;
-}
+function getIncomingSecret(req: Request): string | null {
+  const url = new URL(req.url);
+  const qp = url.searchParams.get("secret");
+  if (qp && qp.trim()) return qp.trim();
 
-function normalizeBaseUrl(url: string): string {
-  return url.replace(/\/+$/, "");
-}
+  const auth = req.headers.get("authorization");
+  if (auth && auth.trim()) {
+    const m = auth.match(/^Bearer\s+(.+)$/i);
+    return (m ? m[1] : auth).trim();
+  }
 
-function isCronAuthorized(req: Request, cronSecret: string): boolean {
-  const u = new URL(req.url);
-
-  // 1) ?secret=...
-  const qsSecret = u.searchParams.get("secret");
-  if (qsSecret && qsSecret === cronSecret) return true;
-
-  // 2) Authorization: Bearer <secret>
-  const hdrBearer = getBearerFromAuthHeader(req.headers.get("authorization"));
-  if (hdrBearer && hdrBearer === cronSecret) return true;
-
-  // 3) x-cron-secret: <secret>
   const x = req.headers.get("x-cron-secret");
-  if (x && x === cronSecret) return true;
+  if (x && x.trim()) return x.trim();
 
-  return false;
+  return null;
 }
 
-async function handler(req: Request): Promise<Response> {
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v || !v.trim()) throw new Error(`Missing env: ${name}`);
+  return v.trim();
+}
+
+function normalizeBearer(token: string): string {
+  const t = token.trim();
+  if (!t) return "";
+  return /^bearer\s+/i.test(t) ? t : `Bearer ${t}`;
+}
+
+function toNumberOrNull(v: any): number | null {
+  if (v === null || v === undefined || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function toTextOrNull(v: any): string | null {
+  if (v === null || v === undefined) return null;
+  const s = String(v).trim();
+  return s ? s : null;
+}
+
+function chunk<T>(arr: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+async function handler(req: Request) {
+  // 1) Auth do CRON (Vercel/Supabase)
+  const expectedSecret = (process.env.CRON_SECRET || "").trim();
+  if (!expectedSecret) {
+    return json({ ok: false, error: "missing_cron_secret_env" }, 500);
+  }
+  const incomingSecret = getIncomingSecret(req);
+  if (!incomingSecret || incomingSecret !== expectedSecret) {
+    return json({ ok: false, error: "unauthorized" }, 401);
+  }
+
+  // 2) Supabase client
+  const supabaseUrl =
+    process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ||
+    process.env.SUPABASE_URL?.trim() ||
+    "";
+  if (!supabaseUrl) return json({ ok: false, error: "missing_supabase_url_env" }, 500);
+
+  const serviceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+  if (!serviceRoleKey) return json({ ok: false, error: "missing_service_role_key_env" }, 500);
+
+  const supabase = createClient(supabaseUrl, serviceRoleKey, {
+    auth: { persistSession: false },
+  });
+
+  // 3) SigaSul config
+  let baseUrl: string;
+  let apiToken: string;
   try {
-    const CRON_SECRET = getEnv("CRON_SECRET");
-    if (!isCronAuthorized(req, CRON_SECRET)) {
-      return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
-    }
+    baseUrl = requireEnv("SIGASUL_BASE_URL").replace(/\/+$/, "");
+    apiToken = requireEnv("SIGASUL_API_TOKEN");
+  } catch (e: any) {
+    return json({ ok: false, error: "missing_env", detail: e?.message || String(e) }, 500);
+  }
 
-    const SUPABASE_URL = getEnv("NEXT_PUBLIC_SUPABASE_URL");
-    const SERVICE_ROLE = getEnv("SUPABASE_SERVICE_ROLE_KEY");
+  const streamKey = "jornadas_events_v2";
 
-    const SIGASUL_BASE_URL = normalizeBaseUrl(getEnv("SIGASUL_BASE_URL"));
-    const SIGASUL_API_TOKEN = getEnv("SIGASUL_API_TOKEN");
+  // 4) Lê/garante state
+  const { data: stateRow, error: stateErr } = await supabase
+    .from("sigasul_jornadas_ingest_state")
+    .select("stream_key,last_evento_controle,last_status,last_error,last_run_at")
+    .eq("stream_key", streamKey)
+    .maybeSingle();
 
-    const supabase = createClient(SUPABASE_URL, SERVICE_ROLE, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
+  if (stateErr) {
+    return json({ ok: false, error: "supabase_state_read_failed", detail: stateErr.message }, 500);
+  }
 
-    const streamKey = "jornadas_events_v2";
-
-    // lê estado
-    const { data: stateRow, error: stErr } = await supabase
+  if (!stateRow) {
+    const { error: initErr } = await supabase
       .from("sigasul_jornadas_ingest_state")
-      .select("stream_key,last_evento_controle,last_status,last_error,last_run_at")
-      .eq("stream_key", streamKey)
-      .maybeSingle();
+      .insert({ stream_key: streamKey, last_evento_controle: null, last_status: "init" });
+    if (initErr) {
+      return json({ ok: false, error: "supabase_state_init_failed", detail: initErr.message }, 500);
+    }
+  }
 
-    if (stErr) throw new Error(`state_read_failed:${stErr.message}`);
+  const lastBefore = toNumberOrNull(stateRow?.last_evento_controle) ?? 0;
 
-    const lastEvento = stateRow?.last_evento_controle ?? null;
+  // 5) Busca eventos
+  // Endpoint v2 com cursor (id_evento_controle)
+  const usedUrl = `${baseUrl}/api/v2/jornadas/events/control/${lastBefore}`;
 
-    // URL conforme doc (primeira chamada sem idevento, depois com /v2/.../{idevento})
-    const usedUrl =
-      lastEvento && Number(lastEvento) > 0
-        ? `${SIGASUL_BASE_URL}/api/v2/jornadas/events/control/${Number(lastEvento)}`
-        : `${SIGASUL_BASE_URL}/api/jornadas/events/control`;
+  // manda 2 formas de auth ao mesmo tempo (pra matar o 401):
+  // - Authorization: Bearer <token>
+  // - token: <token>
+  const authBearer = normalizeBearer(apiToken);
+  const rawToken = apiToken.trim().replace(/^bearer\s+/i, "");
 
-    // NÃO reaproveitar req.headers aqui. Header da SigaSul TEM que ser o token dela.
-    const sigasulResp = await fetch(usedUrl, {
+  let payload: JornadaApiItem[] = [];
+  let httpStatus: number | null = null;
+  let httpText: string | null = null;
+
+  try {
+    const resp = await fetch(usedUrl, {
       method: "GET",
       headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-
-        // manda em 2 formatos pra cobrir variações de gateway
-        Authorization: `Bearer ${SIGASUL_API_TOKEN}`,
-        token: SIGASUL_API_TOKEN,
-        "x-api-token": SIGASUL_API_TOKEN,
+        accept: "application/json",
+        "content-type": "application/json",
+        authorization: authBearer, // funciona no módulo de rastreamento; pode funcionar aqui também
+        token: rawToken, // alguns endpoints usam header próprio
       },
+      // evita cache em ambiente serverless
       cache: "no-store",
     });
 
-    if (!sigasulResp.ok) {
-      const txt = await sigasulResp.text().catch(() => "");
-      // grava estado com erro
+    httpStatus = resp.status;
+    httpText = await resp.text();
+
+    if (!resp.ok) {
+      // guarda erro no state e retorna
       await supabase
         .from("sigasul_jornadas_ingest_state")
-        .upsert(
-          {
-            stream_key: streamKey,
-            last_evento_controle: lastEvento,
-            last_run_at: new Date().toISOString(),
-            last_status: "error",
-            last_error: `sigasul_http_${sigasulResp.status}: ${txt?.slice(0, 500) || ""}`,
-          },
-          { onConflict: "stream_key" }
-        );
+        .update({
+          last_run_at: new Date().toISOString(),
+          last_status: `http_${resp.status}`,
+          last_error: httpText?.slice(0, 2000) || null,
+        })
+        .eq("stream_key", streamKey);
 
-      return Response.json(
+      return json(
         {
           ok: false,
-          error: `sigasul_http_${sigasulResp.status}`,
-          detail: txt?.slice(0, 1000) || null,
+          error: "sigasul_http_error",
+          sigasul_status: resp.status,
           used_url: usedUrl,
-          last_evento_controle_before: lastEvento,
+          detail: httpText?.slice(0, 2000) || null,
+          last_evento_controle_before: lastBefore,
         },
-        { status: 200 }
+        200
       );
     }
 
-    const payload = (await sigasulResp.json()) as JornadaApi[];
-    const jornadas = Array.isArray(payload) ? payload : [];
-
-    // flatten eventos
-    const rows = jornadas.flatMap((j) =>
-      (j.eventos || []).map((e) => ({
-        id_evento_controle: e.id_evento_controle ?? null,
-        id_evento: e.id_evento ?? null,
-        id_jornada: j.id_jornada ?? null,
-        data_inicial_jornada: j.data_inicial ?? null,
-        data_final_jornada: j.data_final ?? null,
-        nome_motorista: j.nome_motorista ?? null,
-        id_motorista: j.id_motorista ?? null,
-        cartao_motorista: j.cartao_motorista ?? null,
-        id_cliente: j.id_cliente ?? null,
-        nome_cliente: j.nome_cliente ?? null,
-
-        data_inicio: e.data_inicio ?? null,
-        data_fim: e.data_fim ?? null,
-        id_tipo_evento: e.id_tipo_evento ?? null,
-        nome_tipo_evento: e.nome_tipo_evento ?? null,
-        placa: e.placa ?? null,
-        latitude: e.latitude ?? null,
-        longitude: e.longitude ?? null,
-
-        payload: { jornada: j, evento: e },
-      }))
-    );
-
-    // filtra sem id_evento_controle (não dá pra controlar incremental sem isso)
-    const rowsOk = rows.filter((r) => r.id_evento_controle !== null);
-
-    // calcula max id_evento_controle
-    let maxSeen: number | null = lastEvento ? Number(lastEvento) : null;
-    for (const r of rowsOk) {
-      const n = Number(r.id_evento_controle);
-      if (!Number.isNaN(n)) {
-        if (maxSeen === null || n > maxSeen) maxSeen = n;
-      }
-    }
-
-    // upsert em chunks
-    const chunkSize = 500;
-    let attempted = 0;
-
-    for (let i = 0; i < rowsOk.length; i += chunkSize) {
-      const chunk = rowsOk.slice(i, i + chunkSize);
-      attempted += chunk.length;
-
-      const { error } = await supabase
-        .from("sigasul_jornadas_events_raw")
-        .upsert(chunk, { onConflict: "id_evento_controle" });
-
-      if (error) throw new Error(`upsert_failed:${error.message}`);
-    }
-
-    // atualiza estado
+    // ok -> parse JSON
+    const parsed = JSON.parse(httpText || "[]");
+    payload = Array.isArray(parsed) ? (parsed as JornadaApiItem[]) : [];
+  } catch (e: any) {
     await supabase
       .from("sigasul_jornadas_ingest_state")
-      .upsert(
-        {
-          stream_key: streamKey,
-          last_evento_controle: maxSeen ?? lastEvento,
-          last_run_at: new Date().toISOString(),
-          last_status: "ok",
-          last_error: null,
-        },
-        { onConflict: "stream_key" }
-      );
+      .update({
+        last_run_at: new Date().toISOString(),
+        last_status: "fetch_error",
+        last_error: (e?.message || String(e)).slice(0, 2000),
+      })
+      .eq("stream_key", streamKey);
 
-    return Response.json({
-      ok: true,
-      used_url: usedUrl,
-      last_evento_controle_before: lastEvento,
-      max_id_seen: maxSeen,
-      jornadas_recebidas: jornadas.length,
-      eventos_recebidos: rowsOk.length,
-      rows_attempted_upsert: attempted,
-    });
-  } catch (err: any) {
-    return Response.json(
+    return json(
       {
         ok: false,
-        error: err?.message || String(err),
+        error: "fetch_failed",
+        used_url: usedUrl,
+        detail: e?.message || String(e),
+        last_evento_controle_before: lastBefore,
       },
-      { status: 200 }
+      200
     );
   }
+
+  // 6) Flatten e upsert
+  const rows: any[] = [];
+  let maxSeen = lastBefore;
+
+  for (const j of payload) {
+    const idJornada = toNumberOrNull(j.id_jornada);
+    const dataInicialJornada = toTextOrNull(j.data_inicial);
+    const dataFinalJornada = toTextOrNull(j.data_final);
+
+    const baseRow = {
+      id_jornada: idJornada,
+      data_inicial_jornada: dataInicialJornada,
+      data_final_jornada: dataFinalJornada,
+      nome_motorista: toTextOrNull(j.nome_motorista),
+      id_motorista: toNumberOrNull(j.id_motorista),
+      cartao_motorista: toTextOrNull(j.cartao_motorista),
+      id_cliente: toNumberOrNull(j.id_cliente),
+      nome_cliente: toTextOrNull(j.nome_cliente),
+    };
+
+    const eventos = Array.isArray(j.eventos) ? j.eventos : [];
+    for (const ev of eventos) {
+      const idControle = toNumberOrNull(ev.id_evento_controle);
+      if (!idControle) continue;
+
+      if (idControle > maxSeen) maxSeen = idControle;
+
+      rows.push({
+        id_evento_controle: idControle,
+        id_evento: toNumberOrNull(ev.id_evento),
+        ...baseRow,
+        data_inicio: toTextOrNull(ev.data_inicio),
+        data_fim: toTextOrNull(ev.data_fim),
+        id_tipo_evento: toNumberOrNull(ev.id_tipo_evento),
+        nome_tipo_evento: toTextOrNull(ev.nome_tipo_evento),
+        placa: toTextOrNull(ev.placa),
+        latitude: toTextOrNull(ev.latitude),
+        longitude: toTextOrNull(ev.longitude),
+        payload: {
+          jornada: j,
+          evento: ev,
+        },
+      });
+    }
+  }
+
+  let attempted = rows.length;
+  let upsertedBatches = 0;
+
+  if (rows.length > 0) {
+    const batches = chunk(rows, 500);
+    for (const b of batches) {
+      const { error: upErr } = await supabase
+        .from("sigasul_jornadas_events_raw")
+        .upsert(b, { onConflict: "id_evento_controle", ignoreDuplicates: true });
+
+      if (upErr) {
+        await supabase
+          .from("sigasul_jornadas_ingest_state")
+          .update({
+            last_run_at: new Date().toISOString(),
+            last_status: "upsert_error",
+            last_error: upErr.message,
+          })
+          .eq("stream_key", streamKey);
+
+        return json(
+          {
+            ok: false,
+            error: "supabase_upsert_failed",
+            detail: upErr.message,
+            used_url: usedUrl,
+            last_evento_controle_before: lastBefore,
+            max_id_seen: maxSeen,
+            rows_attempted_upsert: attempted,
+            sigasul_status: httpStatus,
+          },
+          200
+        );
+      }
+
+      upsertedBatches += 1;
+    }
+  }
+
+  // 7) Atualiza state
+  await supabase
+    .from("sigasul_jornadas_ingest_state")
+    .update({
+      last_evento_controle: maxSeen,
+      last_run_at: new Date().toISOString(),
+      last_status: "ok",
+      last_error: null,
+    })
+    .eq("stream_key", streamKey);
+
+  return json({
+    ok: true,
+    used_url: usedUrl,
+    sigasul_status: httpStatus,
+    last_evento_controle_before: lastBefore,
+    max_id_seen: maxSeen,
+    jornadas_received: payload.length,
+    rows_attempted_upsert: attempted,
+    upsert_batches: upsertedBatches,
+  });
 }
 
 export async function GET(req: Request) {
