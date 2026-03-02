@@ -1,3 +1,4 @@
+// FILE: app/oc/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -262,23 +263,34 @@ export default function OCPage() {
       }
 
       // 1) OC sequencial (editável)
+      // ✅ ÚNICA mudança: em vez de pegar "último por id", pega o MAIOR número de OC no banco.
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
           .select("numero_oc")
           .not("numero_oc", "is", null)
-          .order("id", { ascending: false })
-          .limit(120);
+          .limit(10000);
 
-        const last = (data || [])
-          .map((r: any) => String(r.numero_oc || ""))
-          .find((x) => x.toUpperCase().startsWith("OC"));
+        let maxFound: number | null = null;
 
-        let nextNum = 20000;
-        if (last) {
-          const digits = onlyDigits(last);
-          if (digits) nextNum = Number(digits) + 1;
-        }
+        (data || []).forEach((r: any) => {
+          const raw = String(r?.numero_oc || "").trim();
+          if (!raw) return;
+
+          // aceita "OC20892", "oc20892", " OC20892 " etc
+          const up = raw.toUpperCase();
+          if (!up.includes("OC")) return;
+
+          const digits = onlyDigits(up);
+          if (!digits) return;
+
+          const n = Number(digits);
+          if (!Number.isFinite(n)) return;
+
+          if (maxFound === null || n > maxFound) maxFound = n;
+        });
+
+        const nextNum = maxFound !== null ? maxFound + 1 : 20000;
         setNumeroOC(`OC${nextNum}`);
       } catch {
         setNumeroOC("OC20000");
