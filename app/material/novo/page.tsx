@@ -145,9 +145,7 @@ async function blobToDataURL(blob: Blob): Promise<string> {
  * Comprime/redimensiona a imagem antes de mandar pro OCR (base64).
  * Mantém o upload original para o Supabase.
  */
-async function makeOcrDataUrlFromImage(
-  file: File
-): Promise<{ dataUrl: string; note: string | null }> {
+async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; note: string | null }> {
   if (!file.type.startsWith("image/")) {
     return { dataUrl: await fileToDataURL(file), note: null };
   }
@@ -186,19 +184,13 @@ async function makeOcrDataUrlFromImage(
     ctx.drawImage(img, 0, 0, cw, ch);
 
     const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob(
-        (b) => (b ? resolve(b) : reject(new Error("Falha ao comprimir a imagem."))),
-        "image/jpeg",
-        0.82
-      );
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Falha ao comprimir a imagem."))), "image/jpeg", 0.82);
     });
 
     const dataUrl = await blobToDataURL(blob);
     return {
       dataUrl,
-      note: `Foto otimizada para OCR (${Math.round(file.size / 1024)}KB → ${Math.round(
-        blob.size / 1024
-      )}KB).`,
+      note: `Foto otimizada para OCR (${Math.round(file.size / 1024)}KB → ${Math.round(blob.size / 1024)}KB).`,
     };
   } finally {
     URL.revokeObjectURL(url);
@@ -240,6 +232,23 @@ function fmtQtd(v: number | null | undefined) {
   return String(Math.trunc(n));
 }
 
+function looksLikePlate(raw: string) {
+  const s = (raw || "").trim().toUpperCase();
+  if (!s) return false;
+  const compact = s.replace(/\s+/g, "");
+
+  // Mercosul: ABC1D23 (ou ABC-1D23)
+  if (/^[A-Z]{3}-?\d[A-Z]\d{2}$/.test(compact)) return true;
+
+  // Padrão antigo: ABC-1234
+  if (/^[A-Z]{3}-\d{4}$/.test(compact)) return true;
+
+  // OCR ruim que vira "NK2-7H69" (2 letras + dígito no meio) — ainda assim parece placa
+  if (/^[A-Z]{2}\d-?\d[A-Z0-9]\d{2}$/.test(compact)) return true;
+
+  return false;
+}
+
 function buildWhatsappMessage(p: {
   tipo: TicketTipo;
   veiculo: string;
@@ -275,7 +284,8 @@ function buildWhatsappMessage(p: {
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
   if (acum) {
-    msg += `\n📅 Acumulado\n`;
+    // ✅ pedido: mostrar "Acumulado Obra *X*" (X em negrito)
+    msg += `\n📅 Acumulado Obra *${obra}*\n`;
     msg += `Dia (com esta): ${fmtQtd(acum.dia_qtd)} ${unidadeQtd} • ${fmtT(acum.dia_total_t)} t\n`;
     msg += `Semana (Seg-Dom): ${fmtQtd(acum.semana_qtd)} ${unidadeQtd} • ${fmtT(acum.semana_total_t)} t\n`;
     msg += `Mês: ${fmtQtd(acum.mes_qtd)} ${unidadeQtd} • ${fmtT(acum.mes_total_t)} t\n`;
@@ -295,10 +305,9 @@ function buildWhatsappMessage(p: {
       msg += `Quantidade total: ${fmtT(resumo.total_t)} t\n`;
       msg += `Saldo a entregar: ${fmtT(resumo.saldo_t)} t\n`;
     }
-  } else {
-    msg += `\n⚠️ Plano (material_oc_plan) não encontrado pra esta Obra/OC/Material.\n`;
   }
 
+  // ✅ pedido: NÃO incluir alerta de plano na área de copiar/colar (WhatsApp)
   return msg;
 }
 
@@ -364,9 +373,7 @@ export default function MaterialTicketNovoPage() {
       ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`
       : null;
 
-    const timeISO = t
-      ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(2, "0")}:${String(t.ss).padStart(2, "0")}`
-      : null;
+    const timeISO = t ? `${String(t.hh).padStart(2, "0")}:${String(t.mm).padStart(2, "0")}:${String(t.ss).padStart(2, "0")}` : null;
 
     return {
       dataOk: Boolean(d),
@@ -384,8 +391,7 @@ export default function MaterialTicketNovoPage() {
     setSavedId(null);
 
     if (!file) return setError("Tire/Envie a foto do ticket."), false;
-    if (file.type?.includes("pdf"))
-      return setError("OCR ainda não suporta PDF. Envie imagem (jpg/png/webp)."), false;
+    if (file.type?.includes("pdf")) return setError("OCR ainda não suporta PDF. Envie imagem (jpg/png/webp)."), false;
 
     if (!veiculo.trim()) return setError("Preencha o veículo."), false;
     if (!origem.trim()) return setError("Preencha a origem."), false;
@@ -419,13 +425,7 @@ export default function MaterialTicketNovoPage() {
     }
   }
 
-  async function loadAcumulados(
-    tipoVal: TicketTipo,
-    obraVal: string,
-    ocVal: string | null,
-    matVal: string,
-    dataISO: string
-  ): Promise<Acumulados | null> {
+  async function loadAcumulados(tipoVal: TicketTipo, obraVal: string, ocVal: string | null, matVal: string, dataISO: string): Promise<Acumulados | null> {
     try {
       const { data, error } = await supabase.rpc("material_ticket_acumulados", {
         p_tipo: tipoVal,
@@ -440,6 +440,45 @@ export default function MaterialTicketNovoPage() {
       return (row as any) ?? null;
     } catch {
       return null;
+    }
+  }
+
+  // ✅ quando faltar plano, cadastra como ILIMITADO (obra+oc+material)
+  async function ensurePlanIlimitado(obraVal: string, ocVal: string | null, matVal: string): Promise<boolean> {
+    try {
+      const obraTrim = (obraVal || "").trim();
+      const matTrim = (matVal || "").trim();
+
+      if (!obraTrim || !matTrim) return false;
+
+      // evita cadastrar lixo quando OCR lê placa como obra
+      if (looksLikePlate(obraTrim)) return false;
+
+      let q = supabase.from("material_oc_plan").select("id").ilike("obra", obraTrim).ilike("material", matTrim).limit(1);
+
+      if (ocVal) q = q.eq("oc", ocVal);
+      else q = q.is("oc", null);
+
+      const existing = await q.maybeSingle();
+      if (!existing.error && existing.data?.id) return false;
+
+      const ins = await supabase
+        .from("material_oc_plan")
+        .insert({
+          obra: obraTrim,
+          oc: ocVal,
+          material: matTrim,
+          ilimitado: true,
+          total_t: null,
+          tolerancia_t: null,
+        })
+        .select("id")
+        .single();
+
+      if (ins.error) return false;
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -569,15 +608,32 @@ export default function MaterialTicketNovoPage() {
 
       const newId = ins.data?.id ?? null;
       setSavedId(newId);
-      setSavedMsg("Salvo com sucesso!");
 
-      // ✅ acumulados (Dia/Semana/Mês)
+      // ✅ acumulados (Dia/Semana/Mês) — por Obra/OC/Material (via RPC)
       const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
       setLastAcum(acum);
 
-      // ✅ plano (obra/oc/material)
-      const resumo = await loadResumo(obraVal, ocVal, material.trim());
+      // ✅ plano (obra/oc/material) — se não existir, cria como ILIMITADO e tenta de novo
+      let resumo = await loadResumo(obraVal, ocVal, material.trim());
+      let createdPlan = false;
+
+      if (!resumo) {
+        createdPlan = await ensurePlanIlimitado(obraVal, ocVal, material.trim());
+        if (createdPlan) {
+          resumo = await loadResumo(obraVal, ocVal, material.trim());
+        }
+      }
+
       setLastResumo(resumo);
+
+      if (createdPlan) {
+        setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
+      } else if (!resumo) {
+        // mantém o aviso na UI (não vai pro WhatsApp)
+        setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
+      } else {
+        setSavedMsg("Salvo com sucesso!");
+      }
 
       if (newId) {
         setLastPayload({
@@ -682,9 +738,7 @@ export default function MaterialTicketNovoPage() {
     btnPrimary: {
       borderRadius: 14,
       border: "1px solid #fb7185",
-      background: saving
-        ? "linear-gradient(180deg, #94a3b8, #64748b)"
-        : "linear-gradient(180deg, #ff4b2b, #fb7185)",
+      background: saving ? "linear-gradient(180deg, #94a3b8, #64748b)" : "linear-gradient(180deg, #ff4b2b, #fb7185)",
       color: "#fff",
       fontWeight: 900,
       padding: "12px 14px",
@@ -745,19 +799,41 @@ export default function MaterialTicketNovoPage() {
           </div>
 
           {error ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #fecaca",
+                background: "#fef2f2",
+                color: "#991b1b",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {error}
             </div>
           ) : null}
 
           {savedMsg ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #bbf7d0",
+                background: "#f0fdf4",
+                color: "#166534",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
 
               {lastAcum ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
-                  <b>Dia:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t<br />
-                  <b>Semana (Seg-Dom):</b> {fmtQtd(lastAcum.semana_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.semana_total_t)} t<br />
+                  <b>Dia:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t
+                  <br />
+                  <b>Semana (Seg-Dom):</b> {fmtQtd(lastAcum.semana_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.semana_total_t)} t
+                  <br />
                   <b>Mês:</b> {fmtQtd(lastAcum.mes_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.mes_total_t)} t
                 </div>
               ) : null}
@@ -765,9 +841,7 @@ export default function MaterialTicketNovoPage() {
               {lastResumo ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
                   <b>Controle:</b>{" "}
-                  {lastResumo.ilimitado
-                    ? `ILIMITADO`
-                    : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
+                  {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
                 </div>
               ) : null}
             </div>
@@ -816,7 +890,14 @@ export default function MaterialTicketNovoPage() {
                 <img
                   src={previewUrl}
                   alt="Preview do ticket"
-                  style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}
+                  style={{
+                    width: "100%",
+                    maxHeight: 420,
+                    objectFit: "contain",
+                    borderRadius: 16,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                  }}
                 />
               ) : null}
             </div>
@@ -849,7 +930,13 @@ export default function MaterialTicketNovoPage() {
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data *</label>
-              <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={dataBr}
+                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
+                placeholder="15/01/26"
+              />
               <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
             </div>
 
@@ -882,9 +969,7 @@ export default function MaterialTicketNovoPage() {
                 onChange={(e) => setOc(e.target.value)}
                 placeholder="Ex.: 32026 (deixe vazio pra prefeitura/ordem ilimitada)"
               />
-              <div style={styles.hint}>
-                Se a obra for “infinita” (prefeitura), pode deixar vazio (OC = NULL).
-              </div>
+              <div style={styles.hint}>Se a obra for “infinita” (prefeitura), pode deixar vazio (OC = NULL).</div>
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
@@ -910,7 +995,7 @@ export default function MaterialTicketNovoPage() {
                     overflow: "auto",
                   }}
                 >
-{ocrRaw}
+                  {ocrRaw}
                 </pre>
               </div>
             ) : null}
