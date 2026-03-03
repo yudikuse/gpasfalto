@@ -31,6 +31,17 @@ type Acumulados = {
   mes_total_t: number | null;
 };
 
+type EntradaControle = {
+  origem: string;
+  obra: string;
+  material: string;
+  pedido_total_t: number | null;
+  entrada_total_t: number | null;
+  saldo_rest_t: number | null;
+  plan_id?: number | null;
+  inicio_em?: string | null;
+};
+
 function extFromFile(file: File) {
   const t = (file.type || "").toLowerCase();
   if (t.includes("png")) return "png";
@@ -247,6 +258,21 @@ function fmtQtd(v: number | null | undefined) {
   return String(Math.trunc(n));
 }
 
+// ✅ pt-BR para o bloco de ENTRADA (pedido/entregue/saldo)
+function fmtPtBR(v: number | null | undefined, dec: number) {
+  if (v === null || v === undefined) return "-";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  return new Intl.NumberFormat("pt-BR", { minimumFractionDigits: dec, maximumFractionDigits: dec }).format(n);
+}
+function fmtPtBRIntSmart(v: number | null | undefined) {
+  if (v === null || v === undefined) return "-";
+  const n = Number(v);
+  if (!Number.isFinite(n)) return "-";
+  const isInt = Math.abs(n - Math.round(n)) < 1e-9;
+  return fmtPtBR(n, isInt ? 0 : 2);
+}
+
 function looksLikePlate(raw: string) {
   const s = (raw || "").trim().toUpperCase();
   if (!s) return false;
@@ -264,6 +290,37 @@ function looksLikePlate(raw: string) {
   return false;
 }
 
+// ✅ normalização simples (remove acento) para mapear ENTRADA FETZ
+function stripDiacritics(s: string) {
+  return (s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+function normKeySimple(s: string) {
+  return stripDiacritics(String(s || "").trim().toUpperCase().replace(/\s+/g, " "));
+}
+
+function normalizeEntradaOrigemForPlan(raw: string) {
+  const k = normKeySimple(raw);
+  if (k.includes("FETZ")) return "FETZ MINERADORA";
+  return normalizeText(raw);
+}
+
+function normalizeEntradaObraForPlan(raw: string) {
+  const s = normalizeObraName(raw);
+  const k = normKeySimple(s);
+  if (k.includes("PATIO USINA")) return "PÁTIO USINA (FETZ+FRETE)";
+  return s;
+}
+
+function normalizeEntradaMaterialForPlan(raw: string) {
+  const k = normKeySimple(raw);
+  if (k.includes("PO BRITA") || k.includes("PÓ BRITA")) return "PO BRITA";
+  if (k.includes("BRITA ZERO") || k.includes("BRITA 0")) return "BRITA ZERO";
+  if (k.includes("BRITA 01") || k.includes("BRITA 1") || k.includes("BRITA1")) return "BRITA 01";
+  return stripDiacritics((raw || "").trim()).toUpperCase().replace(/\s+/g, " ");
+}
+
 function buildWhatsappMessage(p: {
   tipo: TicketTipo;
   veiculo: string;
@@ -277,8 +334,9 @@ function buildWhatsappMessage(p: {
   savedId?: number | null;
   resumo?: OcResumo | null;
   acum?: Acumulados | null;
+  entradaCtrl?: EntradaControle | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum, entradaCtrl } = p;
 
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
@@ -297,6 +355,16 @@ function buildWhatsappMessage(p: {
     `Material: ${material}\n` +
     `Ordem de Compra: ${oc ? oc : "-"}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
+
+  // ✅ BLOCO DO CONTROLE DE ENTRADA (FETZ / plano material_entrada_controle_v)
+  if (tipo === "ENTRADA" && entradaCtrl && entradaCtrl.pedido_total_t !== null) {
+    msg += `\n📦 Controle de Entrada\n`;
+    msg += `Obra: ${entradaCtrl.obra}\n`;
+    msg += `Material: ${entradaCtrl.material}\n`;
+    msg += `Quantidade total: ${fmtPtBRIntSmart(entradaCtrl.pedido_total_t)} toneladas\n`;
+    msg += `Entrada total com esta: ${fmtPtBR(entradaCtrl.entrada_total_t, 2)} Toneladas\n`;
+    msg += `A entregar: ${fmtPtBR(entradaCtrl.saldo_rest_t, 2)} tonelada\n`;
+  }
 
   if (acum) {
     msg += `\n📅 Acumulado Obra *${obra}*\n`;
@@ -366,6 +434,7 @@ export default function MaterialTicketNovoPage() {
 
   const [lastResumo, setLastResumo] = useState<OcResumo | null>(null);
   const [lastAcum, setLastAcum] = useState<Acumulados | null>(null);
+  const [lastEntradaCtrl, setLastEntradaCtrl] = useState<EntradaControle | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -451,6 +520,32 @@ export default function MaterialTicketNovoPage() {
       if (error) return null;
       const row = Array.isArray(data) ? data[0] : data;
       return (row as any) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ✅ ENTRADA: pega pedido/entregue/saldo do view material_entrada_controle_v
+  async function loadEntradaControle(orig: string, obraVal: string, mat: string): Promise<EntradaControle | null> {
+    try {
+      const origemPlan = normalizeEntradaOrigemForPlan(orig);
+      const obraPlan = normalizeEntradaObraForPlan(obraVal);
+      const matPlan = normalizeEntradaMaterialForPlan(mat);
+
+      // só tenta se for algo “planejável”
+      if (!origemPlan || !obraPlan || !matPlan) return null;
+
+      const { data, error } = await supabase
+        .from("material_entrada_controle_v")
+        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
+        .eq("origem", origemPlan)
+        .eq("obra", obraPlan)
+        .eq("material", matPlan)
+        .limit(1)
+        .maybeSingle();
+
+      if (error) return null;
+      return (data as any) ?? null;
     } catch {
       return null;
     }
@@ -569,6 +664,7 @@ export default function MaterialTicketNovoPage() {
     setError(null);
     setLastResumo(null);
     setLastAcum(null);
+    setLastEntradaCtrl(null);
 
     try {
       const dateISO = parsed.dataISO!;
@@ -628,6 +724,12 @@ export default function MaterialTicketNovoPage() {
       // ✅ acumulados (Dia/Semana/Mês) — por Obra/OC/Material (via RPC)
       const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
       setLastAcum(acum);
+
+      // ✅ ENTRADA: carrega controle (pedido/entregue/saldo) se existir no view
+      if (tipo === "ENTRADA") {
+        const ctrl = await loadEntradaControle(origem.trim(), obraVal, material.trim());
+        setLastEntradaCtrl(ctrl);
+      }
 
       // ✅ plano (obra/oc/material) — se não existir, cria como ILIMITADO e tenta de novo
       let resumo = await loadResumo(obraVal, ocVal, material.trim());
@@ -696,6 +798,7 @@ export default function MaterialTicketNovoPage() {
       savedId: lastPayload.id,
       resumo: lastResumo,
       acum: lastAcum,
+      entradaCtrl: lastEntradaCtrl,
     });
 
     try {
@@ -853,6 +956,13 @@ export default function MaterialTicketNovoPage() {
                 </div>
               ) : null}
 
+              {lastEntradaCtrl && tipo === "ENTRADA" ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
+                  <b>Entrada (pedido/entregue/saldo):</b> {lastEntradaCtrl.material} • Pedido: {fmtPtBRIntSmart(lastEntradaCtrl.pedido_total_t)} •
+                  Entregue: {fmtPtBR(lastEntradaCtrl.entrada_total_t, 2)} • Saldo: {fmtPtBR(lastEntradaCtrl.saldo_rest_t, 2)}
+                </div>
+              ) : null}
+
               {lastResumo ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
                   <b>Controle:</b>{" "}
@@ -887,6 +997,7 @@ export default function MaterialTicketNovoPage() {
                   setLastShareFile(null);
                   setLastResumo(null);
                   setLastAcum(null);
+                  setLastEntradaCtrl(null);
                 }}
               />
 
