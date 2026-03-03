@@ -202,9 +202,24 @@ function normalizeVehicle(v: string | null) {
   if (!s) return "";
   return s.toUpperCase();
 }
+
 function normalizeText(v: string | null) {
   return (v || "").trim();
 }
+
+/**
+ * ✅ Normaliza OBRA/DESTINO para evitar duplicidade:
+ * Ex.: "POSTO MAHLE JATAI - GO" == "POSTO MAHLE JATAI-GO"
+ * Regra: trim + colapsa espaços + padroniza sufixo " - UF" no final.
+ */
+function normalizeObraName(v: string | null) {
+  let s = (v || "").trim();
+  if (!s) return "";
+  s = s.replace(/\s+/g, " ");
+  s = s.replace(/\s*-\s*([A-Za-z]{2})$/, (_m, uf) => ` - ${String(uf).toUpperCase()}`);
+  return s;
+}
+
 function normalizeDateFromOcrToMasked(v: string | null) {
   return (v || "").trim();
 }
@@ -284,7 +299,6 @@ function buildWhatsappMessage(p: {
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
   if (acum) {
-    // ✅ pedido: mostrar "Acumulado Obra *X*" (X em negrito)
     msg += `\n📅 Acumulado Obra *${obra}*\n`;
     msg += `Dia (com esta): ${fmtQtd(acum.dia_qtd)} ${unidadeQtd} • ${fmtT(acum.dia_total_t)} t\n`;
     msg += `Semana (Seg-Dom): ${fmtQtd(acum.semana_qtd)} ${unidadeQtd} • ${fmtT(acum.semana_total_t)} t\n`;
@@ -307,7 +321,6 @@ function buildWhatsappMessage(p: {
     }
   }
 
-  // ✅ pedido: NÃO incluir alerta de plano na área de copiar/colar (WhatsApp)
   return msg;
 }
 
@@ -446,7 +459,7 @@ export default function MaterialTicketNovoPage() {
   // ✅ quando faltar plano, cadastra como ILIMITADO (obra+oc+material)
   async function ensurePlanIlimitado(obraVal: string, ocVal: string | null, matVal: string): Promise<boolean> {
     try {
-      const obraTrim = (obraVal || "").trim();
+      const obraTrim = normalizeObraName(obraVal);
       const matTrim = (matVal || "").trim();
 
       if (!obraTrim || !matTrim) return false;
@@ -524,7 +537,10 @@ export default function MaterialTicketNovoPage() {
       const f = js?.fields || {};
       const v = normalizeVehicle(f.veiculo || null);
       const o = normalizeText(f.origem || null);
-      const d = normalizeText(f.destino || null);
+
+      // ✅ AQUI está o fix: normaliza obra/destino vindo do OCR
+      const d = normalizeObraName(f.destino || null);
+
       const m = normalizeText(f.material || null);
       const dt = normalizeDateFromOcrToMasked(f.data_br || null);
       const hr = normalizeTimeFromOcrToMasked(f.horario || null);
@@ -575,8 +591,8 @@ export default function MaterialTicketNovoPage() {
 
       const ocVal = oc.trim() ? oc.trim() : null;
 
-      // ✅ FIX: a obra precisa existir na coluna "obra" também (seu RPC/plan usam "obra")
-      const obraVal = destino.trim();
+      // ✅ FIX: normaliza a obra/destino ANTES de salvar e ANTES de calcular acumulados/plano
+      const obraVal = normalizeObraName(destino);
 
       const ins = await supabase
         .from("material_tickets")
@@ -629,7 +645,6 @@ export default function MaterialTicketNovoPage() {
       if (createdPlan) {
         setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
       } else if (!resumo) {
-        // mantém o aviso na UI (não vai pro WhatsApp)
         setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
       } else {
         setSavedMsg("Salvo com sucesso!");
