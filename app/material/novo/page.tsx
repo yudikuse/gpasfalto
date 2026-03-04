@@ -144,90 +144,82 @@ async function fileToDataURL(file: File): Promise<string> {
   });
 }
 
-async function blobToDataURL(blob: Blob): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Falha ao converter imagem."));
-    reader.onload = () => resolve(String(reader.result || ""));
-    reader.readAsDataURL(blob);
-  });
-}
-
-/**
- * ✅ FIX DO 413:
- * Comprime/redimensiona a imagem antes de mandar pro OCR (base64).
- * Mantém o upload original para o Supabase.
- */
 async function makeOcrDataUrlFromImage(file: File): Promise<{ dataUrl: string; note: string | null }> {
-  if (!file.type.startsWith("image/")) {
-    return { dataUrl: await fileToDataURL(file), note: null };
-  }
+  const MAX_BYTES = 4_500_000;
 
-  if (file.size <= 900_000) {
-    return { dataUrl: await fileToDataURL(file), note: null };
-  }
-
-  const url = URL.createObjectURL(file);
   try {
+    const dataUrl = await fileToDataURL(file);
+    const b64 = String(dataUrl.split(",")[1] || "");
+    const approxBytes = Math.ceil((b64.length * 3) / 4);
+
+    if (approxBytes <= MAX_BYTES) {
+      return { dataUrl, note: null };
+    }
+
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const i = new Image();
       i.onload = () => resolve(i);
-      i.onerror = () => reject(new Error("Falha ao carregar a imagem para compressão."));
-      i.src = url;
+      i.onerror = () => reject(new Error("Falha ao abrir imagem para otimização."));
+      i.src = dataUrl;
     });
-
-    const w = img.naturalWidth || img.width;
-    const h = img.naturalHeight || img.height;
-
-    const maxW = 1600;
-    const maxH = 1600;
-    const scale = Math.min(1, maxW / w, maxH / h);
-
-    const cw = Math.max(1, Math.round(w * scale));
-    const ch = Math.max(1, Math.round(h * scale));
 
     const canvas = document.createElement("canvas");
-    canvas.width = cw;
-    canvas.height = ch;
     const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      return { dataUrl: await fileToDataURL(file), note: null };
+    if (!ctx) return { dataUrl, note: null };
+
+    let scale = Math.sqrt(MAX_BYTES / approxBytes);
+    scale = Math.max(0.2, Math.min(1, scale));
+
+    canvas.width = Math.max(320, Math.floor(img.width * scale));
+    canvas.height = Math.max(320, Math.floor(img.height * scale));
+
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+    let quality = 0.86;
+    let out = canvas.toDataURL("image/jpeg", quality);
+
+    for (let i = 0; i < 8; i++) {
+      const b64o = out.split(",")[1] || "";
+      const bytes = Math.ceil((b64o.length * 3) / 4);
+      if (bytes <= MAX_BYTES) break;
+      quality = Math.max(0.5, quality - 0.06);
+      out = canvas.toDataURL("image/jpeg", quality);
     }
 
-    ctx.drawImage(img, 0, 0, cw, ch);
-
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error("Falha ao comprimir a imagem."))), "image/jpeg", 0.82);
-    });
-
-    const dataUrl = await blobToDataURL(blob);
     return {
-      dataUrl,
-      note: `Foto otimizada para OCR (${Math.round(file.size / 1024)}KB → ${Math.round(blob.size / 1024)}KB).`,
+      dataUrl: out,
+      note: "Foto otimizada automaticamente (para caber no limite do OCR).",
     };
-  } finally {
-    URL.revokeObjectURL(url);
+  } catch {
+    const dataUrl = await fileToDataURL(file);
+    return { dataUrl, note: null };
   }
 }
 
 function normalizeVehicle(v: string | null) {
-  const s = (v || "").trim();
+  const s = (v || "").trim().toUpperCase();
   if (!s) return "";
-  return s.toUpperCase();
+  const compact = s.replace(/\s+/g, "");
+  return compact;
 }
 
 function normalizeText(v: string | null) {
-  return (v || "").trim();
-}
-
-/**
- * ✅ Normaliza OBRA/DESTINO para evitar duplicidade
- */
-function normalizeObraName(v: string | null) {
   let s = (v || "").trim();
   if (!s) return "";
   s = s.replace(/\s+/g, " ");
   s = s.replace(/\s*-\s*([A-Za-z]{2})$/, (_m, uf) => ` - ${String(uf).toUpperCase()}`);
+  return s;
+}
+
+function normalizeObraName(v: string) {
+  const s = normalizeText(v);
+  if (!s) return "";
+
+  const u = s.toUpperCase();
+  if (u === "GPA ENGENHARIA") return "GPA ENGENHARIA";
+  if (u === "PATIO USINA (FETZ+FRETE)") return PATIO_FETZ_OBRA;
+  if (u === "PÁTIO USINA (FETZ+FRETE)") return PATIO_FETZ_OBRA;
+
   return s;
 }
 
@@ -291,7 +283,7 @@ function isHeaderLine(s: string) {
 
   // cabeçalhos comuns
   if (
-    /(GPA\s+ENGENHARIA\s+E\s+CONSTRU|TICKET\s+DE\s+PES|PESAGEM|PESAGEM\s+FINAL|PESAGEM\s+INICIAL|PESAGEM\s+FINAL\s+OK|VEIC\/CAVALO|MOTORISTA|ASSINATURA|RECEBIMENTO|INSPE|OBS\.?|UA-\d+|N°|TICKET\s+N|P\.\s*GERAL|P\.\s*OBRA)/i.test(
+    /(GPA\s+ENGENHARIA\s+E\s+CONSTRU|TICKET\s+DE\s+PES|TICKET\s+DE\s+PESA\s*GEM|PESAGEM|PESAGEM\s+FINAL|PESAGEM\s+INICIAL|PESAGEM\s+FINAL\s+OK|PESA\s*GEM|PESA\s*GEM\s+FINAL\s+OK|PESA\s*GEM\s+INICIAL|VEIC\/CAVALO|MOTORISTA|ASSINATURA|RECEBIMENTO|INSPE|OBS\.?|UA-\d+|N°|TICKET\s+N|P\.\s*GERAL|P\.\s*OBRA)/i.test(
       u
     )
   )
@@ -356,7 +348,7 @@ function normalizeMaterialForMsg(s: string) {
  * - origem: marcador 3
  * - destino: marcador 1
  * - material: marcador 4 (ou varredura por BRITA/PÓ BRITA)
- * - peso: número logo após a ÚLTIMA "PESAGEM INICIAL" (peso líquido)
+ * - peso: calcula pelo bloco de pesos (líquido = max - min, ou usa o valor já impresso)
  */
 function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; material?: string; peso?: string } | null {
   const lines = String(raw || "")
@@ -428,25 +420,79 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     if (cand) material = cand;
   }
 
-  // peso líquido: número após a ÚLTIMA "PESAGEM INICIAL"
+  // peso (t): tenta achar 2 ou 3 pesos (ex.: 17.710 / 47.340 / 29.630)
+  // Preferência: janela logo após o horário, até antes de "OBS"/"RECEBIMENTO"/etc.
   let peso: string | null = null;
-  let lastPI = -1;
-  for (let i = 0; i < lines.length; i++) {
-    if ((lines[i] || "").trim().toUpperCase() === "PESAGEM INICIAL") lastPI = i;
-  }
 
-  const pickWeightAfter = (start: number) => {
-    for (let j = start + 1; j < lines.length; j++) {
-      const s = (lines[j] || "").trim();
+  const parseWeightsFromLines = (arr: string[]) => {
+    const out: number[] = [];
+    for (const ln of arr) {
+      const s = (ln || "").trim();
       if (!s) continue;
-      // 29.320 / 29,320 etc
-      const m = s.match(/^(\d{1,3})([.,])(\d{3})$/);
-      if (m) return `${m[1]}.${m[3]}`;
+
+      const it = s.matchAll(/(\d{1,3}[.,]\d{3})/g);
+      for (const m of it as any) {
+        const num = Number.parseFloat(String(m[1]).replace(",", "."));
+        if (Number.isFinite(num)) out.push(num);
+      }
     }
-    return null;
+    return out;
   };
 
-  if (lastPI >= 0) peso = pickWeightAfter(lastPI);
+  const pickNetFromWeights = (ws: number[]) => {
+    const vals = ws.filter((x) => Number.isFinite(x) && x > 0);
+    if (vals.length < 2) return null;
+
+    // remove duplicados (OCR às vezes repete)
+    const uniq: number[] = [];
+    for (const v of vals) {
+      if (!uniq.some((u) => Math.abs(u - v) < 0.001)) uniq.push(v);
+    }
+
+    const min = Math.min(...uniq);
+    const max = Math.max(...uniq);
+    const diff = Math.max(0, max - min);
+
+    // se existir um valor que "parece" o líquido (max-min), usa ele
+    const tol = 0.01; // ~10 kg
+    const cand = uniq.find((v) => Math.abs(v - diff) <= tol);
+    const chosen = cand ?? diff;
+
+    if (!Number.isFinite(chosen) || chosen <= 0) return null;
+    return chosen;
+  };
+
+  // tenta janela do horário (normalmente o bloco de pesos vem depois)
+  const timeIdx = (() => {
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const s = (lines[i] || "").trim();
+      if (/^\d{2}:\d{2}(:\d{2})?$/.test(s)) return i;
+    }
+    return -1;
+  })();
+
+  let weights: number[] = [];
+
+  if (timeIdx >= 0) {
+    let end = lines.length;
+    for (let i = timeIdx + 1; i < lines.length; i++) {
+      const u = (lines[i] || "").trim().toUpperCase();
+      if (!u) continue;
+
+      if (/^(OBS\.?|RECEBIMENTO|ASSINATURA|MOTORISTA|TICKET|UA-\d+|P\.?\s*GERAL|P\.?\s*OBRA)/i.test(u)) {
+        end = i;
+        break;
+      }
+    }
+    weights = parseWeightsFromLines(lines.slice(timeIdx, end));
+  }
+
+  if (weights.length < 2) {
+    weights = parseWeightsFromLines(lines);
+  }
+
+  const net = pickNetFromWeights(weights);
+  if (net !== null) peso = net.toFixed(3);
 
   const any = Boolean(origem || destino || material || peso);
   if (!any) return null;
@@ -517,27 +563,81 @@ async function loadEntradaControle(origemVal: string, obraVal: string, matVal: s
           .from("material_entrada_controle_v")
           .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
           .ilike("origem", origemLike)
-          .ilike("obra", ob)
-          .ilike("material", m)
-          .order("plan_id", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (!r1.error && r1.data) return (r1.data as any) ?? null;
+          .ilike("obra", `%${ob}%`)
+          .ilike("material", `%${m}%`)
+          .limit(1);
+
+        if (!r1.error) {
+          const data: any = Array.isArray(r1.data) ? r1.data[0] : r1.data;
+          if (data) return data as any;
+        }
       }
 
-      // 2) origem + material (sem obra)
+      // 2) origem + material (ignora obra)
       const r2 = await supabase
         .from("material_entrada_controle_v")
         .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
         .ilike("origem", origemLike)
-        .ilike("material", m)
-        .order("plan_id", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-      if (!r2.error && r2.data) return (r2.data as any) ?? null;
+        .ilike("material", `%${m}%`)
+        .limit(1);
+
+      if (!r2.error) {
+        const data: any = Array.isArray(r2.data) ? r2.data[0] : r2.data;
+        if (data) return data as any;
+      }
     }
 
     return null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadResumo(obraVal: string, ocVal: string | null, matVal: string): Promise<OcResumo | null> {
+  try {
+    const obraTrim = normalizeObraName(obraVal);
+    const matTrim = normalizeMaterialForMsg(matVal);
+
+    if (!obraTrim || !matTrim) return null;
+
+    let q = supabase
+      .from("material_oc_plan_resumo_v")
+      .select("plan_id,obra,oc,material,ilimitado,total_t,entrada_t,saida_t,saldo_t")
+      .ilike("obra", obraTrim)
+      .ilike("material", matTrim)
+      .limit(1);
+
+    if (ocVal) q = q.eq("oc", ocVal);
+    else q = q.is("oc", null);
+
+    const { data, error } = await q;
+    if (error) return null;
+
+    const row = Array.isArray(data) ? data[0] : data;
+    return (row as any) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadAcumulados(tipoVal: TicketTipo, obraVal: string, ocVal: string | null, matVal: string, dateISO: string): Promise<Acumulados | null> {
+  try {
+    const obraTrim = normalizeObraName(obraVal);
+    const matTrim = normalizeMaterialForMsg(matVal);
+
+    if (!obraTrim || !matTrim || !dateISO) return null;
+
+    const { data, error } = await supabase.rpc("material_ticket_acumulados", {
+      p_tipo: tipoVal,
+      p_obra: obraTrim,
+      p_oc: ocVal,
+      p_material: matTrim,
+      p_data: dateISO,
+    });
+
+    if (error) return null;
+    const row = Array.isArray(data) ? data[0] : data;
+    return (row as any) ?? null;
   } catch {
     return null;
   }
@@ -553,86 +653,52 @@ function buildWhatsappMessage(p: {
   dataISO: string;
   horarioISO: string;
   pesoNum: number;
-  savedId?: number | null;
-  resumo?: OcResumo | null;
-  acum?: Acumulados | null;
-  entradaCtl?: EntradaControle | null;
+  id: number;
+  resumo: OcResumo | null;
+  acum: Acumulados | null;
+  entradaCtl: EntradaControle | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum, entradaCtl } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, id, resumo, acum, entradaCtl } = p;
 
-  const dateBR = (() => {
-    const [y, m, d] = dataISO.split("-");
-    return `${d}/${m}/${y}`;
-  })();
+  const dt = dataISO.split("-").reverse().join("/");
+  const hr = horarioISO;
 
-  const unidadeQtd = tipo === "SAIDA" ? "CB" : "tickets";
+  const linhas: string[] = [];
+  linhas.push(`*TICKET MATERIAL* (#${id})`);
+  linhas.push(`Tipo: *${tipo}*`);
+  linhas.push(`Veículo: ${veiculo}`);
+  linhas.push(`Origem: ${origem}`);
+  linhas.push(`Obra/Destino: ${obra}`);
+  linhas.push(`Material: ${normalizeMaterialForMsg(material)}`);
+  if (oc) linhas.push(`OC: ${oc}`);
+  linhas.push(`Data/Hora: ${dt} ${hr}`);
+  linhas.push(`Peso: *${pesoNum.toFixed(3)} t*`);
 
-  let msg =
-    `✅ Ticket de ${tipo}\n` +
-    `ID: ${savedId ?? "-"}\n` +
-    `Veículo: ${veiculo}\n` +
-    `Data/Hora: ${dateBR} ${horarioISO}\n` +
-    `Origem: ${origem}\n` +
-    `Obra: ${obra}\n` +
-    `Material: ${material}\n` +
-    `Ordem de Compra: ${oc ? oc : "-"}\n` +
-    `Peso (t): ${pesoNum.toFixed(3)}\n`;
-
-  // ✅ SAÍDA: mantém acumulado e controle OC
   if (tipo === "SAIDA") {
-    if (acum) {
-      msg += `\n📅 Acumulado Obra *${obra}*\n`;
-      msg += `Dia (com esta): ${fmtQtd(acum.dia_qtd)} ${unidadeQtd} • ${fmtT(acum.dia_total_t)} t\n`;
-      msg += `Semana (Seg-Dom): ${fmtQtd(acum.semana_qtd)} ${unidadeQtd} • ${fmtT(acum.semana_total_t)} t\n`;
-      msg += `Mês: ${fmtQtd(acum.mes_qtd)} ${unidadeQtd} • ${fmtT(acum.mes_total_t)} t\n`;
-    }
-
     if (resumo) {
-      const ilimitado = Boolean(resumo.ilimitado);
-      msg += `\n📊 Controle (Obra/OC/Material)\n`;
-
-      if (ilimitado) {
-        msg += `Quantidade total: ILIMITADO\n`;
-        msg += `Saldo: ILIMITADO\n`;
+      if (resumo.ilimitado) {
+        linhas.push(`Plano: *ILIMITADO*`);
       } else {
-        msg += `Entrada total: ${fmtT(resumo.entrada_t)} t\n`;
-        msg += `Saída total: ${fmtT(resumo.saida_t)} t\n`;
-        msg += `Quantidade total: ${fmtT(resumo.total_t)} t\n`;
-        msg += `Saldo a entregar: ${fmtT(resumo.saldo_t)} t\n`;
+        linhas.push(`Plano: Total ${fmtT(resumo.total_t)} t • Saldo ${fmtT(resumo.saldo_t)} t`);
       }
+    } else {
+      linhas.push(`Plano: ⚠️ não encontrado`);
     }
 
-    return msg;
+    if (acum) {
+      linhas.push(`Hoje: ${fmtQtd(acum.dia_qtd)} tickets • ${fmtT(acum.dia_total_t)} t`);
+      linhas.push(`Semana: ${fmtQtd(acum.semana_qtd)} tickets • ${fmtT(acum.semana_total_t)} t`);
+      linhas.push(`Mês: ${fmtQtd(acum.mes_qtd)} tickets • ${fmtT(acum.mes_total_t)} t`);
+    }
+  } else {
+    if (entradaCtl) {
+      linhas.push(`Pedido: ${entradaCtl.pedido_total_t ? `${fmtTonBR(entradaCtl.pedido_total_t, 0)} ton` : "-"}`);
+      linhas.push(`Entrada total: ${entradaCtl.entrada_total_t ? `${fmtTonBR(entradaCtl.entrada_total_t, 2)} ton` : "-"}`);
+      linhas.push(`Saldo: ${entradaCtl.saldo_rest_t ? `${fmtTonBR(entradaCtl.saldo_rest_t, 2)} ton` : "-"}`);
+    }
   }
 
-  // ✅ ENTRADA: mensagem no formato do print
-  const ctl = entradaCtl;
-
-  const obraMsg = (ctl?.obra || "").trim() || obra;
-  const matMsg = normalizeMaterialForMsg((ctl?.material || "").trim() || material);
-
-  const pedido = ctl?.pedido_total_t ?? null;
-  const entradaTotal = ctl?.entrada_total_t ?? null;
-  const saldo = ctl?.saldo_rest_t ?? null;
-
-  const temPedido = pedido !== null && Number.isFinite(Number(pedido)) && Number(pedido) > 0.0001;
-
-  msg += `\nObra: ${obraMsg}\n`;
-  msg += `Material: ${matMsg}\n`;
-
-  if (temPedido) {
-    msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton\n`;
-  }
-
-  // aqui é “com esta”, então usamos a view (já calculada com este insert)
-  const entradaComEsta = entradaTotal !== null ? entradaTotal : pesoNum;
-  msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton\n`;
-
-  if (temPedido && saldo !== null) {
-    msg += `A entregar: ${fmtTonBR(saldo, 2)} ton\n`;
-  }
-
-  return msg;
+  return linhas.join("\n");
 }
 
 export default function MaterialTicketNovoPage() {
@@ -710,62 +776,49 @@ export default function MaterialTicketNovoPage() {
     };
   }, [dataBr, hora, peso]);
 
-  function validateBasic(): boolean {
+  function validateBasic() {
     setError(null);
-    setSavedMsg(null);
-    setSavedId(null);
 
-    if (!file) return setError("Tire/Envie a foto do ticket."), false;
-    if (file.type?.includes("pdf")) return setError("OCR ainda não suporta PDF. Envie imagem (jpg/png/webp)."), false;
+    if (!file) return setError("Envie a foto do ticket."), false;
+    if (!veiculo.trim()) return setError("Informe o veículo."), false;
+    if (!origem.trim()) return setError("Informe a origem."), false;
+    if (!destino.trim()) return setError("Informe a obra/destino."), false;
+    if (!material.trim()) return setError("Informe o material."), false;
 
-    if (!veiculo.trim()) return setError("Preencha o veículo."), false;
-    if (!origem.trim()) return setError("Preencha a origem."), false;
-    if (!destino.trim()) return setError("Preencha a obra/destino."), false;
-    if (!material.trim()) return setError("Preencha o material."), false;
-    if (!parsed.dataOk) return setError("Data inválida. Use dd/mm/aa ou dd/mm/aaaa."), false;
-    if (!parsed.horaOk) return setError("Horário inválido. Use hh:mm ou hh:mm:ss."), false;
-    if (!parsed.pesoOk) return setError("Peso inválido. Digite só números (ex.: 2720 → 2.720)."), false;
+    if (!parsed.dataOk) return setError("Data inválida."), false;
+    if (!parsed.horaOk) return setError("Horário inválido."), false;
+
+    if (!parsed.pesoOk) return setError("Peso inválido."), false;
+    if ((parsed.pesoNum ?? 0) <= 0) return setError("Peso deve ser maior que 0."), false;
 
     return true;
   }
 
-  async function loadResumo(obra: string, ocVal: string | null, mat: string): Promise<OcResumo | null> {
+  async function handleShareWhatsApp() {
+    if (!lastPayload) return;
+
+    const msg = buildWhatsappMessage({
+      ...lastPayload,
+      resumo: lastResumo,
+      acum: lastAcum,
+      entradaCtl: lastEntradaCtl,
+    });
+
+    const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
+
     try {
-      let q = supabase
-        .from("material_oc_saldo_v")
-        .select("plan_id,obra,oc,material,ilimitado,total_t,entrada_t,saida_t,saldo_t")
-        .ilike("obra", obra.trim())
-        .ilike("material", mat.trim())
-        .order("plan_id", { ascending: false })
-        .limit(1);
-
-      if (ocVal) q = q.eq("oc", ocVal);
-      else q = q.is("oc", null);
-
-      const { data, error } = await q.maybeSingle();
-      if (error) return null;
-      return (data as any) ?? null;
+      if (navigator.share && lastShareFile) {
+        await navigator.share({
+          text: msg,
+          files: [lastShareFile],
+        });
+        return;
+      }
     } catch {
-      return null;
+      // fallback para abrir whatsapp via link
     }
-  }
 
-  async function loadAcumulados(tipoVal: TicketTipo, obraVal: string, ocVal: string | null, matVal: string, dataISO: string): Promise<Acumulados | null> {
-    try {
-      const { data, error } = await supabase.rpc("material_ticket_acumulados", {
-        p_tipo: tipoVal,
-        p_obra: obraVal,
-        p_oc: ocVal,
-        p_material: matVal,
-        p_data: dataISO,
-      });
-
-      if (error) return null;
-      const row = Array.isArray(data) ? data[0] : data;
-      return (row as any) ?? null;
-    } catch {
-      return null;
-    }
+    window.open(url, "_blank");
   }
 
   // ✅ quando faltar plano, cadastra como ILIMITADO (obra+oc+material) — SÓ PRA SAÍDA
@@ -854,7 +907,7 @@ export default function MaterialTicketNovoPage() {
       let hrVal = normalizeTimeFromOcrToMasked(f.horario || null);
       let pVal = normalizePesoFromOcrToMasked(f.peso_mask ?? f.peso_t ?? null);
 
-      // ✅ ENTRADA: sempre tenta corrigir pelos marcadores do RAW (3/1/4 e peso líquido)
+      // ✅ ENTRADA: sempre tenta corrigir pelos marcadores do RAW e peso líquido
       if (tipo === "ENTRADA" && js?.raw) {
         const fixed = fixEntradaFromRaw(String(js.raw));
         if (fixed) {
@@ -1015,361 +1068,313 @@ export default function MaterialTicketNovoPage() {
     }
   }
 
-  async function handleShareWhatsApp() {
-    if (!lastPayload) return;
-
-    const msg = buildWhatsappMessage({
-      tipo: lastPayload.tipo,
-      veiculo: lastPayload.veiculo,
-      origem: lastPayload.origem,
-      obra: lastPayload.obra,
-      material: lastPayload.material,
-      oc: lastPayload.oc,
-      dataISO: lastPayload.dataISO,
-      horarioISO: lastPayload.horarioISO,
-      pesoNum: lastPayload.pesoNum,
-      savedId: lastPayload.id,
-      resumo: lastResumo,
-      acum: lastAcum,
-      entradaCtl: lastEntradaCtl,
-    });
-
-    try {
-      const navAny: any = navigator as any;
-
-      if (navAny?.share && lastShareFile) {
-        const withFile = { files: [lastShareFile] };
-        if (!navAny.canShare || navAny.canShare(withFile)) {
-          await navAny.share({
-            title: "Ticket de material",
-            text: msg,
-            files: [lastShareFile],
-          });
-          return;
-        }
-      }
-    } catch {
-      // fallback abaixo
-    }
-
-    const url = `https://wa.me/?text=${encodeURIComponent(msg)}`;
-    window.open(url, "_blank");
-  }
-
   const styles: Record<string, CSSProperties> = {
+    container: {
+      maxWidth: 720,
+      margin: "0 auto",
+      padding: 18,
+      paddingBottom: 80,
+    },
+    title: {
+      fontSize: 18,
+      fontWeight: 800,
+      marginBottom: 12,
+    },
+    card: {
+      background: "#fff",
+      border: "1px solid #e5e7eb",
+      borderRadius: 18,
+      padding: 14,
+      boxShadow: "0 6px 18px rgba(0,0,0,0.05)",
+    },
     label: {
+      display: "block",
       fontSize: 12,
       fontWeight: 800,
-      color: "var(--gp-muted)",
+      letterSpacing: 0.4,
+      color: "#374151",
       textTransform: "uppercase",
-      letterSpacing: "0.08em",
-      display: "block",
       marginBottom: 6,
     },
     input: {
       width: "100%",
+      height: 46,
+      padding: "0 14px",
       borderRadius: 14,
       border: "1px solid #e5e7eb",
-      padding: "12px 12px",
-      fontSize: 16,
       outline: "none",
-      background: "#ffffff",
-      color: "var(--gp-text)",
+      fontSize: 16,
+      background: "#fff",
     },
     select: {
       width: "100%",
+      height: 46,
+      padding: "0 12px",
       borderRadius: 14,
       border: "1px solid #e5e7eb",
-      padding: "12px 12px",
-      fontSize: 16,
       outline: "none",
-      background: "#ffffff",
-      color: "var(--gp-text)",
+      fontSize: 16,
+      background: "#fff",
     },
-    btnPrimary: {
-      borderRadius: 14,
-      border: "1px solid #fb7185",
-      background: saving ? "linear-gradient(180deg, #94a3b8, #64748b)" : "linear-gradient(180deg, #ff4b2b, #fb7185)",
-      color: "#fff",
-      fontWeight: 900,
-      padding: "12px 14px",
-      cursor: saving ? "not-allowed" : "pointer",
-      fontSize: 15,
-      boxShadow: saving ? "none" : "0 14px 26px rgba(255, 75, 43, 0.20)",
-      opacity: saving ? 0.8 : 1,
-      width: "100%",
+    hint: {
+      fontSize: 12,
+      color: "#6b7280",
+      marginTop: 6,
+      lineHeight: 1.35,
     },
     btnGhost: {
+      height: 46,
       borderRadius: 14,
       border: "1px solid #e5e7eb",
-      background: ocrLoading ? "#e2e8f0" : "#ffffff",
-      color: "#0f172a",
-      fontWeight: 900,
-      padding: "12px 14px",
-      cursor: ocrLoading ? "not-allowed" : "pointer",
-      fontSize: 15,
-      width: "100%",
+      background: "#fff",
+      fontWeight: 800,
+      cursor: "pointer",
     },
-    btnShare: {
+    btnPrimary: {
+      height: 46,
       borderRadius: 14,
-      border: "1px solid #bbf7d0",
-      background: "#22c55e",
+      border: "none",
+      background: "linear-gradient(90deg, #f97316, #ef4444)",
       color: "#fff",
       fontWeight: 900,
-      padding: "12px 14px",
       cursor: "pointer",
-      fontSize: 15,
-      width: "100%",
+      boxShadow: "0 10px 26px rgba(239,68,68,0.25)",
     },
-    hint: { fontSize: 12, color: "var(--gp-muted-soft)", marginTop: 6 },
+    btnShare: {
+      height: 46,
+      width: "100%",
+      borderRadius: 14,
+      border: "none",
+      background: "#16a34a",
+      color: "#fff",
+      fontWeight: 900,
+      cursor: "pointer",
+      boxShadow: "0 10px 26px rgba(22,163,74,0.25)",
+    },
+    alert: {
+      borderRadius: 14,
+      padding: 12,
+      fontSize: 13,
+      lineHeight: 1.35,
+      border: "1px solid #fecaca",
+      background: "#fef2f2",
+      color: "#991b1b",
+    },
+    ok: {
+      borderRadius: 14,
+      padding: 12,
+      fontSize: 13,
+      lineHeight: 1.35,
+      border: "1px solid #bbf7d0",
+      background: "#f0fdf4",
+      color: "#14532d",
+    },
+    debugBox: {
+      borderRadius: 14,
+      padding: 12,
+      fontSize: 12,
+      lineHeight: 1.35,
+      border: "1px solid #e5e7eb",
+      background: "#f9fafb",
+      color: "#111827",
+      whiteSpace: "pre-wrap",
+      wordBreak: "break-word",
+    },
   };
 
-  const unidadeQtd = tipo === "SAIDA" ? "CB" : "tickets";
+  const unidadeQtd = tipo === "SAIDA" ? "saídas" : "entradas";
 
   return (
-    <div className="page-root">
-      <div className="page-container">
-        <header className="page-header" style={{ flexDirection: "column", alignItems: "center", gap: 8 }}>
-          <img
-            src="/gpasfalto-logo.png"
-            alt="GP Asfalto"
-            style={{ width: 110, height: 110, objectFit: "contain", border: "none", background: "transparent" }}
-          />
-          <div style={{ textAlign: "center" }}>
-            <div className="brand-text-main">Materiais • Ticket</div>
-            <div className="brand-text-sub">Tirar foto • OCR • Salvar • WhatsApp</div>
-          </div>
-        </header>
+    <div style={styles.container}>
+      <div style={styles.title}>Ticket de Material</div>
 
-        <div className="section-card">
-          <div className="section-header">
-            <div>
-              <div className="section-title">Novo ticket</div>
-              <div className="section-subtitle">Tire a foto pelo celular, rode o OCR, ajuste e salve.</div>
-            </div>
+      <div style={styles.card}>
+        {error ? <div style={{ ...styles.alert, marginBottom: 10 }}>{error}</div> : null}
+        {savedMsg ? <div style={{ ...styles.ok, marginBottom: 10 }}>{savedMsg}</div> : null}
+
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Tipo (padrão: SAÍDA)</label>
+            <select style={styles.select} value={tipo} onChange={(e) => setTipo(e.target.value as TicketTipo)}>
+              <option value="SAIDA">SAÍDA</option>
+              <option value="ENTRADA">ENTRADA</option>
+            </select>
           </div>
 
-          {error ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #fecaca",
-                background: "#fef2f2",
-                color: "#991b1b",
-                fontSize: 14,
-                marginBottom: 12,
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Foto do ticket *</label>
+
+            <input
+              style={styles.input}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={(e) => {
+                setFile(e.target.files?.[0] || null);
+                setOcrRaw(null);
+                setOcrNote(null);
+                setLastPayload(null);
+                setLastShareFile(null);
+                setLastResumo(null);
+                setLastAcum(null);
+                setLastEntradaCtl(null);
               }}
-            >
-              {error}
+            />
+
+            <div style={styles.hint}>
+              No celular isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
             </div>
-          ) : null}
+            {ocrNote ? (
+              <div style={styles.hint}>
+                <b>{ocrNote}</b>
+              </div>
+            ) : null}
+          </div>
 
-          {savedMsg ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #bbf7d0",
-                background: "#f0fdf4",
-                color: "#166534",
-                fontSize: 14,
-                marginBottom: 12,
-              }}
-            >
-              {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
-
-              {/* SAÍDA: mostra acumulados + resumo */}
-              {tipo === "SAIDA" && lastAcum ? (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
-                  <b>Dia:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t
-                  <br />
-                  <b>Semana (Seg-Dom):</b> {fmtQtd(lastAcum.semana_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.semana_total_t)} t
-                  <br />
-                  <b>Mês:</b> {fmtQtd(lastAcum.mes_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.mes_total_t)} t
-                </div>
-              ) : null}
-
-              {tipo === "SAIDA" && lastResumo ? (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
-                  <b>Controle:</b>{" "}
-                  {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
-                </div>
-              ) : null}
-
-              {/* ENTRADA: mostra controle de pedido/saldo */}
-              {tipo === "ENTRADA" && lastEntradaCtl ? (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
-                  <b>Obra:</b> {lastEntradaCtl.obra ?? "-"}
-                  <br />
-                  <b>Material:</b> {normalizeMaterialForMsg(lastEntradaCtl.material ?? "-")}
-                  <br />
-                  <b>Pedido:</b> {lastEntradaCtl.pedido_total_t ? `${fmtTonBR(lastEntradaCtl.pedido_total_t, 0)} ton` : "-"}
-                  <br />
-                  <b>Entrada total:</b> {lastEntradaCtl.entrada_total_t ? `${fmtTonBR(lastEntradaCtl.entrada_total_t, 2)} ton` : "-"}
-                  <br />
-                  <b>Saldo:</b> {lastEntradaCtl.saldo_rest_t ? `${fmtTonBR(lastEntradaCtl.saldo_rest_t, 2)} ton` : "-"}
-                </div>
-              ) : null}
-            </div>
-          ) : null}
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Tipo (padrão: SAÍDA)</label>
-              <select style={styles.select} value={tipo} onChange={(e) => setTipo(e.target.value as TicketTipo)}>
-                <option value="SAIDA">SAÍDA</option>
-                <option value="ENTRADA">ENTRADA</option>
-              </select>
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Foto do ticket *</label>
-
-              <input
-                style={styles.input}
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={(e) => {
-                  setFile(e.target.files?.[0] || null);
-                  setOcrRaw(null);
-                  setOcrNote(null);
-                  setLastPayload(null);
-                  setLastShareFile(null);
-                  setLastResumo(null);
-                  setLastAcum(null);
-                  setLastEntradaCtl(null);
+          <div style={{ gridColumn: "span 12" }}>
+            {previewUrl ? (
+              <img
+                src={previewUrl}
+                alt="Preview do ticket"
+                style={{
+                  width: "100%",
+                  maxHeight: 420,
+                  objectFit: "contain",
+                  borderRadius: 16,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
                 }}
               />
-
-              <div style={styles.hint}>
-                No celular isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
-              </div>
-              {ocrNote ? (
-                <div style={styles.hint}>
-                  <b>{ocrNote}</b>
-                </div>
-              ) : null}
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              {previewUrl ? (
-                <img
-                  src={previewUrl}
-                  alt="Preview do ticket"
-                  style={{
-                    width: "100%",
-                    maxHeight: 420,
-                    objectFit: "contain",
-                    borderRadius: 16,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                  }}
-                />
-              ) : null}
-            </div>
-
-            <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-              <button type="button" style={styles.btnGhost} onClick={handleOcr} disabled={ocrLoading}>
-                {ocrLoading ? "Lendo..." : "Ler via OCR"}
-              </button>
-
-              <button type="button" style={styles.btnPrimary} onClick={handleSave} disabled={saving}>
-                {saving ? "Salvando..." : "Salvar"}
-              </button>
-            </div>
-
-            {lastPayload ? (
-              <div style={{ gridColumn: "span 12" }}>
-                <button type="button" style={styles.btnShare} onClick={handleShareWhatsApp}>
-                  Compartilhar no WhatsApp
-                </button>
-                <div style={styles.hint}>
-                  No celular, abre o compartilhamento com a <b>foto</b> + texto (quando suportado). Se não suportar, abre WhatsApp com <b>texto</b>.
-                </div>
-              </div>
-            ) : null}
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Veículo *</label>
-              <input style={styles.input} value={veiculo} onChange={(e) => setVeiculo(e.target.value)} placeholder="Ex.: KBK-5C37" />
-            </div>
-
-            <div style={{ gridColumn: "span 6" }}>
-              <label style={styles.label}>Data *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={dataBr}
-                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
-                placeholder="15/01/26"
-              />
-              <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
-            </div>
-
-            <div style={{ gridColumn: "span 6" }}>
-              <label style={styles.label}>Horário *</label>
-              <input style={styles.input} inputMode="numeric" value={hora} onChange={(e) => setHora(maskTimeInput(e.target.value))} placeholder="08:46:45" />
-              <div style={styles.hint}>{parsed.horaOk ? "OK" : "Digite só números (084645)"}</div>
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Origem *</label>
-              <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: FETZ MINERADORA" />
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Obra / Destino *</label>
-              <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: PMRV TAPA BURACO" />
-              {tipo === "ENTRADA" ? <div style={styles.hint}>Para ENTRADA da FETZ, o app tende a usar: <b>{PATIO_FETZ_OBRA}</b>.</div> : null}
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Material *</label>
-              <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: BRITA ZERO" />
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Ordem de Compra (OC)</label>
-              <input
-                style={styles.input}
-                value={oc}
-                onChange={(e) => setOc(e.target.value)}
-                placeholder="Ex.: 32026 (deixe vazio pra prefeitura/ordem ilimitada)"
-              />
-              <div style={styles.hint}>Se a obra for “infinita” (prefeitura), pode deixar vazio (OC = NULL).</div>
-            </div>
-
-            <div style={{ gridColumn: "span 12" }}>
-              <label style={styles.label}>Peso (t) *</label>
-              <input style={styles.input} inputMode="numeric" value={peso} onChange={(e) => setPeso(maskPesoTon3(e.target.value))} placeholder="14.210" />
-              <div style={styles.hint}>{parsed.pesoOk ? `OK → ${parsed.pesoNum} t` : "Digite só números (14210 → 14.210)"}</div>
-            </div>
-
-            {ocrRaw ? (
-              <div style={{ gridColumn: "span 12" }}>
-                <div style={{ ...styles.hint, marginTop: 0, marginBottom: 6 }}>OCR bruto (debug)</div>
-                <pre
-                  style={{
-                    margin: 0,
-                    whiteSpace: "pre-wrap",
-                    borderRadius: 16,
-                    border: "1px solid #e5e7eb",
-                    background: "#f9fafb",
-                    padding: 14,
-                    fontSize: 12,
-                    color: "#0f172a",
-                    maxHeight: 220,
-                    overflow: "auto",
-                  }}
-                >
-                  {ocrRaw}
-                </pre>
-              </div>
             ) : null}
           </div>
+
+          <div style={{ gridColumn: "span 12", display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <button type="button" style={styles.btnGhost} onClick={handleOcr} disabled={ocrLoading}>
+              {ocrLoading ? "Lendo..." : "Ler via OCR"}
+            </button>
+
+            <button type="button" style={styles.btnPrimary} onClick={handleSave} disabled={saving}>
+              {saving ? "Salvando..." : "Salvar"}
+            </button>
+          </div>
+
+          {lastPayload ? (
+            <div style={{ gridColumn: "span 12" }}>
+              <button type="button" style={styles.btnShare} onClick={handleShareWhatsApp}>
+                Compartilhar no WhatsApp
+              </button>
+              <div style={styles.hint}>
+                No celular, abre o compartilhamento com a <b>foto</b> + texto (quando suportado). Se não suportar, abre WhatsApp com <b>texto</b>.
+              </div>
+            </div>
+          ) : null}
+
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Veículo *</label>
+            <input style={styles.input} value={veiculo} onChange={(e) => setVeiculo(e.target.value)} placeholder="Ex.: KBK-5C37" />
+          </div>
+
+          <div style={{ gridColumn: "span 6" }}>
+            <label style={styles.label}>Data *</label>
+            <input
+              style={styles.input}
+              inputMode="numeric"
+              value={dataBr}
+              onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
+              placeholder="15/01/26"
+            />
+            <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
+          </div>
+
+          <div style={{ gridColumn: "span 6" }}>
+            <label style={styles.label}>Horário *</label>
+            <input style={styles.input} inputMode="numeric" value={hora} onChange={(e) => setHora(maskTimeInput(e.target.value))} placeholder="08:46:45" />
+            <div style={styles.hint}>{parsed.horaOk ? "OK" : "Digite só números (084645)"}</div>
+          </div>
+
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Origem *</label>
+            <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: FETZ MINERADORA" />
+          </div>
+
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Obra / Destino *</label>
+            <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: PÁTIO USINA (FETZ+FRETE)" />
+            <div style={styles.hint}>
+              Para <b>ENTRADA</b> da <b>FETZ</b>, o app tende a usar: <b>{PATIO_FETZ_OBRA}</b>.
+            </div>
+          </div>
+
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Material *</label>
+            <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: PO BRITA" />
+          </div>
+
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Ordem de Compra (OC)</label>
+            <input style={styles.input} value={oc} onChange={(e) => setOc(e.target.value)} placeholder="Ex.: 32026 (deixe vazio para prefeitura/obra infinita)" />
+            <div style={styles.hint}>
+              Se a obra for "infinita" (prefeitura), pode deixar vazio (OC = NULL).
+            </div>
+          </div>
+
+          <div style={{ gridColumn: "span 12" }}>
+            <label style={styles.label}>Peso (t) *</label>
+            <input
+              style={styles.input}
+              inputMode="decimal"
+              value={peso}
+              onChange={(e) => {
+                const v = e.target.value;
+                // permite digitar com ponto ou vírgula; mantém só números + 1 separador
+                const cleaned = v.replace(/[^\d.,]/g, "");
+                setPeso(cleaned);
+              }}
+              placeholder="0.000"
+            />
+            <div style={styles.hint}>{parsed.pesoOk ? `OK → ${fmtT(parsed.pesoNum)} t` : "Ex.: 29.630"}</div>
+          </div>
+
+          {ocrRaw ? (
+            <div style={{ gridColumn: "span 12" }}>
+              <div style={{ ...styles.hint, marginBottom: 6 }}>
+                <b>OCR bruto (debug)</b>
+              </div>
+              <div style={styles.debugBox}>{ocrRaw}</div>
+            </div>
+          ) : null}
         </div>
+
+        {/* painéis de controle (exibidos depois do save) */}
+        {lastAcum ? (
+          <div style={{ marginTop: 12, fontSize: 12, color: "#374151", lineHeight: 1.35 }}>
+            <b>Acumulado:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t
+            <br />
+            <b>Semana (Seg-Dom):</b> {fmtQtd(lastAcum.semana_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.semana_total_t)} t
+            <br />
+            <b>Mês:</b> {fmtQtd(lastAcum.mes_qtd)} {unidadeQtd} • <b>Total:</b> {fmtT(lastAcum.mes_total_t)} t
+          </div>
+        ) : null}
+
+        {tipo === "SAIDA" && lastResumo ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
+            <b>Controle:</b> {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
+          </div>
+        ) : null}
+
+        {tipo === "ENTRADA" && lastEntradaCtl ? (
+          <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
+            <b>Obra:</b> {lastEntradaCtl.obra ?? "-"}
+            <br />
+            <b>Material:</b> {normalizeMaterialForMsg(lastEntradaCtl.material ?? "-")}
+            <br />
+            <b>Pedido:</b> {lastEntradaCtl.pedido_total_t ? `${fmtTonBR(lastEntradaCtl.pedido_total_t, 0)} ton` : "-"}
+            <br />
+            <b>Entrada total:</b> {lastEntradaCtl.entrada_total_t ? `${fmtTonBR(lastEntradaCtl.entrada_total_t, 2)} ton` : "-"}
+            <br />
+            <b>Saldo:</b> {lastEntradaCtl.saldo_rest_t ? `${fmtTonBR(lastEntradaCtl.saldo_rest_t, 2)} ton` : "-"}
+          </div>
+        ) : null}
       </div>
     </div>
   );
