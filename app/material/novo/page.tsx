@@ -268,122 +268,64 @@ function looksLikePlate(raw: string) {
   if (!s) return false;
   const compact = s.replace(/\s+/g, "");
 
+  // Mercosul: ABC1D23 (ou ABC-1D23)
   if (/^[A-Z]{3}-?\d[A-Z]\d{2}$/.test(compact)) return true;
+
+  // Padrão antigo: ABC-1234
   if (/^[A-Z]{3}-\d{4}$/.test(compact)) return true;
+
+  // OCR ruim: "NK2-7H69"
   if (/^[A-Z]{2}\d-?\d[A-Z0-9]\d{2}$/.test(compact)) return true;
 
   return false;
 }
 
-function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; material?: string; peso?: string } | null {
-  const lines = String(raw || "")
-    .split(/\r?\n/g)
-    .map((x) => (x || "").trim())
-    .filter(Boolean);
+function isHeaderLine(s: string) {
+  const u = (s || "").trim().toUpperCase();
+  if (!u) return true;
 
-  if (!lines.length) return null;
+  // ✅ letras soltas que o OCR joga (C, D, etc) — NÃO podem virar destino/material
+  if (u.length === 1) return true;
 
-  const nextMeaningful = (idx: number) => {
-    for (let j = idx + 1; j < lines.length; j++) {
-      const s = (lines[j] || "").trim();
-      if (!s) continue;
-      if (/^\d+$/.test(s)) continue; // só dígitos (marcadores)
-      if (isHeaderLine(s)) continue;
-      if (looksLikePlate(s)) continue;
-      return s;
-    }
-    return null;
-  };
+  const headers = new Set([
+    "GPA ENGENHARIA E CONSTRUÇÕES LTDA",
+    "GPA ENGENHARIA E CONSTRUCOES LTDA",
+    "TICKET DE PESAGEM",
+    "TICKET DE PESA GEM",
+    "PESAGEM FINAL OK.",
+    "PESAGEM FINAL OK",
+    "PESA GEM FINAL OK.",
+    "VEIC/CAVALO",
+    "VEIC. CAVALO",
+    "MOTORISTA",
+    "PESAGEM INICIAL",
+    "PESAGEM FINAL",
+    "DATA",
+    "TICKET",
+    "N°",
+    "Nº",
+    "ASSINATURA BALANÇA",
+    "ASSINATURA BALANCA",
+    "P. GERAL",
+    "F. GERAL",
+    "P. OBRA",
+    "F. OBRA",
+    "UA-01",
+    "UA-03",
+    "X",
+    "OBS.1",
+    "RECEBIMENTO E INSPENÇAO:",
+    "RECEBIMENTO E INSPENCAO:",
+    "RECEBIMENTO E INSPENÇÃO:",
+    "CARRETA",
+    "0",
+  ]);
 
-  const findMarker = (m: string) => lines.findIndex((x) => (x || "").trim() === m);
+  if (headers.has(u)) return true;
+  if (u.includes("CONSTRU")) return true;
+  if (u.includes("LTDA")) return true;
 
-  const i3 = findMarker("3");
-  const i1 = findMarker("1");
-  const i4 = findMarker("4");
-
-  // ---- origem (3)
-  let origem: string | null = null;
-  let origemLineIdx = -1;
-
-  if (i3 >= 0) {
-    for (let j = i3 + 1; j < lines.length; j++) {
-      const s = (lines[j] || "").trim();
-      if (!s) continue;
-      if (/^\d+$/.test(s)) continue;
-      if (isHeaderLine(s)) continue;
-      if (looksLikePlate(s)) continue;
-      origem = s;
-      origemLineIdx = j;
-      break;
-    }
-  }
-
-  // ---- destino (1) OU fallback
-  let destino: string | null = i1 >= 0 ? nextMeaningful(i1) : null;
-
-  // fallback #1: procura direto "GPA ENGENHARIA" em qualquer lugar
-  if (!destino) {
-    const cand = lines.find((x) => /GPA\s+ENGENHARIA/i.test(x));
-    if (cand && !isHeaderLine(cand)) destino = cand.trim();
-  }
-
-  // fallback #2: pega a primeira linha útil depois da ORIGEM que não seja material
-  if (!destino && origemLineIdx >= 0) {
-    for (let j = origemLineIdx + 1; j < lines.length; j++) {
-      const s = (lines[j] || "").trim();
-      if (!s) continue;
-      if (/^\d+$/.test(s)) continue;
-      if (isHeaderLine(s)) continue;
-      if (looksLikePlate(s)) continue;
-      if (isLikelyMaterial(s)) continue; // não pode confundir com BRITA
-      destino = s;
-      break;
-    }
-  }
-
-  // ---- material (4) OU fallback
-  let material: string | null = null;
-
-  if (i4 >= 0) {
-    const cand = nextMeaningful(i4);
-    if (cand && isLikelyMaterial(cand)) material = cand;
-  }
-
-  if (!material) {
-    const cand = lines.find((x) => isLikelyMaterial(x));
-    if (cand) material = cand;
-  }
-
-  // ---- peso líquido: número logo após a ÚLTIMA "PESAGEM INICIAL"
-  let peso: string | null = null;
-  const idxsPI: number[] = [];
-  for (let i = 0; i < lines.length; i++) {
-    if ((lines[i] || "").trim().toUpperCase() === "PESAGEM INICIAL") idxsPI.push(i);
-  }
-  const lastPI = idxsPI.length ? idxsPI[idxsPI.length - 1] : -1;
-
-  const pickWeightAfter = (start: number) => {
-    for (let j = start + 1; j < lines.length; j++) {
-      const s = (lines[j] || "").trim();
-      if (!s) continue;
-      if (/^\d{1,3}\.\d{3}$/.test(s)) return s;
-      if (/^\d{1,3},\d{3}$/.test(s)) return s.replace(",", ".");
-    }
-    return null;
-  };
-
-  if (lastPI >= 0) peso = pickWeightAfter(lastPI);
-
-  const any = Boolean(origem || destino || material || peso);
-  if (!any) return null;
-
-  const out: any = {};
-  if (origem) out.origem = origem;
-  if (destino) out.destino = destino;
-  if (material) out.material = material;
-  if (peso) out.peso = peso;
-
-  return out;
+  return false;
 }
 
 function isLikelyMaterial(s: string) {
@@ -393,7 +335,7 @@ function isLikelyMaterial(s: string) {
   if (u.length <= 1) return false;
   if (looksLikePlate(u)) return false;
 
-  // materiais mais comuns (ajuste quando quiser)
+  // materiais mais comuns
   if (/(BRITA|P[ÓO]\s*BRITA|PO\s*BRITA|CBUQ|MASSA|CAP|RR|OGR|EMULS)/i.test(u)) return true;
 
   return false;
@@ -416,6 +358,13 @@ function isBadMaterial(s: string) {
   return false;
 }
 
+/**
+ * ✅ ENTRADA: corrige origem/destino/material/peso usando o OCR bruto.
+ * - origem: linha após marcador "3"
+ * - destino: linha após "1" (se existir), senão procura "GPA ENGENHARIA", senão 1ª linha útil após origem que não seja material
+ * - material: após "4" ou varredura por BRITA/PÓ BRITA etc
+ * - peso: número após a ÚLTIMA "PESAGEM INICIAL" (peso líquido)
+ */
 function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; material?: string; peso?: string } | null {
   const lines = String(raw || "")
     .split(/\r?\n/g)
@@ -428,7 +377,7 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     for (let j = idx + 1; j < lines.length; j++) {
       const s = (lines[j] || "").trim();
       if (!s) continue;
-      if (/^\d+$/.test(s)) continue; // só dígitos (marcadores)
+      if (/^\d+$/.test(s)) continue; // marcadores
       if (isHeaderLine(s)) continue;
       if (looksLikePlate(s)) continue;
       return s;
@@ -442,11 +391,47 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
   const i1 = findMarker("1");
   const i4 = findMarker("4");
 
-  // origem e destino pelo padrão do ticket
-  const origem = i3 >= 0 ? nextMeaningful(i3) : null;
-  const destino = i1 >= 0 ? nextMeaningful(i1) : null;
+  // origem
+  let origem: string | null = null;
+  let origemLineIdx = -1;
 
-  // material: tenta pelo "4", senão varre por BRITA/PÓ BRITA etc
+  if (i3 >= 0) {
+    for (let j = i3 + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      if (/^\d+$/.test(s)) continue;
+      if (isHeaderLine(s)) continue;
+      if (looksLikePlate(s)) continue;
+      origem = s;
+      origemLineIdx = j;
+      break;
+    }
+  }
+
+  // destino
+  let destino: string | null = i1 >= 0 ? nextMeaningful(i1) : null;
+
+  // fallback #1: procura "GPA ENGENHARIA" no raw
+  if (!destino) {
+    const cand = lines.find((x) => /GPA\s+ENGENHARIA/i.test(x));
+    if (cand && !isHeaderLine(cand)) destino = cand.trim();
+  }
+
+  // fallback #2: primeira linha útil após a origem que não seja material
+  if (!destino && origemLineIdx >= 0) {
+    for (let j = origemLineIdx + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      if (/^\d+$/.test(s)) continue;
+      if (isHeaderLine(s)) continue;
+      if (looksLikePlate(s)) continue;
+      if (isLikelyMaterial(s)) continue;
+      destino = s;
+      break;
+    }
+  }
+
+  // material
   let material: string | null = null;
 
   if (i4 >= 0) {
@@ -459,8 +444,9 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     if (cand) material = cand;
   }
 
-  // peso líquido: número logo após a ÚLTIMA "PESAGEM INICIAL"
+  // peso líquido: após a ÚLTIMA "PESAGEM INICIAL"
   let peso: string | null = null;
+
   const idxsPI: number[] = [];
   for (let i = 0; i < lines.length; i++) {
     if ((lines[i] || "").trim().toUpperCase() === "PESAGEM INICIAL") idxsPI.push(i);
@@ -471,8 +457,7 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     for (let j = start + 1; j < lines.length; j++) {
       const s = (lines[j] || "").trim();
       if (!s) continue;
-      // 12.900 ou 12,900
-      if (/^\d{1,3}\.\d{3}$/.test(s)) return s;
+      if (/^\d{1,3}\.\d{3}$/.test(s)) return s; // 12.900
       if (/^\d{1,3},\d{3}$/.test(s)) return s.replace(",", ".");
     }
     return null;
@@ -480,7 +465,6 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
 
   if (lastPI >= 0) peso = pickWeightAfter(lastPI);
 
-  // sanity mínima: precisa ter pelo menos origem/destino ou material/peso
   const any = Boolean(origem || destino || material || peso);
   if (!any) return null;
 
@@ -585,7 +569,7 @@ function buildWhatsappMessage(p: {
     `Ordem de Compra: ${oc ? oc : "-"}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
-  // ✅ SAÍDA: mantém acumulado como está
+  // ✅ SAÍDA: mantém acumulado e controle como estava
   if (tipo === "SAIDA") {
     if (acum) {
       msg += `\n📅 Acumulado Obra *${obra}*\n`;
@@ -613,7 +597,7 @@ function buildWhatsappMessage(p: {
     return msg;
   }
 
-  // ✅ ENTRADA: controle de entrada
+  // ✅ ENTRADA: mensagem de controle (pedido/entrada/saldo) se existir plano
   const ctl = entradaCtl;
 
   const obraMsg = (ctl?.obra || "").trim() || obra;
@@ -874,10 +858,9 @@ export default function MaterialTicketNovoPage() {
         if (fixed) {
           if (fixed.origem) setOrigem(fixed.origem);
 
-         
-// ✅ se veio "C" / vazio, força o destino do RAW
-if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(normalizeObraName(fixed.destino));
-          
+          // ✅ se veio "C" / vazio, força o destino do RAW
+          if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(normalizeObraName(fixed.destino));
+
           // material “CARRETA” / vazio -> força o do raw (ex.: BRITA ZERO)
           if (fixed.material && (isBadMaterial(m) || !m || m.toUpperCase() === "CARRETA")) setMaterial(fixed.material);
 
@@ -924,7 +907,6 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
       if (up.error) throw new Error(`Storage upload falhou: ${up.error.message}`);
 
       const ocVal = oc.trim() ? oc.trim() : null;
-
       const obraVal = normalizeObraName(destino);
 
       const ins = await supabase
@@ -953,22 +935,21 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
       const newId = ins.data?.id ?? null;
       setSavedId(newId);
 
-      const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
-      setLastAcum(acum);
-
       if (tipo === "ENTRADA") {
         const ctl = await loadEntradaControle(origem.trim(), obraVal, material.trim());
         setLastEntradaCtl(ctl);
         setSavedMsg("Salvo com sucesso!");
       } else {
+        // ✅ SAÍDA: acumulados + plano OC
+        const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
+        setLastAcum(acum);
+
         let resumo = await loadResumo(obraVal, ocVal, material.trim());
         let createdPlan = false;
 
         if (!resumo) {
           createdPlan = await ensurePlanIlimitado(obraVal, ocVal, material.trim());
-          if (createdPlan) {
-            resumo = await loadResumo(obraVal, ocVal, material.trim());
-          }
+          if (createdPlan) resumo = await loadResumo(obraVal, ocVal, material.trim());
         }
 
         setLastResumo(resumo);
@@ -1147,16 +1128,36 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
           </div>
 
           {error ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #fecaca",
+                background: "#fef2f2",
+                color: "#991b1b",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {error}
             </div>
           ) : null}
 
           {savedMsg ? (
-            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
+            <div
+              style={{
+                borderRadius: 14,
+                padding: "10px 12px",
+                border: "1px solid #bbf7d0",
+                background: "#f0fdf4",
+                color: "#166534",
+                fontSize: 14,
+                marginBottom: 12,
+              }}
+            >
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
 
-              {lastAcum ? (
+              {lastPayload?.tipo === "SAIDA" && lastAcum ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
                   <b>Dia:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t
                   <br />
@@ -1166,9 +1167,22 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
                 </div>
               ) : null}
 
-              {lastResumo ? (
+              {lastPayload?.tipo === "SAIDA" && lastResumo ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
-                  <b>Controle:</b> {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
+                  <b>Controle:</b>{" "}
+                  {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
+                </div>
+              ) : null}
+
+              {lastPayload?.tipo === "ENTRADA" && lastEntradaCtl ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
+                  <b>Obra:</b> {lastEntradaCtl.obra ?? "-"}
+                  <br />
+                  <b>Material:</b> {lastEntradaCtl.material ?? "-"}
+                  <br />
+                  <b>Pedido:</b> {lastEntradaCtl.pedido_total_t ? fmtTonBR(lastEntradaCtl.pedido_total_t, 0) : "-"} ton •{" "}
+                  <b>Entrada:</b> {lastEntradaCtl.entrada_total_t ? fmtTonBR(lastEntradaCtl.entrada_total_t, 2) : "-"} ton •{" "}
+                  <b>Saldo:</b> {lastEntradaCtl.saldo_rest_t ? fmtTonBR(lastEntradaCtl.saldo_rest_t, 2) : "-"} ton
                 </div>
               ) : null}
             </div>
@@ -1185,6 +1199,7 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Foto do ticket *</label>
+
               <input
                 style={styles.input}
                 type="file"
@@ -1201,6 +1216,7 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
                   setLastEntradaCtl(null);
                 }}
               />
+
               <div style={styles.hint}>
                 No celular isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
               </div>
@@ -1216,7 +1232,14 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
                 <img
                   src={previewUrl}
                   alt="Preview do ticket"
-                  style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}
+                  style={{
+                    width: "100%",
+                    maxHeight: 420,
+                    objectFit: "contain",
+                    borderRadius: 16,
+                    border: "1px solid #e5e7eb",
+                    background: "#fff",
+                  }}
                 />
               ) : null}
             </div>
@@ -1249,7 +1272,13 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data *</label>
-              <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
+              <input
+                style={styles.input}
+                inputMode="numeric"
+                value={dataBr}
+                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
+                placeholder="15/01/26"
+              />
               <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
             </div>
 
@@ -1276,7 +1305,12 @@ if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(norm
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Ordem de Compra (OC)</label>
-              <input style={styles.input} value={oc} onChange={(e) => setOc(e.target.value)} placeholder="Ex.: 32026 (deixe vazio pra prefeitura/ordem ilimitada)" />
+              <input
+                style={styles.input}
+                value={oc}
+                onChange={(e) => setOc(e.target.value)}
+                placeholder="Ex.: 32026 (deixe vazio pra prefeitura/ordem ilimitada)"
+              />
               <div style={styles.hint}>Se a obra for “infinita” (prefeitura), pode deixar vazio (OC = NULL).</div>
             </div>
 
