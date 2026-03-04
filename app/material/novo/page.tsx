@@ -275,47 +275,115 @@ function looksLikePlate(raw: string) {
   return false;
 }
 
-// ✅ Heurísticas pro ticket de PESAGEM (ENTRADA)
-function isHeaderLine(s: string) {
-  const u = (s || "").trim().toUpperCase();
-  if (!u) return true;
-  const headers = new Set([
-    "GPA ENGENHARIA E CONSTRUÇÕES LTDA",
-    "GPA ENGENHARIA E CONSTRUCOES LTDA",
-    "TICKET DE PESAGEM",
-    "TICKET DE PESA GEM",
-    "PESAGEM FINAL OK.",
-    "PESAGEM FINAL OK",
-    "VEIC/CAVALO",
-    "VEIC. CAVALO",
-    "MOTORISTA",
-    "PESAGEM INICIAL",
-    "PESAGEM FINAL",
-    "DATA",
-    "TICKET",
-    "N°",
-    "Nº",
-    "ASSINATURA BALANÇA",
-    "ASSINATURA BALANCA",
-    "P. GERAL",
-    "F. GERAL",
-    "P. OBRA",
-    "UA-01",
-    "UA-03",
-    "X",
-    "OBS.1",
-    "RECEBIMENTO E INSPENÇAO:",
-    "RECEBIMENTO E INSPENCAO:",
-    "RECEBIMENTO E INSPENÇÃO:",
-    "CARRETA",
-    "PESAGEM FINAL",
-    "PESAGEM INICIAL",
-  ]);
-  if (headers.has(u)) return true;
-  if (u.includes("CONSTRU")) return true;
-  if (u.includes("LTDA")) return true;
-  if (u === "0") return true;
-  return false;
+function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; material?: string; peso?: string } | null {
+  const lines = String(raw || "")
+    .split(/\r?\n/g)
+    .map((x) => (x || "").trim())
+    .filter(Boolean);
+
+  if (!lines.length) return null;
+
+  const nextMeaningful = (idx: number) => {
+    for (let j = idx + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      if (/^\d+$/.test(s)) continue; // só dígitos (marcadores)
+      if (isHeaderLine(s)) continue;
+      if (looksLikePlate(s)) continue;
+      return s;
+    }
+    return null;
+  };
+
+  const findMarker = (m: string) => lines.findIndex((x) => (x || "").trim() === m);
+
+  const i3 = findMarker("3");
+  const i1 = findMarker("1");
+  const i4 = findMarker("4");
+
+  // ---- origem (3)
+  let origem: string | null = null;
+  let origemLineIdx = -1;
+
+  if (i3 >= 0) {
+    for (let j = i3 + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      if (/^\d+$/.test(s)) continue;
+      if (isHeaderLine(s)) continue;
+      if (looksLikePlate(s)) continue;
+      origem = s;
+      origemLineIdx = j;
+      break;
+    }
+  }
+
+  // ---- destino (1) OU fallback
+  let destino: string | null = i1 >= 0 ? nextMeaningful(i1) : null;
+
+  // fallback #1: procura direto "GPA ENGENHARIA" em qualquer lugar
+  if (!destino) {
+    const cand = lines.find((x) => /GPA\s+ENGENHARIA/i.test(x));
+    if (cand && !isHeaderLine(cand)) destino = cand.trim();
+  }
+
+  // fallback #2: pega a primeira linha útil depois da ORIGEM que não seja material
+  if (!destino && origemLineIdx >= 0) {
+    for (let j = origemLineIdx + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      if (/^\d+$/.test(s)) continue;
+      if (isHeaderLine(s)) continue;
+      if (looksLikePlate(s)) continue;
+      if (isLikelyMaterial(s)) continue; // não pode confundir com BRITA
+      destino = s;
+      break;
+    }
+  }
+
+  // ---- material (4) OU fallback
+  let material: string | null = null;
+
+  if (i4 >= 0) {
+    const cand = nextMeaningful(i4);
+    if (cand && isLikelyMaterial(cand)) material = cand;
+  }
+
+  if (!material) {
+    const cand = lines.find((x) => isLikelyMaterial(x));
+    if (cand) material = cand;
+  }
+
+  // ---- peso líquido: número logo após a ÚLTIMA "PESAGEM INICIAL"
+  let peso: string | null = null;
+  const idxsPI: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if ((lines[i] || "").trim().toUpperCase() === "PESAGEM INICIAL") idxsPI.push(i);
+  }
+  const lastPI = idxsPI.length ? idxsPI[idxsPI.length - 1] : -1;
+
+  const pickWeightAfter = (start: number) => {
+    for (let j = start + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      if (/^\d{1,3}\.\d{3}$/.test(s)) return s;
+      if (/^\d{1,3},\d{3}$/.test(s)) return s.replace(",", ".");
+    }
+    return null;
+  };
+
+  if (lastPI >= 0) peso = pickWeightAfter(lastPI);
+
+  const any = Boolean(origem || destino || material || peso);
+  if (!any) return null;
+
+  const out: any = {};
+  if (origem) out.origem = origem;
+  if (destino) out.destino = destino;
+  if (material) out.material = material;
+  if (peso) out.peso = peso;
+
+  return out;
 }
 
 function isLikelyMaterial(s: string) {
@@ -806,9 +874,10 @@ export default function MaterialTicketNovoPage() {
         if (fixed) {
           if (fixed.origem) setOrigem(fixed.origem);
 
-          // destino “C” / vazio -> força o do raw (ex.: GPA ENGENHARIA)
-          if (fixed.destino && isBadDestino(d)) setDestino(normalizeObraName(fixed.destino));
-
+         
+// ✅ se veio "C" / vazio, força o destino do RAW
+if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(normalizeObraName(fixed.destino));
+          
           // material “CARRETA” / vazio -> força o do raw (ex.: BRITA ZERO)
           if (fixed.material && (isBadMaterial(m) || !m || m.toUpperCase() === "CARRETA")) setMaterial(fixed.material);
 
