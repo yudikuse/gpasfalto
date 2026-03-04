@@ -220,8 +220,6 @@ function normalizeText(v: string | null) {
 
 /**
  * ✅ Normaliza OBRA/DESTINO para evitar duplicidade:
- * Ex.: "POSTO MAHLE JATAI - GO" == "POSTO MAHLE JATAI-GO"
- * Regra: trim + colapsa espaços + padroniza sufixo " - UF" no final.
  */
 function normalizeObraName(v: string | null) {
   let s = (v || "").trim();
@@ -270,16 +268,160 @@ function looksLikePlate(raw: string) {
   if (!s) return false;
   const compact = s.replace(/\s+/g, "");
 
-  // Mercosul: ABC1D23 (ou ABC-1D23)
   if (/^[A-Z]{3}-?\d[A-Z]\d{2}$/.test(compact)) return true;
-
-  // Padrão antigo: ABC-1234
   if (/^[A-Z]{3}-\d{4}$/.test(compact)) return true;
-
-  // OCR ruim que vira "NK2-7H69"
   if (/^[A-Z]{2}\d-?\d[A-Z0-9]\d{2}$/.test(compact)) return true;
 
   return false;
+}
+
+// ✅ Heurísticas pro ticket de PESAGEM (ENTRADA)
+function isHeaderLine(s: string) {
+  const u = (s || "").trim().toUpperCase();
+  if (!u) return true;
+  const headers = new Set([
+    "GPA ENGENHARIA E CONSTRUÇÕES LTDA",
+    "GPA ENGENHARIA E CONSTRUCOES LTDA",
+    "TICKET DE PESAGEM",
+    "TICKET DE PESA GEM",
+    "PESAGEM FINAL OK.",
+    "PESAGEM FINAL OK",
+    "VEIC/CAVALO",
+    "VEIC. CAVALO",
+    "MOTORISTA",
+    "PESAGEM INICIAL",
+    "PESAGEM FINAL",
+    "DATA",
+    "TICKET",
+    "N°",
+    "Nº",
+    "ASSINATURA BALANÇA",
+    "ASSINATURA BALANCA",
+    "P. GERAL",
+    "F. GERAL",
+    "P. OBRA",
+    "UA-01",
+    "UA-03",
+    "X",
+    "OBS.1",
+    "RECEBIMENTO E INSPENÇAO:",
+    "RECEBIMENTO E INSPENCAO:",
+    "RECEBIMENTO E INSPENÇÃO:",
+    "CARRETA",
+    "PESAGEM FINAL",
+    "PESAGEM INICIAL",
+  ]);
+  if (headers.has(u)) return true;
+  if (u.includes("CONSTRU")) return true;
+  if (u.includes("LTDA")) return true;
+  if (u === "0") return true;
+  return false;
+}
+
+function isLikelyMaterial(s: string) {
+  const u = (s || "").trim().toUpperCase();
+  if (!u) return false;
+  if (u === "CARRETA") return false;
+  if (u.length <= 1) return false;
+  if (looksLikePlate(u)) return false;
+
+  // materiais mais comuns (ajuste quando quiser)
+  if (/(BRITA|P[ÓO]\s*BRITA|PO\s*BRITA|CBUQ|MASSA|CAP|RR|OGR|EMULS)/i.test(u)) return true;
+
+  return false;
+}
+
+function isBadDestino(s: string) {
+  const u = (s || "").trim().toUpperCase();
+  if (!u) return true;
+  if (u.length <= 2) return true; // "C", "UA", etc
+  if (u === "C") return true;
+  if (u === "CARRETA") return true;
+  return false;
+}
+
+function isBadMaterial(s: string) {
+  const u = (s || "").trim().toUpperCase();
+  if (!u) return true;
+  if (u === "CARRETA") return true;
+  if (u.length <= 2) return true;
+  return false;
+}
+
+function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; material?: string; peso?: string } | null {
+  const lines = String(raw || "")
+    .split(/\r?\n/g)
+    .map((x) => (x || "").trim())
+    .filter(Boolean);
+
+  if (!lines.length) return null;
+
+  const nextMeaningful = (idx: number) => {
+    for (let j = idx + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      if (/^\d+$/.test(s)) continue; // só dígitos (marcadores)
+      if (isHeaderLine(s)) continue;
+      if (looksLikePlate(s)) continue;
+      return s;
+    }
+    return null;
+  };
+
+  const findMarker = (m: string) => lines.findIndex((x) => (x || "").trim() === m);
+
+  const i3 = findMarker("3");
+  const i1 = findMarker("1");
+  const i4 = findMarker("4");
+
+  // origem e destino pelo padrão do ticket
+  const origem = i3 >= 0 ? nextMeaningful(i3) : null;
+  const destino = i1 >= 0 ? nextMeaningful(i1) : null;
+
+  // material: tenta pelo "4", senão varre por BRITA/PÓ BRITA etc
+  let material: string | null = null;
+
+  if (i4 >= 0) {
+    const cand = nextMeaningful(i4);
+    if (cand && isLikelyMaterial(cand)) material = cand;
+  }
+
+  if (!material) {
+    const cand = lines.find((x) => isLikelyMaterial(x));
+    if (cand) material = cand;
+  }
+
+  // peso líquido: número logo após a ÚLTIMA "PESAGEM INICIAL"
+  let peso: string | null = null;
+  const idxsPI: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if ((lines[i] || "").trim().toUpperCase() === "PESAGEM INICIAL") idxsPI.push(i);
+  }
+  const lastPI = idxsPI.length ? idxsPI[idxsPI.length - 1] : -1;
+
+  const pickWeightAfter = (start: number) => {
+    for (let j = start + 1; j < lines.length; j++) {
+      const s = (lines[j] || "").trim();
+      if (!s) continue;
+      // 12.900 ou 12,900
+      if (/^\d{1,3}\.\d{3}$/.test(s)) return s;
+      if (/^\d{1,3},\d{3}$/.test(s)) return s.replace(",", ".");
+    }
+    return null;
+  };
+
+  if (lastPI >= 0) peso = pickWeightAfter(lastPI);
+
+  // sanity mínima: precisa ter pelo menos origem/destino ou material/peso
+  const any = Boolean(origem || destino || material || peso);
+  if (!any) return null;
+
+  const out: any = {};
+  if (origem) out.origem = origem;
+  if (destino) out.destino = destino;
+  if (material) out.material = material;
+  if (peso) out.peso = peso;
+  return out;
 }
 
 // ✅ ENTRADA: puxa do controle (material_entrada_controle_v)
@@ -320,7 +462,7 @@ async function loadEntradaControle(origemVal: string, obraVal: string, matVal: s
       if (!r.error && r.data) return (r.data as any) ?? null;
     }
 
-    // 3) fallback com wildcard (pra variações tipo "FETZ" vs "FETZ MINERADORA")
+    // 3) fallback wildcard
     {
       const r = await supabase
         .from("material_entrada_controle_v")
@@ -375,7 +517,7 @@ function buildWhatsappMessage(p: {
     `Ordem de Compra: ${oc ? oc : "-"}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
-  // ✅ SAÍDA: mantém acumulado como está (não mexer)
+  // ✅ SAÍDA: mantém acumulado como está
   if (tipo === "SAIDA") {
     if (acum) {
       msg += `\n📅 Acumulado Obra *${obra}*\n`;
@@ -403,7 +545,7 @@ function buildWhatsappMessage(p: {
     return msg;
   }
 
-  // ✅ ENTRADA: troca o bloco do acumulado por “controle de entrada”
+  // ✅ ENTRADA: controle de entrada
   const ctl = entradaCtl;
 
   const obraMsg = (ctl?.obra || "").trim() || obra;
@@ -422,7 +564,6 @@ function buildWhatsappMessage(p: {
     msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton\n`;
   }
 
-  // se não achou controle, pelo menos usa o peso deste ticket
   const entradaComEsta = entradaTotal !== null ? entradaTotal : pesoNum;
   msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton\n`;
 
@@ -441,7 +582,7 @@ export default function MaterialTicketNovoPage() {
 
   const [veiculo, setVeiculo] = useState("");
   const [origem, setOrigem] = useState("");
-  const [destino, setDestino] = useState(""); // obra
+  const [destino, setDestino] = useState(""); // obra/destino
   const [material, setMaterial] = useState("");
   const [oc, setOc] = useState("");
 
@@ -573,8 +714,6 @@ export default function MaterialTicketNovoPage() {
       const matTrim = (matVal || "").trim();
 
       if (!obraTrim || !matTrim) return false;
-
-      // evita cadastrar lixo quando OCR lê placa como obra
       if (looksLikePlate(obraTrim)) return false;
 
       let q = supabase.from("material_oc_plan").select("id").ilike("obra", obraTrim).ilike("material", matTrim).limit(1);
@@ -661,6 +800,24 @@ export default function MaterialTicketNovoPage() {
       if (hr) setHora(hr);
       if (p) setPeso(p);
 
+      // ✅ FIX: ENTRADA -> reprocessa do OCR bruto quando fields vierem zoados (CARRETA/C/0.000 etc)
+      if (tipo === "ENTRADA" && js?.raw) {
+        const fixed = fixEntradaFromRaw(String(js.raw));
+        if (fixed) {
+          if (fixed.origem) setOrigem(fixed.origem);
+
+          // destino “C” / vazio -> força o do raw (ex.: GPA ENGENHARIA)
+          if (fixed.destino && isBadDestino(d)) setDestino(normalizeObraName(fixed.destino));
+
+          // material “CARRETA” / vazio -> força o do raw (ex.: BRITA ZERO)
+          if (fixed.material && (isBadMaterial(m) || !m || m.toUpperCase() === "CARRETA")) setMaterial(fixed.material);
+
+          // peso 0.000 / vazio -> força o líquido do raw (linha após última PESAGEM INICIAL)
+          const pNum = parsePesoMasked(p);
+          if (fixed.peso && (!p || pNum === null || pNum <= 0)) setPeso(fixed.peso);
+        }
+      }
+
       setSavedMsg("OCR aplicado. Confira e ajuste se necessário.");
     } catch (e: any) {
       setError(e?.message || "Erro ao rodar OCR.");
@@ -699,7 +856,6 @@ export default function MaterialTicketNovoPage() {
 
       const ocVal = oc.trim() ? oc.trim() : null;
 
-      // ✅ FIX: normaliza a obra/destino ANTES de salvar
       const obraVal = normalizeObraName(destino);
 
       const ins = await supabase
@@ -728,17 +884,14 @@ export default function MaterialTicketNovoPage() {
       const newId = ins.data?.id ?? null;
       setSavedId(newId);
 
-      // ✅ acumulados (Dia/Semana/Mês) — mantém (SAÍDA usa; ENTRADA ignora na msg)
       const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
       setLastAcum(acum);
 
-      // ✅ ENTRADA: puxa controle para a mensagem (pedido/entradas/saldo)
       if (tipo === "ENTRADA") {
         const ctl = await loadEntradaControle(origem.trim(), obraVal, material.trim());
         setLastEntradaCtl(ctl);
         setSavedMsg("Salvo com sucesso!");
       } else {
-        // ✅ SAÍDA: plano (obra/oc/material) — se não existir, cria como ILIMITADO e tenta de novo
         let resumo = await loadResumo(obraVal, ocVal, material.trim());
         let createdPlan = false;
 
@@ -925,33 +1078,13 @@ export default function MaterialTicketNovoPage() {
           </div>
 
           {error ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #fecaca",
-                background: "#fef2f2",
-                color: "#991b1b",
-                fontSize: 14,
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>
               {error}
             </div>
           ) : null}
 
           {savedMsg ? (
-            <div
-              style={{
-                borderRadius: 14,
-                padding: "10px 12px",
-                border: "1px solid #bbf7d0",
-                background: "#f0fdf4",
-                color: "#166534",
-                fontSize: 14,
-                marginBottom: 12,
-              }}
-            >
+            <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>
               {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
 
               {lastAcum ? (
@@ -966,8 +1099,7 @@ export default function MaterialTicketNovoPage() {
 
               {lastResumo ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
-                  <b>Controle:</b>{" "}
-                  {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
+                  <b>Controle:</b> {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
                 </div>
               ) : null}
             </div>
@@ -984,7 +1116,6 @@ export default function MaterialTicketNovoPage() {
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Foto do ticket *</label>
-
               <input
                 style={styles.input}
                 type="file"
@@ -1001,7 +1132,6 @@ export default function MaterialTicketNovoPage() {
                   setLastEntradaCtl(null);
                 }}
               />
-
               <div style={styles.hint}>
                 No celular isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
               </div>
@@ -1017,14 +1147,7 @@ export default function MaterialTicketNovoPage() {
                 <img
                   src={previewUrl}
                   alt="Preview do ticket"
-                  style={{
-                    width: "100%",
-                    maxHeight: 420,
-                    objectFit: "contain",
-                    borderRadius: 16,
-                    border: "1px solid #e5e7eb",
-                    background: "#fff",
-                  }}
+                  style={{ width: "100%", maxHeight: 420, objectFit: "contain", borderRadius: 16, border: "1px solid #e5e7eb", background: "#fff" }}
                 />
               ) : null}
             </div>
@@ -1084,12 +1207,7 @@ export default function MaterialTicketNovoPage() {
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Ordem de Compra (OC)</label>
-              <input
-                style={styles.input}
-                value={oc}
-                onChange={(e) => setOc(e.target.value)}
-                placeholder="Ex.: 32026 (deixe vazio pra prefeitura/ordem ilimitada)"
-              />
+              <input style={styles.input} value={oc} onChange={(e) => setOc(e.target.value)} placeholder="Ex.: 32026 (deixe vazio pra prefeitura/ordem ilimitada)" />
               <div style={styles.hint}>Se a obra for “infinita” (prefeitura), pode deixar vazio (OC = NULL).</div>
             </div>
 
