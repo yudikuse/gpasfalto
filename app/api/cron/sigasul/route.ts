@@ -123,15 +123,22 @@ export async function GET(req: Request) {
       auth: { persistSession: false, autoRefreshToken: false },
     });
 
-    // Estado
+    // Estado (pra não estourar rate limit)
     const { data: state, error: stateErr } = await supabase
       .from("sigasul_ingest_state")
-      .select("last_pos_id_ref")
+      .select("last_pos_id_ref,last_run_at")
       .eq("stream_key", "positions_controls_v2")
       .maybeSingle();
 
     if (stateErr) throw stateErr;
+
     const lastId = state?.last_pos_id_ref ?? null;
+    const lastRunAt = state?.last_run_at ? new Date(state.last_run_at).getTime() : 0;
+
+    const now = Date.now();
+    if (lastRunAt && now - lastRunAt < 35_000) {
+      return Response.json({ ok: true, skipped: true, reason: "too_soon", last_run_at: state?.last_run_at });
+    }
 
     // Cercas -> obra
     const { data: cercasMapRows, error: cercasErr } = await supabase
@@ -146,81 +153,190 @@ export async function GET(req: Request) {
       cercaMap.set(Number(r.pos_cerca_id), { obra: r.obra, pos_cerca_nome: r.pos_cerca_nome });
     }
 
-    // Candidatos (v2, v1, sem versão) + com/sem lastId
-    const bases = [
-      `${SIGASUL_BASE_URL}/api/v2/positions/controls/all/`,
-      `${SIGASUL_BASE_URL}/api/v1/positions/controls/all/`,
-      `${SIGASUL_BASE_URL}/api/positions/controls/all/`,
-    ];
-
-    const candidates: string[] = [];
-    for (const base of bases) {
-      if (lastId) {
-        candidates.push(`${base}${lastId}`);
-        candidates.push(`${base}?last=${lastId}`);
-      }
-      candidates.push(base);
-    }
+    // ✅ Endpoint correto (1 chamada)
+    const endpoint = `${SIGASUL_BASE_URL}/api/v2/positions/controls/all/`;
 
     const attempts: any[] = [];
-    let positions: any[] | null = null;
-    let usedUrl: string | null = null;
+    const ac = new AbortController();
+    const t = setTimeout(() => ac.abort(), 20000);
 
-    for (const u of candidates) {
-      const ac = new AbortController();
-      const t = setTimeout(() => ac.abort(), 20000);
+    let status = 0;
+    let text = "";
+    let contentType: string | null = null;
 
-      let status = 0;
-      let text = "";
-      try {
-        const resp = await fetch(u, {
-          method: "GET",
-          headers: {
-            "x-auth-token": SIGASUL_API_TOKEN,
-            accept: "application/json",
-          },
-          signal: ac.signal,
-        });
+    try {
+      const resp = await fetch(endpoint, {
+        method: "GET",
+        headers: {
+          "x-auth-token": SIGASUL_API_TOKEN,
+          accept: "application/json",
+        },
+        signal: ac.signal,
+      });
 
-        status = resp.status;
-        text = await resp.text(); // pegar texto pra debug
-        const json = (() => {
-          try {
-            return JSON.parse(text);
-          } catch {
-            return null;
-          }
-        })();
+      status = resp.status;
+      contentType = resp.headers.get("content-type");
+      text = await resp.text();
 
-        const arr = extractPositions(json);
-        attempts.push({
-          url: u,
-          status,
-          ok: resp.ok,
-          content_type: resp.headers.get("content-type"),
-          body_head: debug ? text.slice(0, 250) : undefined,
-          detected_array: Array.isArray(arr),
-          array_len: Array.isArray(arr) ? arr.length : null,
-        });
-
-        if (Array.isArray(arr)) {
-          positions = arr;
-          usedUrl = u;
-          break;
+      const json = (() => {
+        try {
+          return JSON.parse(text);
+        } catch {
+          return null;
         }
-      } catch (e: any) {
+      })();
+
+      // Rate limit (API devolve JSON string: "Limite excedido de requisições")
+      if (status === 400 && typeof json === "string" && json.toLowerCase().includes("limite excedido")) {
+        await supabase
+          .from("sigasul_ingest_state")
+          .update({
+            last_run_at: new Date().toISOString(),
+            last_status: "rate_limited",
+            last_error: "rate_limited",
+          })
+          .eq("stream_key", "positions_controls_v2");
+
         attempts.push({
-          url: u,
+          url: endpoint,
           status,
           ok: false,
-          error: e?.message || String(e),
+          content_type: contentType,
+          body_head: debug ? text.slice(0, 250) : undefined,
+          detected_array: false,
+          array_len: null,
         });
-      } finally {
-        clearTimeout(t);
-      }
-    }
 
-    if (!positions) {
+        return Response.json({ ok: true, rate_limited: true, attempts: debug ? attempts : undefined });
+      }
+
+      const arr = extractPositions(json);
+
+      attempts.push({
+        url: endpoint,
+        status,
+        ok: resp.ok,
+        content_type: contentType,
+        body_head: debug ? text.slice(0, 250) : undefined,
+        detected_array: Array.isArray(arr),
+        array_len: Array.isArray(arr) ? arr.length : null,
+      });
+
+      if (!Array.isArray(arr)) {
+        await supabase
+          .from("sigasul_ingest_state")
+          .update({
+            last_run_at: new Date().toISOString(),
+            last_status: "error",
+            last_error: `bad_response_${status}`,
+          })
+          .eq("stream_key", "positions_controls_v2");
+
+        return Response.json(
+          { ok: false, error: "bad_response", status, attempts: debug ? attempts : undefined },
+          { status: 502 }
+        );
+      }
+
+      const positions = arr;
+
+      // Normaliza + grava
+      let maxId = lastId ?? 0;
+
+      const rows = positions
+        .map((p) => {
+          const pos_id_ref = Number(p?.pos_id_ref);
+          if (!pos_id_ref || Number.isNaN(pos_id_ref)) return null;
+          if (pos_id_ref > maxId) maxId = pos_id_ref;
+
+          const cercas = (p?.pos_cercas ?? []) as Cerca[];
+          const { cerca_id_ativa, cerca_nome_ativa, obra } = pickObraFromCercas(cercas, cercaMap);
+
+          const tele = getTele(p);
+
+          const pos_data_hora_gps = p?.pos_data_hora_gps ?? null;
+          const pos_data_hora_gps_utc = p?.pos_data_hora_gps_utc ?? null;
+          const pos_data_hora_receb = p?.pos_data_hora_receb ?? null;
+
+          return {
+            pos_id_ref,
+
+            pos_equip_id: p?.pos_equip_id ?? null,
+            pos_placa: p?.pos_placa ?? null,
+            pos_equip_modelo: p?.pos_equip_modelo ?? null,
+            pos_nome_motorista: p?.pos_nome_motorista ?? null,
+            pos_cliente_id: p?.pos_cliente_id ?? null,
+            pos_cliente_nome: p?.pos_cliente_nome ?? null,
+
+            pos_data_hora_gps,
+            pos_data_hora_gps_utc,
+            pos_data_hora_receb,
+
+            gps_at: parseBRToISO(pos_data_hora_gps, TZ_OFFSET),
+            gps_utc_at: parseUTCToISO(pos_data_hora_gps_utc),
+            receb_at: parseBRToISO(pos_data_hora_receb, "-03:00"),
+
+            pos_latitude: p?.pos_latitude ?? null,
+            pos_longitude: p?.pos_longitude ?? null,
+            pos_ignicao: p?.pos_ignicao ?? null,
+            pos_online: p?.pos_online ?? null,
+
+            pos_tensao: p?.pos_tensao ?? null,
+            pos_qt_satelites: p?.pos_qt_satelites ?? null,
+
+            pos_velocidade: p?.pos_velocidade ?? null,
+            pos_odometro: p?.pos_odometro ?? null,
+            pos_odometro_calc: p?.pos_odometro_calc ?? null,
+
+            cerca_id_ativa,
+            cerca_nome_ativa,
+            obra,
+
+            tele_odometro: tele?.tele_odometro ?? null,
+            tele_horimetro: tele?.tele_horimetro ?? null,
+            tele_rpm: tele?.tele_rpm ?? null,
+            tele_velocidade: tele?.tele_velocidade ?? null,
+            tele_combustivel_vida: tele?.tele_combustivel_vida ?? null,
+            tele_percent_combustivel: tele?.tele_percent_combustivel ?? null,
+
+            payload: p,
+          };
+        })
+        .filter(Boolean) as any[];
+
+      const chunks = chunk(rows, 500);
+      let attempted = 0;
+
+      for (const c of chunks) {
+        attempted += c.length;
+        const { error } = await supabase
+          .from("sigasul_positions_raw")
+          .upsert(c, { onConflict: "pos_id_ref", ignoreDuplicates: true });
+        if (error) throw error;
+      }
+
+      await supabase
+        .from("sigasul_ingest_state")
+        .update({
+          last_pos_id_ref: maxId || lastId,
+          last_run_at: new Date().toISOString(),
+          last_status: "ok",
+          last_error: null,
+        })
+        .eq("stream_key", "positions_controls_v2");
+
+      return Response.json({
+        ok: true,
+        used_url: endpoint,
+        last_id_before: lastId,
+        max_id_seen: maxId,
+        rows_received: positions.length,
+        rows_attempted_upsert: attempted,
+        attempts: debug ? attempts : undefined,
+      });
+    } catch (e: any) {
+      attempts.push({ url: endpoint, status, ok: false, error: e?.message || String(e) });
+
       await supabase
         .from("sigasul_ingest_state")
         .update({
@@ -231,106 +347,14 @@ export async function GET(req: Request) {
         .eq("stream_key", "positions_controls_v2");
 
       return Response.json({ ok: false, error: "fetch_failed", attempts: debug ? attempts : undefined }, { status: 502 });
+    } finally {
+      clearTimeout(t);
     }
-
-    // Normaliza + grava
-    let maxId = lastId ?? 0;
-
-    const rows = positions
-      .map((p) => {
-        const pos_id_ref = Number(p?.pos_id_ref);
-        if (!pos_id_ref || Number.isNaN(pos_id_ref)) return null;
-        if (pos_id_ref > maxId) maxId = pos_id_ref;
-
-        const cercas = (p?.pos_cercas ?? []) as Cerca[];
-        const { cerca_id_ativa, cerca_nome_ativa, obra } = pickObraFromCercas(cercas, cercaMap);
-
-        const tele = getTele(p);
-
-        const pos_data_hora_gps = p?.pos_data_hora_gps ?? null;
-        const pos_data_hora_gps_utc = p?.pos_data_hora_gps_utc ?? null;
-        const pos_data_hora_receb = p?.pos_data_hora_receb ?? null;
-
-        return {
-          pos_id_ref,
-
-          pos_equip_id: p?.pos_equip_id ?? null,
-          pos_placa: p?.pos_placa ?? null,
-          pos_equip_modelo: p?.pos_equip_modelo ?? null,
-          pos_nome_motorista: p?.pos_nome_motorista ?? null,
-          pos_cliente_id: p?.pos_cliente_id ?? null,
-          pos_cliente_nome: p?.pos_cliente_nome ?? null,
-
-          pos_data_hora_gps,
-          pos_data_hora_gps_utc,
-          pos_data_hora_receb,
-
-          gps_at: parseBRToISO(pos_data_hora_gps, TZ_OFFSET),
-          gps_utc_at: parseUTCToISO(pos_data_hora_gps_utc),
-          receb_at: parseBRToISO(pos_data_hora_receb, "-03:00"),
-
-          pos_latitude: p?.pos_latitude ?? null,
-          pos_longitude: p?.pos_longitude ?? null,
-          pos_ignicao: p?.pos_ignicao ?? null,
-          pos_online: p?.pos_online ?? null,
-
-          pos_tensao: p?.pos_tensao ?? null,
-          pos_qt_satelites: p?.pos_qt_satelites ?? null,
-
-          pos_velocidade: p?.pos_velocidade ?? null,
-          pos_odometro: p?.pos_odometro ?? null,
-          pos_odometro_calc: p?.pos_odometro_calc ?? null,
-
-          cerca_id_ativa,
-          cerca_nome_ativa,
-          obra,
-
-          tele_odometro: tele?.tele_odometro ?? null,
-          tele_horimetro: tele?.tele_horimetro ?? null,
-          tele_rpm: tele?.tele_rpm ?? null,
-          tele_velocidade: tele?.tele_velocidade ?? null,
-          tele_combustivel_vida: tele?.tele_combustivel_vida ?? null,
-          tele_percent_combustivel: tele?.tele_percent_combustivel ?? null,
-
-          payload: p,
-        };
-      })
-      .filter(Boolean) as any[];
-
-    const chunks = chunk(rows, 500);
-    let attempted = 0;
-
-    for (const c of chunks) {
-      attempted += c.length;
-      const { error } = await supabase
-        .from("sigasul_positions_raw")
-        .upsert(c, { onConflict: "pos_id_ref", ignoreDuplicates: true });
-      if (error) throw error;
-    }
-
-    await supabase
-      .from("sigasul_ingest_state")
-      .update({
-        last_pos_id_ref: maxId || lastId,
-        last_run_at: new Date().toISOString(),
-        last_status: "ok",
-        last_error: null,
-      })
-      .eq("stream_key", "positions_controls_v2");
-
-    return Response.json({
-      ok: true,
-      used_url: usedUrl,
-      last_id_before: lastId,
-      max_id_seen: maxId,
-      rows_received: positions.length,
-      rows_attempted_upsert: attempted,
-      attempts: debug ? attempts : undefined,
-    });
   } catch (err: any) {
     return Response.json({ ok: false, error: err?.message || String(err) }, { status: 500 });
   }
 }
+
 export async function POST(req: Request) {
   return GET(req);
 }
