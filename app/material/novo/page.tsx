@@ -42,8 +42,6 @@ type EntradaControle = {
   inicio_em: string | null;
 };
 
-const PATIO_FETZ_OBRA = "PÁTIO USINA (FETZ+FRETE)";
-
 function extFromFile(file: File) {
   const t = (file.type || "").toLowerCase();
   if (t.includes("png")) return "png";
@@ -65,14 +63,6 @@ function maskTimeInput(raw: string) {
   if (d.length <= 2) return d;
   if (d.length <= 4) return `${d.slice(0, 2)}:${d.slice(2)}`;
   return `${d.slice(0, 2)}:${d.slice(2, 4)}:${d.slice(4, 6)}`;
-}
-
-function maskPesoTon3(raw: string) {
-  const digits = (raw || "").replace(/\D+/g, "").slice(0, 15);
-  if (!digits) return "";
-  const n = Number(digits) / 1000;
-  if (!Number.isFinite(n)) return "";
-  return n.toFixed(3);
 }
 
 function parseDateBR(raw: string): Date | null {
@@ -214,12 +204,11 @@ function normalizeText(v: string | null) {
 function normalizeObraName(v: string) {
   const s = normalizeText(v);
   if (!s) return "";
-
   const u = s.toUpperCase();
-  if (u === "GPA ENGENHARIA") return "GPA ENGENHARIA";
-  if (u === "PATIO USINA (FETZ+FRETE)") return PATIO_FETZ_OBRA;
-  if (u === "PÁTIO USINA (FETZ+FRETE)") return PATIO_FETZ_OBRA;
 
+  if (u === "GPA ENGENHARIA") return "GPA ENGENHARIA";
+
+  // mantém o texto (a regra de "pátio" vira GPA mais abaixo)
   return s;
 }
 
@@ -261,27 +250,18 @@ function looksLikePlate(raw: string) {
   const s = (raw || "").trim().toUpperCase();
   if (!s) return false;
   const compact = s.replace(/\s+/g, "");
-
-  // Mercosul: ABC1D23 (ou ABC-1D23)
   if (/^[A-Z]{3}-?\d[A-Z]\d{2}$/.test(compact)) return true;
-
-  // Padrão antigo: ABC-1234
   if (/^[A-Z]{3}-\d{4}$/.test(compact)) return true;
-
-  // OCR ruim
   if (/^[A-Z]{2}\d-?\d[A-Z0-9]\d{2}$/.test(compact)) return true;
-
   return false;
 }
 
 function isHeaderLine(s: string) {
   const u = (s || "").trim().toUpperCase();
   if (!u) return true;
-
   if (u === "C") return true;
   if (u === "D") return true;
 
-  // cabeçalhos comuns
   if (
     /(GPA\s+ENGENHARIA\s+E\s+CONSTRU|TICKET\s+DE\s+PES|TICKET\s+DE\s+PESA\s*GEM|PESAGEM|PESAGEM\s+FINAL|PESAGEM\s+INICIAL|PESAGEM\s+FINAL\s+OK|PESA\s*GEM|PESA\s*GEM\s+FINAL\s+OK|PESA\s*GEM\s+INICIAL|VEIC\/CAVALO|MOTORISTA|ASSINATURA|RECEBIMENTO|INSPE|OBS\.?|UA-\d+|N°|TICKET\s+N|P\.\s*GERAL|P\.\s*OBRA)/i.test(
       u
@@ -291,8 +271,6 @@ function isHeaderLine(s: string) {
 
   if (/^\d{2}\/\d{2}\/\d{4}$/.test(u)) return true;
   if (/^\d{2}:\d{2}(:\d{2})?$/.test(u)) return true;
-
-  // números soltos não são "header", mas não servem como texto
   if (/^\d+$/.test(u)) return true;
 
   return false;
@@ -306,7 +284,6 @@ function isLikelyMaterial(s: string) {
   if (looksLikePlate(u)) return false;
 
   if (/(BRITA|P[ÓO]\s*BRITA|PO\s*BRITA|PÓ\s*DE\s*BRITA|CBUQ|MASSA|CAP|RR|OGR|EMULS)/i.test(u)) return true;
-
   return false;
 }
 
@@ -332,6 +309,12 @@ function isFetzOrigem(s: string) {
   return /FETZ/i.test((s || "").trim());
 }
 
+function isPatioLike(s: string) {
+  const u = (s || "").trim().toUpperCase();
+  if (!u) return false;
+  return /PATIO|PÁTIO/i.test(u) || /USINA\s*\(FETZ\+FRETE\)/i.test(u) || /FETZ\+FRETE/i.test(u);
+}
+
 function normalizeMaterialForMsg(s: string) {
   const u = (s || "").trim().toUpperCase();
   if (!u) return "";
@@ -343,13 +326,6 @@ function normalizeMaterialForMsg(s: string) {
   return (s || "").trim();
 }
 
-/**
- * ✅ ENTRADA: extrai do OCR bruto (resistente a variações tipo "C" no começo)
- * - origem: marcador 3
- * - destino: marcador 1
- * - material: marcador 4 (ou varredura por BRITA/PÓ BRITA)
- * - peso: calcula pelo bloco de pesos (líquido = max - min, ou usa o valor já impresso)
- */
 function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; material?: string; peso?: string } | null {
   const lines = String(raw || "")
     .split(/\r?\n/g)
@@ -358,7 +334,6 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
 
   if (!lines.length) return null;
 
-  // pega valores quando o OCR junta "3 FETZ MINERADORA" na mesma linha
   const markerInline: Record<string, string> = {};
   for (const ln of lines) {
     const m = ln.match(/^([134])\s+(.+)$/);
@@ -383,7 +358,6 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     return null;
   };
 
-  // origem/destino/material
   let origem: string | null = markerInline["3"] || null;
   let destino: string | null = markerInline["1"] || null;
   let material: string | null = markerInline["4"] || null;
@@ -398,13 +372,11 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     if (i1 >= 0) destino = nextMeaningful(i1);
   }
 
-  // fallback destino: achar "GPA ENGENHARIA" em qualquer lugar
   if (!destino) {
     const cand = lines.find((x) => /GPA\s+ENGENHARIA/i.test(x) && !isHeaderLine(x));
     if (cand) destino = cand.trim();
   }
 
-  // material: garantir que é material
   if (material && !isLikelyMaterial(material)) material = null;
 
   if (!material) {
@@ -420,8 +392,6 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     if (cand) material = cand;
   }
 
-  // peso (t): tenta achar 2 ou 3 pesos (ex.: 17.710 / 47.340 / 29.630)
-  // Preferência: janela logo após o horário, até antes de "OBS"/"RECEBIMENTO"/etc.
   let peso: string | null = null;
 
   const parseWeightsFromLines = (arr: string[]) => {
@@ -443,7 +413,6 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     const vals = ws.filter((x) => Number.isFinite(x) && x > 0);
     if (vals.length < 2) return null;
 
-    // remove duplicados (OCR às vezes repete)
     const uniq: number[] = [];
     for (const v of vals) {
       if (!uniq.some((u) => Math.abs(u - v) < 0.001)) uniq.push(v);
@@ -453,8 +422,7 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     const max = Math.max(...uniq);
     const diff = Math.max(0, max - min);
 
-    // se existir um valor que "parece" o líquido (max-min), usa ele
-    const tol = 0.01; // ~10 kg
+    const tol = 0.01;
     const cand = uniq.find((v) => Math.abs(v - diff) <= tol);
     const chosen = cand ?? diff;
 
@@ -462,7 +430,6 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     return chosen;
   };
 
-  // tenta janela do horário (normalmente o bloco de pesos vem depois)
   const timeIdx = (() => {
     for (let i = lines.length - 1; i >= 0; i--) {
       const s = (lines[i] || "").trim();
@@ -478,7 +445,6 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     for (let i = timeIdx + 1; i < lines.length; i++) {
       const u = (lines[i] || "").trim().toUpperCase();
       if (!u) continue;
-
       if (/^(OBS\.?|RECEBIMENTO|ASSINATURA|MOTORISTA|TICKET|UA-\d+|P\.?\s*GERAL|P\.?\s*OBRA)/i.test(u)) {
         end = i;
         break;
@@ -487,9 +453,7 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     weights = parseWeightsFromLines(lines.slice(timeIdx, end));
   }
 
-  if (weights.length < 2) {
-    weights = parseWeightsFromLines(lines);
-  }
+  if (weights.length < 2) weights = parseWeightsFromLines(lines);
 
   const net = pickNetFromWeights(weights);
   if (net !== null) peso = net.toFixed(3);
@@ -505,15 +469,15 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
   return out;
 }
 
+/**
+ * ✅ NOVA REGRA (do Marcelo):
+ * Se for pátio (qualquer variação), no app fica SEMPRE "GPA ENGENHARIA"
+ * Isso vale para ENTRADA (e não mexe em SAÍDA).
+ */
 function resolveEntradaObra(origemVal: string, destinoVal: string) {
-  const o = (origemVal || "").trim();
   const d = normalizeObraName(destinoVal);
-
-  // regra: ENTRADA da FETZ -> default é o PÁTIO (pra bater com seu controle)
-  if (isFetzOrigem(o)) {
-    // se usuário digitou algo “curto/ruim” ou veio “GPA ENGENHARIA” (do ticket), usa o PÁTIO
-    if (!d || isBadDestino(d) || /GPA\s+ENGENHARIA/i.test(d)) return PATIO_FETZ_OBRA;
-  }
+  if (isPatioLike(d)) return "GPA ENGENHARIA";
+  if (isFetzOrigem(origemVal || "")) return "GPA ENGENHARIA";
   return d;
 }
 
@@ -544,7 +508,6 @@ function materialVariantsForLookup(mat: string) {
   return Array.from(out);
 }
 
-// ✅ ENTRADA: puxa do controle (material_entrada_controle_v)
 async function loadEntradaControle(origemVal: string, obraVal: string, matVal: string): Promise<EntradaControle | null> {
   try {
     const o = (origemVal || "").trim();
@@ -553,11 +516,9 @@ async function loadEntradaControle(origemVal: string, obraVal: string, matVal: s
 
     if (!o || !mats.length) return null;
 
-    // tenta casar obra+origem+material, senão relaxa
     const origemLike = isFetzOrigem(o) ? "%FETZ%" : `%${o}%`;
 
     for (const m of mats) {
-      // 1) origem + obra + material
       if (ob) {
         const r1 = await supabase
           .from("material_entrada_controle_v")
@@ -573,7 +534,6 @@ async function loadEntradaControle(origemVal: string, obraVal: string, matVal: s
         }
       }
 
-      // 2) origem + material (ignora obra)
       const r2 = await supabase
         .from("material_entrada_controle_v")
         .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
@@ -709,7 +669,7 @@ export default function MaterialTicketNovoPage() {
 
   const [veiculo, setVeiculo] = useState("");
   const [origem, setOrigem] = useState("");
-  const [destino, setDestino] = useState(""); // obra/destino
+  const [destino, setDestino] = useState("");
   const [material, setMaterial] = useState("");
   const [oc, setOc] = useState("");
 
@@ -814,14 +774,11 @@ export default function MaterialTicketNovoPage() {
         });
         return;
       }
-    } catch {
-      // fallback para abrir whatsapp via link
-    }
+    } catch {}
 
     window.open(url, "_blank");
   }
 
-  // ✅ quando faltar plano, cadastra como ILIMITADO (obra+oc+material) — SÓ PRA SAÍDA
   async function ensurePlanIlimitado(obraVal: string, ocVal: string | null, matVal: string): Promise<boolean> {
     try {
       const obraTrim = normalizeObraName(obraVal);
@@ -907,7 +864,6 @@ export default function MaterialTicketNovoPage() {
       let hrVal = normalizeTimeFromOcrToMasked(f.horario || null);
       let pVal = normalizePesoFromOcrToMasked(f.peso_mask ?? f.peso_t ?? null);
 
-      // ✅ ENTRADA: sempre tenta corrigir pelos marcadores do RAW e peso líquido
       if (tipo === "ENTRADA" && js?.raw) {
         const fixed = fixEntradaFromRaw(String(js.raw));
         if (fixed) {
@@ -919,22 +875,17 @@ export default function MaterialTicketNovoPage() {
           if (fixed.peso && (pNum === null || pNum <= 0)) pVal = fixed.peso;
         }
 
-        // material normalizado (evita "PÓ DE BRITA" vs "PO BRITA")
         if (mVal) mVal = normalizeMaterialForMsg(mVal);
 
-        // ENTRADA FETZ: default do “estoque” é o PÁTIO (pra bater com a view de saldo)
-        if (isFetzOrigem(oVal)) {
-          dVal = resolveEntradaObra(oVal, dVal);
-        }
+        // ✅ NOVA REGRA: se for pátio ou origem FETZ, destino vira GPA ENGENHARIA
+        dVal = resolveEntradaObra(oVal, dVal);
       }
 
       if (vVal) setVeiculo(vVal);
       if (oVal) setOrigem(oVal);
 
-      // destino: se vier ruim tipo "C", não seta; mas se ENTRADA/FETZ ele já virou PÁTIO
       if (dVal && !isBadDestino(dVal)) setDestino(dVal);
 
-      // material: evita cair em "CARRETA"
       if (mVal && !isBadMaterial(mVal)) setMaterial(mVal);
 
       if (dtVal) setDataBr(dtVal);
@@ -979,7 +930,7 @@ export default function MaterialTicketNovoPage() {
 
       const ocVal = oc.trim() ? oc.trim() : null;
 
-      // ✅ resolve “obra” de ENTRADA (FETZ -> PÁTIO)
+      // ✅ ENTRADA: aplica regra do pátio -> GPA ENGENHARIA
       const obraVal = tipo === "ENTRADA" ? resolveEntradaObra(origem.trim(), destino) : normalizeObraName(destino);
 
       const ins = await supabase
@@ -1008,7 +959,6 @@ export default function MaterialTicketNovoPage() {
       const newId = ins.data?.id ?? null;
       setSavedId(newId);
 
-      // SAÍDA usa acumulados. ENTRADA não depende disso, mas pode manter pra debug (não vai pra msg).
       const acum = await loadAcumulados(tipo, obraVal, ocVal, normalizeMaterialForMsg(material.trim()), dateISO);
       setLastAcum(acum);
 
@@ -1022,20 +972,14 @@ export default function MaterialTicketNovoPage() {
 
         if (!resumo) {
           createdPlan = await ensurePlanIlimitado(obraVal, ocVal, material.trim());
-          if (createdPlan) {
-            resumo = await loadResumo(obraVal, ocVal, material.trim());
-          }
+          if (createdPlan) resumo = await loadResumo(obraVal, ocVal, material.trim());
         }
 
         setLastResumo(resumo);
 
-        if (createdPlan) {
-          setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
-        } else if (!resumo) {
-          setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
-        } else {
-          setSavedMsg("Salvo com sucesso!");
-        }
+        if (createdPlan) setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
+        else if (!resumo) setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
+        else setSavedMsg("Salvo com sucesso!");
       }
 
       if (newId) {
@@ -1069,117 +1013,19 @@ export default function MaterialTicketNovoPage() {
   }
 
   const styles: Record<string, CSSProperties> = {
-    container: {
-      maxWidth: 720,
-      margin: "0 auto",
-      padding: 18,
-      paddingBottom: 80,
-    },
-    title: {
-      fontSize: 18,
-      fontWeight: 800,
-      marginBottom: 12,
-    },
-    card: {
-      background: "#fff",
-      border: "1px solid #e5e7eb",
-      borderRadius: 18,
-      padding: 14,
-      boxShadow: "0 6px 18px rgba(0,0,0,0.05)",
-    },
-    label: {
-      display: "block",
-      fontSize: 12,
-      fontWeight: 800,
-      letterSpacing: 0.4,
-      color: "#374151",
-      textTransform: "uppercase",
-      marginBottom: 6,
-    },
-    input: {
-      width: "100%",
-      height: 46,
-      padding: "0 14px",
-      borderRadius: 14,
-      border: "1px solid #e5e7eb",
-      outline: "none",
-      fontSize: 16,
-      background: "#fff",
-    },
-    select: {
-      width: "100%",
-      height: 46,
-      padding: "0 12px",
-      borderRadius: 14,
-      border: "1px solid #e5e7eb",
-      outline: "none",
-      fontSize: 16,
-      background: "#fff",
-    },
-    hint: {
-      fontSize: 12,
-      color: "#6b7280",
-      marginTop: 6,
-      lineHeight: 1.35,
-    },
-    btnGhost: {
-      height: 46,
-      borderRadius: 14,
-      border: "1px solid #e5e7eb",
-      background: "#fff",
-      fontWeight: 800,
-      cursor: "pointer",
-    },
-    btnPrimary: {
-      height: 46,
-      borderRadius: 14,
-      border: "none",
-      background: "linear-gradient(90deg, #f97316, #ef4444)",
-      color: "#fff",
-      fontWeight: 900,
-      cursor: "pointer",
-      boxShadow: "0 10px 26px rgba(239,68,68,0.25)",
-    },
-    btnShare: {
-      height: 46,
-      width: "100%",
-      borderRadius: 14,
-      border: "none",
-      background: "#16a34a",
-      color: "#fff",
-      fontWeight: 900,
-      cursor: "pointer",
-      boxShadow: "0 10px 26px rgba(22,163,74,0.25)",
-    },
-    alert: {
-      borderRadius: 14,
-      padding: 12,
-      fontSize: 13,
-      lineHeight: 1.35,
-      border: "1px solid #fecaca",
-      background: "#fef2f2",
-      color: "#991b1b",
-    },
-    ok: {
-      borderRadius: 14,
-      padding: 12,
-      fontSize: 13,
-      lineHeight: 1.35,
-      border: "1px solid #bbf7d0",
-      background: "#f0fdf4",
-      color: "#14532d",
-    },
-    debugBox: {
-      borderRadius: 14,
-      padding: 12,
-      fontSize: 12,
-      lineHeight: 1.35,
-      border: "1px solid #e5e7eb",
-      background: "#f9fafb",
-      color: "#111827",
-      whiteSpace: "pre-wrap",
-      wordBreak: "break-word",
-    },
+    container: { maxWidth: 720, margin: "0 auto", padding: 18, paddingBottom: 80 },
+    title: { fontSize: 18, fontWeight: 800, marginBottom: 12 },
+    card: { background: "#fff", border: "1px solid #e5e7eb", borderRadius: 18, padding: 14, boxShadow: "0 6px 18px rgba(0,0,0,0.05)" },
+    label: { display: "block", fontSize: 12, fontWeight: 800, letterSpacing: 0.4, color: "#374151", textTransform: "uppercase", marginBottom: 6 },
+    input: { width: "100%", height: 46, padding: "0 14px", borderRadius: 14, border: "1px solid #e5e7eb", outline: "none", fontSize: 16, background: "#fff" },
+    select: { width: "100%", height: 46, padding: "0 12px", borderRadius: 14, border: "1px solid #e5e7eb", outline: "none", fontSize: 16, background: "#fff" },
+    hint: { fontSize: 12, color: "#6b7280", marginTop: 6, lineHeight: 1.35 },
+    btnGhost: { height: 46, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", fontWeight: 800, cursor: "pointer" },
+    btnPrimary: { height: 46, borderRadius: 14, border: "none", background: "linear-gradient(90deg, #f97316, #ef4444)", color: "#fff", fontWeight: 900, cursor: "pointer", boxShadow: "0 10px 26px rgba(239,68,68,0.25)" },
+    btnShare: { height: 46, width: "100%", borderRadius: 14, border: "none", background: "#16a34a", color: "#fff", fontWeight: 900, cursor: "pointer", boxShadow: "0 10px 26px rgba(22,163,74,0.25)" },
+    alert: { borderRadius: 14, padding: 12, fontSize: 13, lineHeight: 1.35, border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b" },
+    ok: { borderRadius: 14, padding: 12, fontSize: 13, lineHeight: 1.35, border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#14532d" },
+    debugBox: { borderRadius: 14, padding: 12, fontSize: 12, lineHeight: 1.35, border: "1px solid #e5e7eb", background: "#f9fafb", color: "#111827", whiteSpace: "pre-wrap", wordBreak: "break-word" },
   };
 
   const unidadeQtd = tipo === "SAIDA" ? "saídas" : "entradas";
@@ -1203,7 +1049,6 @@ export default function MaterialTicketNovoPage() {
 
           <div style={{ gridColumn: "span 12" }}>
             <label style={styles.label}>Foto do ticket *</label>
-
             <input
               style={styles.input}
               type="file"
@@ -1220,7 +1065,6 @@ export default function MaterialTicketNovoPage() {
                 setLastEntradaCtl(null);
               }}
             />
-
             <div style={styles.hint}>
               No celular isso abre a câmera. Depois clique em <b>Ler via OCR</b>.
             </div>
@@ -1276,13 +1120,7 @@ export default function MaterialTicketNovoPage() {
 
           <div style={{ gridColumn: "span 6" }}>
             <label style={styles.label}>Data *</label>
-            <input
-              style={styles.input}
-              inputMode="numeric"
-              value={dataBr}
-              onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
-              placeholder="15/01/26"
-            />
+            <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
             <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
           </div>
 
@@ -1299,9 +1137,9 @@ export default function MaterialTicketNovoPage() {
 
           <div style={{ gridColumn: "span 12" }}>
             <label style={styles.label}>Obra / Destino *</label>
-            <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: PÁTIO USINA (FETZ+FRETE)" />
+            <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: GPA ENGENHARIA" />
             <div style={styles.hint}>
-              Para <b>ENTRADA</b> da <b>FETZ</b>, o app tende a usar: <b>{PATIO_FETZ_OBRA}</b>.
+              Regra: se for <b>PÁTIO</b> (qualquer variação), o app salva como <b>GPA ENGENHARIA</b>.
             </div>
           </div>
 
@@ -1313,9 +1151,7 @@ export default function MaterialTicketNovoPage() {
           <div style={{ gridColumn: "span 12" }}>
             <label style={styles.label}>Ordem de Compra (OC)</label>
             <input style={styles.input} value={oc} onChange={(e) => setOc(e.target.value)} placeholder="Ex.: 32026 (deixe vazio para prefeitura/obra infinita)" />
-            <div style={styles.hint}>
-              Se a obra for "infinita" (prefeitura), pode deixar vazio (OC = NULL).
-            </div>
+            <div style={styles.hint}>Se a obra for "infinita" (prefeitura), pode deixar vazio (OC = NULL).</div>
           </div>
 
           <div style={{ gridColumn: "span 12" }}>
@@ -1324,12 +1160,7 @@ export default function MaterialTicketNovoPage() {
               style={styles.input}
               inputMode="decimal"
               value={peso}
-              onChange={(e) => {
-                const v = e.target.value;
-                // permite digitar com ponto ou vírgula; mantém só números + 1 separador
-                const cleaned = v.replace(/[^\d.,]/g, "");
-                setPeso(cleaned);
-              }}
+              onChange={(e) => setPeso(e.target.value.replace(/[^\d.,]/g, ""))}
               placeholder="0.000"
             />
             <div style={styles.hint}>{parsed.pesoOk ? `OK → ${fmtT(parsed.pesoNum)} t` : "Ex.: 29.630"}</div>
@@ -1345,7 +1176,6 @@ export default function MaterialTicketNovoPage() {
           ) : null}
         </div>
 
-        {/* painéis de controle (exibidos depois do save) */}
         {lastAcum ? (
           <div style={{ marginTop: 12, fontSize: 12, color: "#374151", lineHeight: 1.35 }}>
             <b>Acumulado:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t
