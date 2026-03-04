@@ -32,13 +32,14 @@ type Acumulados = {
 };
 
 type EntradaControle = {
-  origem: string;
-  obra: string;
-  produto: string;
-  pedido: number;
-  volume_entr: number;
-  saldo_rest: number;
-  inicio_em?: string | null;
+  origem: string | null;
+  obra: string | null;
+  material: string | null;
+  pedido_total_t: number | null;
+  entrada_total_t: number | null;
+  saldo_rest_t: number | null;
+  plan_id: number | null;
+  inicio_em: string | null;
 };
 
 function extFromFile(file: File) {
@@ -257,16 +258,11 @@ function fmtQtd(v: number | null | undefined) {
   return String(Math.trunc(n));
 }
 
-function fmtBR0(v: number) {
+function fmtTonBR(v: number | null | undefined, digits: number) {
+  if (v === null || v === undefined) return "-";
   const n = Number(v);
   if (!Number.isFinite(n)) return "-";
-  return n.toLocaleString("pt-BR", { maximumFractionDigits: 0 });
-}
-
-function fmtBR2(v: number) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return "-";
-  return n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return n.toLocaleString("pt-BR", { minimumFractionDigits: digits, maximumFractionDigits: digits });
 }
 
 function looksLikePlate(raw: string) {
@@ -280,211 +276,68 @@ function looksLikePlate(raw: string) {
   // Padrão antigo: ABC-1234
   if (/^[A-Z]{3}-\d{4}$/.test(compact)) return true;
 
-  // OCR ruim que vira "NK2-7H69" — ainda assim parece placa
+  // OCR ruim que vira "NK2-7H69"
   if (/^[A-Z]{2}\d-?\d[A-Z0-9]\d{2}$/.test(compact)) return true;
 
   return false;
 }
 
-function normalizeProdutoEntrada(mat: string) {
-  const s = (mat || "").trim().toUpperCase().replace(/\s+/g, " ");
-  if (!s) return "";
-
-  const k = s
-    .normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  // PO BRITA (variações)
-  if (k.includes("PO") && k.includes("BRITA")) return "PO BRITA";
-
-  // BRITA ZERO (0 / ZERO)
-  if (k.includes("BRITA") && (k.includes("ZERO") || /\b0\b/.test(k))) return "BRITA ZERO";
-
-  // BRITA 01 (1 / 01 / UM)
-  if (k.includes("BRITA") && (k.includes("01") || /\b1\b/.test(k) || k.includes("UM"))) return "BRITA 01";
-
-  // fallback
-  return s;
-}
-
-// SUBSTITUA a função fixEntradaFromOcrRaw por esta versão:
-function fixEntradaFromOcrRaw(raw: string | null) {
-  const text = String(raw || "").trim();
-  if (!text) return { origem: "", destino: "", peso: "" };
-
-  const lines = text
-    .split(/\r?\n/g)
-    .map((l) => l.trim())
-    .filter((l) => l.length > 0);
-
-  const isJunk = (val: string) => {
-    const v = (val || "").trim().toUpperCase();
-    if (!v) return true;
-    if (/^\d{1,2}$/.test(v)) return true; // "0", "1", "3", "4" etc
-    if (v === "TICKET" || v === "N°" || v === "Nº" || v === "X") return true;
-    if (v === "CARRETA" || v === "VEIC/CAVALO" || v === "MOTORISTA") return true;
-    if (v.startsWith("UA-") || v.startsWith("UA ")) return true;
-    return false;
-  };
-
-  // --- ORIGEM / DESTINO ---
-  let origem = "";
-  let destino = "";
-
-  // 1) pega origem após "3" (se existir)
-  let idxOrig = -1;
-  for (let i = 0; i < lines.length - 1; i++) {
-    if (lines[i] === "3") {
-      const cand = lines[i + 1] || "";
-      if (!isJunk(cand)) {
-        origem = normalizeText(cand);
-        idxOrig = i + 1;
-      }
-      break;
-    }
-  }
-
-  // fallback origem: se vier explícito no texto
-  if (!origem) {
-    const cand = lines.find((l) => l.toUpperCase().includes("FETZ"));
-    if (cand && !isJunk(cand)) {
-      origem = normalizeText(cand);
-      idxOrig = lines.indexOf(cand);
-    }
-  }
-
-  // 2) destino após "1" (quando existir)
-  for (let i = 0; i < lines.length - 1; i++) {
-    if (lines[i] === "1") {
-      const cand = lines[i + 1] || "";
-      if (!isJunk(cand)) destino = normalizeText(cand);
-      break;
-    }
-  }
-
-  // 3) SE NÃO TEM "1" (seu caso): destino é a próxima linha útil após a origem
-  if (!destino && idxOrig >= 0) {
-    for (let j = idxOrig + 1; j < lines.length; j++) {
-      const cand = lines[j] || "";
-      if (isJunk(cand)) continue;
-      destino = normalizeText(cand);
-      break;
-    }
-  }
-
-  // fallback destino: procura “GPA ENGENHARIA”
-  if (!destino) {
-    const cand = lines.find((l) => l.toUpperCase().includes("GPA ENGENHARIA"));
-    if (cand && !isJunk(cand)) destino = normalizeText(cand);
-  }
-
-  // --- PESO (LÍQUIDO) ---
-  const parseTonToken = (tok: string) => {
-    const v = String(tok || "").trim().replace(",", ".");
-    const n = Number.parseFloat(v);
-    return Number.isFinite(n) ? n : null;
-  };
-
-  // 1) preferência: valor logo após “PESAGEM INICIAL” (pega o ÚLTIMO que aparecer)
-  let pesoNum: number | null = null;
-  {
-    const re = /PESAGEM\s+INICIAL[\s\S]{0,60}?(\d{1,3}[.,]\d{3})/gi;
-    let m: RegExpExecArray | null;
-    let lastTok: string | null = null;
-    while ((m = re.exec(text)) !== null) lastTok = m[1] || null;
-    if (lastTok) {
-      const n = parseTonToken(lastTok);
-      if (n !== null) pesoNum = n;
-    }
-  }
-
-  // 2) fallback: se não achou, tenta PESAGEM FINAL − PESAGEM INICIAL (tare)
-  if (pesoNum === null) {
-    const re2 = /\b(\d{1,3})[.,](\d{3})\b/g;
-    const vals: number[] = [];
-    let m: RegExpExecArray | null;
-    while ((m = re2.exec(text)) !== null) {
-      const tok = `${m[1]}.${m[2]}`;
-      const n = parseTonToken(tok);
-      if (n === null) continue;
-      if (n <= 0 || n > 200) continue;
-      vals.push(n);
-    }
-    if (vals.length >= 2) {
-      const min = Math.min(...vals);
-      const max = Math.max(...vals);
-      const diff = max - min;
-      if (diff > 0 && diff < max) pesoNum = diff;
-    }
-  }
-
-  const peso = pesoNum !== null ? Number(pesoNum).toFixed(3) : "";
-
-  return { origem, destino, peso };
-}
-
+// ✅ ENTRADA: puxa do controle (material_entrada_controle_v)
 async function loadEntradaControle(origemVal: string, obraVal: string, matVal: string): Promise<EntradaControle | null> {
-  const origemTrim = (origemVal || "").trim();
-  const obraTrim = normalizeObraName(obraVal || "");
-  const produto = normalizeProdutoEntrada(matVal || "");
-
-  if (!origemTrim || !obraTrim || !produto) return null;
-
-  // 1) tenta material_entrada_resumo_v (se existir)
   try {
-    const { data, error } = await supabase
-      .from("material_entrada_resumo_v")
-      .select("origem,obra,produto,volume_entr,saldo_rest,pedido,inicio_em")
-      .ilike("origem", `%${origemTrim}%`)
-      .ilike("obra", `%${obraTrim}%`)
-      .ilike("produto", `%${produto}%`)
-      .limit(1)
-      .maybeSingle();
+    const o = (origemVal || "").trim();
+    const ob = (obraVal || "").trim();
+    const m = (matVal || "").trim();
+    if (!o || !m) return null;
 
-    if (!error && data) {
-      return {
-        origem: String((data as any).origem ?? origemTrim),
-        obra: String((data as any).obra ?? obraTrim),
-        produto: String((data as any).produto ?? produto),
-        pedido: Number((data as any).pedido ?? 0),
-        volume_entr: Number((data as any).volume_entr ?? 0),
-        saldo_rest: Number((data as any).saldo_rest ?? 0),
-        inicio_em: (data as any).inicio_em ?? null,
-      };
+    // 1) tenta obra exata
+    {
+      let q = supabase
+        .from("material_entrada_controle_v")
+        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
+        .ilike("origem", o)
+        .ilike("material", m)
+        .order("plan_id", { ascending: false })
+        .limit(1);
+
+      if (ob) q = q.ilike("obra", ob);
+
+      const r = await q.maybeSingle();
+      if (!r.error && r.data) return (r.data as any) ?? null;
     }
-  } catch {
-    // segue pro fallback
-  }
 
-  // 2) fallback: material_entrada_controle_v (a que você mostrou no print)
-  try {
-    const { data, error } = await supabase
-      .from("material_entrada_controle_v")
-      .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,inicio_em")
-      .ilike("origem", `%${origemTrim}%`)
-      .ilike("obra", `%${obraTrim}%`)
-      .ilike("material", `%${produto}%`)
-      .limit(1)
-      .maybeSingle();
+    // 2) tenta só origem+material
+    {
+      const r = await supabase
+        .from("material_entrada_controle_v")
+        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
+        .ilike("origem", o)
+        .ilike("material", m)
+        .order("plan_id", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (!error && data) {
-      return {
-        origem: String((data as any).origem ?? origemTrim),
-        obra: String((data as any).obra ?? obraTrim),
-        produto: String((data as any).material ?? produto),
-        pedido: Number((data as any).pedido_total_t ?? 0),
-        volume_entr: Number((data as any).entrada_total_t ?? 0),
-        saldo_rest: Number((data as any).saldo_rest_t ?? 0),
-        inicio_em: (data as any).inicio_em ?? null,
-      };
+      if (!r.error && r.data) return (r.data as any) ?? null;
     }
+
+    // 3) fallback com wildcard (pra variações tipo "FETZ" vs "FETZ MINERADORA")
+    {
+      const r = await supabase
+        .from("material_entrada_controle_v")
+        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
+        .ilike("origem", `%${o}%`)
+        .ilike("material", `%${m}%`)
+        .order("plan_id", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!r.error && r.data) return (r.data as any) ?? null;
+    }
+
+    return null;
   } catch {
     return null;
   }
-
-  return null;
 }
 
 function buildWhatsappMessage(p: {
@@ -522,37 +375,59 @@ function buildWhatsappMessage(p: {
     `Ordem de Compra: ${oc ? oc : "-"}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
-  if (acum) {
-    msg += `\n📅 Acumulado Obra *${obra}*\n`;
-    msg += `Dia (com esta): ${fmtQtd(acum.dia_qtd)} ${unidadeQtd} • ${fmtT(acum.dia_total_t)} t\n`;
-    msg += `Semana (Seg-Dom): ${fmtQtd(acum.semana_qtd)} ${unidadeQtd} • ${fmtT(acum.semana_total_t)} t\n`;
-    msg += `Mês: ${fmtQtd(acum.mes_qtd)} ${unidadeQtd} • ${fmtT(acum.mes_total_t)} t\n`;
-  }
-
-  // ✅ SAÍDA mantém o controle por OC (não mexe)
-  if (tipo === "SAIDA" && resumo) {
-    const ilimitado = Boolean(resumo.ilimitado);
-
-    msg += `\n📊 Controle (Obra/OC/Material)\n`;
-
-    if (ilimitado) {
-      msg += `Quantidade total: ILIMITADO\n`;
-      msg += `Saldo: ILIMITADO\n`;
-    } else {
-      msg += `Entrada total: ${fmtT(resumo.entrada_t)} t\n`;
-      msg += `Saída total: ${fmtT(resumo.saida_t)} t\n`;
-      msg += `Quantidade total: ${fmtT(resumo.total_t)} t\n`;
-      msg += `Saldo a entregar: ${fmtT(resumo.saldo_t)} t\n`;
+  // ✅ SAÍDA: mantém acumulado como está (não mexer)
+  if (tipo === "SAIDA") {
+    if (acum) {
+      msg += `\n📅 Acumulado Obra *${obra}*\n`;
+      msg += `Dia (com esta): ${fmtQtd(acum.dia_qtd)} ${unidadeQtd} • ${fmtT(acum.dia_total_t)} t\n`;
+      msg += `Semana (Seg-Dom): ${fmtQtd(acum.semana_qtd)} ${unidadeQtd} • ${fmtT(acum.semana_total_t)} t\n`;
+      msg += `Mês: ${fmtQtd(acum.mes_qtd)} ${unidadeQtd} • ${fmtT(acum.mes_total_t)} t\n`;
     }
+
+    if (resumo) {
+      const ilimitado = Boolean(resumo.ilimitado);
+
+      msg += `\n📊 Controle (Obra/OC/Material)\n`;
+
+      if (ilimitado) {
+        msg += `Quantidade total: ILIMITADO\n`;
+        msg += `Saldo: ILIMITADO\n`;
+      } else {
+        msg += `Entrada total: ${fmtT(resumo.entrada_t)} t\n`;
+        msg += `Saída total: ${fmtT(resumo.saida_t)} t\n`;
+        msg += `Quantidade total: ${fmtT(resumo.total_t)} t\n`;
+        msg += `Saldo a entregar: ${fmtT(resumo.saldo_t)} t\n`;
+      }
+    }
+
+    return msg;
   }
 
-  // ✅ ENTRADA: bloco FETZ (pedido/entrada/saldo) — só aparece se encontrou no view
-  if (tipo === "ENTRADA" && entradaCtl) {
-    msg += `\nObra: ${entradaCtl.obra}\n`;
-    msg += `Material: ${entradaCtl.produto}\n`;
-    msg += `Quantidade total: ${fmtBR0(entradaCtl.pedido)} toneladas\n`;
-    msg += `Entrada total com esta: ${fmtBR2(entradaCtl.volume_entr)} Toneladas\n`;
-    msg += `A entregar: ${fmtBR2(entradaCtl.saldo_rest)} tonelada\n`;
+  // ✅ ENTRADA: troca o bloco do acumulado por “controle de entrada”
+  const ctl = entradaCtl;
+
+  const obraMsg = (ctl?.obra || "").trim() || obra;
+  const matMsg = (ctl?.material || "").trim() || material;
+
+  const pedido = ctl?.pedido_total_t ?? null;
+  const entradaTotal = ctl?.entrada_total_t ?? null;
+  const saldo = ctl?.saldo_rest_t ?? null;
+
+  const temPedido = pedido !== null && Number.isFinite(Number(pedido)) && Number(pedido) > 0.0001;
+
+  msg += `\nObra: ${obraMsg}\n`;
+  msg += `Material: ${matMsg}\n`;
+
+  if (temPedido) {
+    msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton\n`;
+  }
+
+  // se não achou controle, pelo menos usa o peso deste ticket
+  const entradaComEsta = entradaTotal !== null ? entradaTotal : pesoNum;
+  msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton\n`;
+
+  if (temPedido && saldo !== null) {
+    msg += `A entregar: ${fmtTonBR(saldo, 2)} ton\n`;
   }
 
   return msg;
@@ -691,7 +566,7 @@ export default function MaterialTicketNovoPage() {
     }
   }
 
-  // ✅ quando faltar plano, cadastra como ILIMITADO (obra+oc+material) — SOMENTE SAÍDA
+  // ✅ quando faltar plano, cadastra como ILIMITADO (obra+oc+material) — SÓ PRA SAÍDA
   async function ensurePlanIlimitado(obraVal: string, ocVal: string | null, matVal: string): Promise<boolean> {
     try {
       const obraTrim = normalizeObraName(obraVal);
@@ -767,36 +642,21 @@ export default function MaterialTicketNovoPage() {
         throw new Error(js?.error || "OCR falhou.");
       }
 
-      const rawTxt = js?.raw || null;
-      setOcrRaw(rawTxt);
+      setOcrRaw(js?.raw || null);
 
       const f = js?.fields || {};
       const v = normalizeVehicle(f.veiculo || null);
-      let o = normalizeText(f.origem || null);
-
-      // destino do OCR (pode vir "CARRETA" errado)
-      let d = normalizeObraName(f.destino || null);
-
-      let mtxt = normalizeText(f.material || null);
+      const o = normalizeText(f.origem || null);
+      const d = normalizeObraName(f.destino || null);
+      const m = normalizeText(f.material || null);
       const dt = normalizeDateFromOcrToMasked(f.data_br || null);
       const hr = normalizeTimeFromOcrToMasked(f.horario || null);
-      let p = normalizePesoFromOcrToMasked(f.peso_mask ?? f.peso_t ?? null);
-
-      // ✅ Correção ESPECIAL para ENTRADA em ticket de pesagem (não mexe SAÍDA)
-      if (tipo === "ENTRADA") {
-        const fix = fixEntradaFromOcrRaw(rawTxt);
-        if (fix.origem) o = fix.origem;
-        if (fix.destino) d = normalizeObraName(fix.destino);
-        if (fix.peso) p = fix.peso;
-
-        // se o OCR teimar com "CARRETA", zera e força o usuário a corrigir
-        if ((d || "").trim().toUpperCase() === "CARRETA") d = "";
-      }
+      const p = normalizePesoFromOcrToMasked(f.peso_mask ?? f.peso_t ?? null);
 
       if (v) setVeiculo(v);
       if (o) setOrigem(o);
       if (d) setDestino(d);
-      if (mtxt) setMaterial(mtxt);
+      if (m) setMaterial(m);
       if (dt) setDataBr(dt);
       if (hr) setHora(hr);
       if (p) setPeso(p);
@@ -839,7 +699,7 @@ export default function MaterialTicketNovoPage() {
 
       const ocVal = oc.trim() ? oc.trim() : null;
 
-      // ✅ normaliza a obra/destino ANTES de salvar e ANTES de calcular
+      // ✅ FIX: normaliza a obra/destino ANTES de salvar
       const obraVal = normalizeObraName(destino);
 
       const ins = await supabase
@@ -848,10 +708,8 @@ export default function MaterialTicketNovoPage() {
           tipo,
           veiculo: veiculo.trim(),
           origem: origem.trim(),
-
           destino: obraVal,
           obra: obraVal,
-
           material: material.trim(),
           oc: ocVal,
           data: dateISO,
@@ -870,30 +728,36 @@ export default function MaterialTicketNovoPage() {
       const newId = ins.data?.id ?? null;
       setSavedId(newId);
 
-      // ✅ acumulados (RPC) — mantém
+      // ✅ acumulados (Dia/Semana/Mês) — mantém (SAÍDA usa; ENTRADA ignora na msg)
       const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
       setLastAcum(acum);
 
-      // ✅ SAÍDA: plano por OC/material (mantém)
-      if (tipo === "SAIDA") {
+      // ✅ ENTRADA: puxa controle para a mensagem (pedido/entradas/saldo)
+      if (tipo === "ENTRADA") {
+        const ctl = await loadEntradaControle(origem.trim(), obraVal, material.trim());
+        setLastEntradaCtl(ctl);
+        setSavedMsg("Salvo com sucesso!");
+      } else {
+        // ✅ SAÍDA: plano (obra/oc/material) — se não existir, cria como ILIMITADO e tenta de novo
         let resumo = await loadResumo(obraVal, ocVal, material.trim());
         let createdPlan = false;
 
         if (!resumo) {
           createdPlan = await ensurePlanIlimitado(obraVal, ocVal, material.trim());
-          if (createdPlan) resumo = await loadResumo(obraVal, ocVal, material.trim());
+          if (createdPlan) {
+            resumo = await loadResumo(obraVal, ocVal, material.trim());
+          }
         }
 
         setLastResumo(resumo);
 
-        if (createdPlan) setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
-        else if (!resumo) setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
-        else setSavedMsg("Salvo com sucesso!");
-      } else {
-        // ✅ ENTRADA: carrega controle de entrada (pedido/entrada/saldo) pro WhatsApp
-        const ctl = await loadEntradaControle(origem.trim(), obraVal, material.trim());
-        setLastEntradaCtl(ctl);
-        setSavedMsg("Salvo com sucesso!");
+        if (createdPlan) {
+          setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
+        } else if (!resumo) {
+          setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
+        } else {
+          setSavedMsg("Salvo com sucesso!");
+        }
       }
 
       if (newId) {
@@ -1100,20 +964,10 @@ export default function MaterialTicketNovoPage() {
                 </div>
               ) : null}
 
-              {tipo === "SAIDA" && lastResumo ? (
+              {lastResumo ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
                   <b>Controle:</b>{" "}
                   {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
-                </div>
-              ) : null}
-
-              {tipo === "ENTRADA" && lastEntradaCtl ? (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
-                  <b>Obra:</b> {lastEntradaCtl.obra}<br />
-                  <b>Material:</b> {lastEntradaCtl.produto}<br />
-                  <b>Quantidade total:</b> {fmtBR0(lastEntradaCtl.pedido)} t<br />
-                  <b>Entrada total com esta:</b> {fmtBR2(lastEntradaCtl.volume_entr)} t<br />
-                  <b>A entregar:</b> {fmtBR2(lastEntradaCtl.saldo_rest)} t
                 </div>
               ) : null}
             </div>
@@ -1203,13 +1057,7 @@ export default function MaterialTicketNovoPage() {
 
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data *</label>
-              <input
-                style={styles.input}
-                inputMode="numeric"
-                value={dataBr}
-                onChange={(e) => setDataBr(maskDateBRInput(e.target.value))}
-                placeholder="15/01/26"
-              />
+              <input style={styles.input} inputMode="numeric" value={dataBr} onChange={(e) => setDataBr(maskDateBRInput(e.target.value))} placeholder="15/01/26" />
               <div style={styles.hint}>{parsed.dataOk ? `OK → ${formatDateBR(parseDateBR(dataBr)!)}` : "Digite só números (150126)"}</div>
             </div>
 
