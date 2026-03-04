@@ -309,12 +309,7 @@ function normalizeProdutoEntrada(mat: string) {
   return s;
 }
 
-/**
- * ✅ Corrige ENTRADA para "ticket de pesagem" (como o seu exemplo):
- * - Origem = linha após número "3"
- * - Destino = linha após número "1"
- * - Peso líquido = mediana dos pesos no padrão 9.900 / 12.900 / 22.800 (pega 12.900)
- */
+// SUBSTITUA a função fixEntradaFromOcrRaw por esta versão:
 function fixEntradaFromOcrRaw(raw: string | null) {
   const text = String(raw || "").trim();
   if (!text) return { origem: "", destino: "", peso: "" };
@@ -324,67 +319,110 @@ function fixEntradaFromOcrRaw(raw: string | null) {
     .map((l) => l.trim())
     .filter((l) => l.length > 0);
 
-  const pickAfterDigit: Record<number, string> = {};
+  const isJunk = (val: string) => {
+    const v = (val || "").trim().toUpperCase();
+    if (!v) return true;
+    if (/^\d{1,2}$/.test(v)) return true; // "0", "1", "3", "4" etc
+    if (v === "TICKET" || v === "N°" || v === "Nº" || v === "X") return true;
+    if (v === "CARRETA" || v === "VEIC/CAVALO" || v === "MOTORISTA") return true;
+    if (v.startsWith("UA-") || v.startsWith("UA ")) return true;
+    return false;
+  };
+
+  // --- ORIGEM / DESTINO ---
+  let origem = "";
+  let destino = "";
+
+  // 1) pega origem após "3" (se existir)
+  let idxOrig = -1;
   for (let i = 0; i < lines.length - 1; i++) {
-    const a = lines[i];
-    const b = lines[i + 1];
-
-    if (!/^\d{1,2}$/.test(a)) continue;
-    const num = Number(a);
-    if (!Number.isFinite(num)) continue;
-
-    const val = (b || "").trim();
-    if (!val) continue;
-
-    // filtra lixo óbvio
-    const vUp = val.toUpperCase();
-    if (
-      vUp === "TICKET" ||
-      vUp === "N°" ||
-      vUp === "Nº" ||
-      vUp.startsWith("UA-") ||
-      vUp === "X" ||
-      vUp === "CARRETA" ||
-      vUp === "VEIC/CAVALO" ||
-      vUp === "MOTORISTA"
-    ) {
-      continue;
+    if (lines[i] === "3") {
+      const cand = lines[i + 1] || "";
+      if (!isJunk(cand)) {
+        origem = normalizeText(cand);
+        idxOrig = i + 1;
+      }
+      break;
     }
-
-    if (!pickAfterDigit[num]) pickAfterDigit[num] = val;
   }
 
-  const origem = normalizeText(pickAfterDigit[3] || "");
-  const destino = normalizeText(pickAfterDigit[1] || "");
-
-  // pesos no formato "12.900"
-  const nums: number[] = [];
-  const re = /\b(\d{1,3})[.,](\d{3})\b/g;
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    const a = Number(m[1]);
-    const b = Number(m[2]);
-    if (!Number.isFinite(a) || !Number.isFinite(b)) continue;
-    const n = Number(`${a}.${String(b).padStart(3, "0")}`); // 12.900 -> 12.9
-    if (!Number.isFinite(n) || n <= 0) continue;
-    // elimina coisas absurdas
-    if (n > 200) continue;
-    nums.push(n);
+  // fallback origem: se vier explícito no texto
+  if (!origem) {
+    const cand = lines.find((l) => l.toUpperCase().includes("FETZ"));
+    if (cand && !isJunk(cand)) {
+      origem = normalizeText(cand);
+      idxOrig = lines.indexOf(cand);
+    }
   }
 
-  nums.sort((x, y) => x - y);
+  // 2) destino após "1" (quando existir)
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (lines[i] === "1") {
+      const cand = lines[i + 1] || "";
+      if (!isJunk(cand)) destino = normalizeText(cand);
+      break;
+    }
+  }
+
+  // 3) SE NÃO TEM "1" (seu caso): destino é a próxima linha útil após a origem
+  if (!destino && idxOrig >= 0) {
+    for (let j = idxOrig + 1; j < lines.length; j++) {
+      const cand = lines[j] || "";
+      if (isJunk(cand)) continue;
+      destino = normalizeText(cand);
+      break;
+    }
+  }
+
+  // fallback destino: procura “GPA ENGENHARIA”
+  if (!destino) {
+    const cand = lines.find((l) => l.toUpperCase().includes("GPA ENGENHARIA"));
+    if (cand && !isJunk(cand)) destino = normalizeText(cand);
+  }
+
+  // --- PESO (LÍQUIDO) ---
+  const parseTonToken = (tok: string) => {
+    const v = String(tok || "").trim().replace(",", ".");
+    const n = Number.parseFloat(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
+  // 1) preferência: valor logo após “PESAGEM INICIAL” (pega o ÚLTIMO que aparecer)
   let pesoNum: number | null = null;
-  if (nums.length === 1) pesoNum = nums[0];
-  else if (nums.length === 2) pesoNum = nums[1];
-  else if (nums.length >= 3) pesoNum = nums[Math.floor(nums.length / 2)]; // mediana
+  {
+    const re = /PESAGEM\s+INICIAL[\s\S]{0,60}?(\d{1,3}[.,]\d{3})/gi;
+    let m: RegExpExecArray | null;
+    let lastTok: string | null = null;
+    while ((m = re.exec(text)) !== null) lastTok = m[1] || null;
+    if (lastTok) {
+      const n = parseTonToken(lastTok);
+      if (n !== null) pesoNum = n;
+    }
+  }
+
+  // 2) fallback: se não achou, tenta PESAGEM FINAL − PESAGEM INICIAL (tare)
+  if (pesoNum === null) {
+    const re2 = /\b(\d{1,3})[.,](\d{3})\b/g;
+    const vals: number[] = [];
+    let m: RegExpExecArray | null;
+    while ((m = re2.exec(text)) !== null) {
+      const tok = `${m[1]}.${m[2]}`;
+      const n = parseTonToken(tok);
+      if (n === null) continue;
+      if (n <= 0 || n > 200) continue;
+      vals.push(n);
+    }
+    if (vals.length >= 2) {
+      const min = Math.min(...vals);
+      const max = Math.max(...vals);
+      const diff = max - min;
+      if (diff > 0 && diff < max) pesoNum = diff;
+    }
+  }
 
   const peso = pesoNum !== null ? Number(pesoNum).toFixed(3) : "";
 
-  return {
-    origem,
-    destino,
-    peso,
-  };
+  return { origem, destino, peso };
 }
 
 async function loadEntradaControle(origemVal: string, obraVal: string, matVal: string): Promise<EntradaControle | null> {
