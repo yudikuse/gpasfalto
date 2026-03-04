@@ -31,15 +31,11 @@ type Acumulados = {
   mes_total_t: number | null;
 };
 
-type EntradaControle = {
-  origem: string | null;
-  obra: string | null;
-  material: string | null;
-  pedido_total_t: number | null;
-  entrada_total_t: number | null;
-  saldo_rest_t: number | null;
-  plan_id: number | null;
-  inicio_em: string | null;
+type EntradaResumo = {
+  produto: string | null;
+  volume_entr: number | null;
+  saldo_rest: number | null;
+  pedido: number | null;
 };
 
 function extFromFile(file: File) {
@@ -268,102 +264,95 @@ function looksLikePlate(raw: string) {
   if (!s) return false;
   const compact = s.replace(/\s+/g, "");
 
-  // Mercosul: ABC1D23 (ou ABC-1D23)
   if (/^[A-Z]{3}-?\d[A-Z]\d{2}$/.test(compact)) return true;
-
-  // Padrão antigo: ABC-1234
   if (/^[A-Z]{3}-\d{4}$/.test(compact)) return true;
-
-  // OCR ruim: "NK2-7H69"
   if (/^[A-Z]{2}\d-?\d[A-Z0-9]\d{2}$/.test(compact)) return true;
 
   return false;
 }
 
-function isHeaderLine(s: string) {
-  const u = (s || "").trim().toUpperCase();
-  if (!u) return true;
-
-  // ✅ letras soltas que o OCR joga (C, D, etc) — NÃO podem virar destino/material
-  if (u.length === 1) return true;
-
-  const headers = new Set([
-    "GPA ENGENHARIA E CONSTRUÇÕES LTDA",
-    "GPA ENGENHARIA E CONSTRUCOES LTDA",
-    "TICKET DE PESAGEM",
-    "TICKET DE PESA GEM",
-    "PESAGEM FINAL OK.",
-    "PESAGEM FINAL OK",
-    "PESA GEM FINAL OK.",
-    "VEIC/CAVALO",
-    "VEIC. CAVALO",
-    "MOTORISTA",
-    "PESAGEM INICIAL",
-    "PESAGEM FINAL",
-    "DATA",
-    "TICKET",
-    "N°",
-    "Nº",
-    "ASSINATURA BALANÇA",
-    "ASSINATURA BALANCA",
-    "P. GERAL",
-    "F. GERAL",
-    "P. OBRA",
-    "F. OBRA",
-    "UA-01",
-    "UA-03",
-    "X",
-    "OBS.1",
-    "RECEBIMENTO E INSPENÇAO:",
-    "RECEBIMENTO E INSPENCAO:",
-    "RECEBIMENTO E INSPENÇÃO:",
-    "CARRETA",
-    "0",
-  ]);
-
-  if (headers.has(u)) return true;
-  if (u.includes("CONSTRU")) return true;
-  if (u.includes("LTDA")) return true;
-
-  return false;
+function normKey(s: string) {
+  return (s || "")
+    .trim()
+    .toUpperCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .replace(/[^A-Z0-9 ]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function isLikelyMaterial(s: string) {
-  const u = (s || "").trim().toUpperCase();
+  const u = normKey(s);
   if (!u) return false;
   if (u === "CARRETA") return false;
   if (u.length <= 1) return false;
   if (looksLikePlate(u)) return false;
 
-  // materiais mais comuns
-  if (/(BRITA|P[ÓO]\s*BRITA|PO\s*BRITA|CBUQ|MASSA|CAP|RR|OGR|EMULS)/i.test(u)) return true;
-
+  if (/(BRITA|PO BRITA|P O BRITA|CBUQ|MASSA|CAP|RR|OGR|EMULS)/i.test(u)) return true;
   return false;
 }
 
 function isBadDestino(s: string) {
-  const u = (s || "").trim().toUpperCase();
+  const u = normKey(s || "");
   if (!u) return true;
   if (u.length <= 2) return true; // "C", "UA", etc
   if (u === "C") return true;
   if (u === "CARRETA") return true;
+  if (looksLikePlate(u)) return true;
+  if (/^UA-?\d+$/i.test(u)) return true;
   return false;
 }
 
 function isBadMaterial(s: string) {
-  const u = (s || "").trim().toUpperCase();
+  const u = normKey(s || "");
   if (!u) return true;
   if (u === "CARRETA") return true;
   if (u.length <= 2) return true;
+  if (looksLikePlate(u)) return true;
+  return false;
+}
+
+function isHeaderLine(s: string) {
+  const u = normKey(s);
+  if (!u) return true;
+
+  if (
+    u.includes("TICKET DE PESAGEM") ||
+    u.includes("PESAGEM FINAL OK") ||
+    u === "PESAGEM INICIAL" ||
+    u === "PESAGEM FINAL" ||
+    u === "DATA" ||
+    u === "TICKET" ||
+    u === "N" ||
+    u === "N°" ||
+    u.includes("ASSINATURA BALANCA") ||
+    u.includes("RECEBIMENTO") ||
+    u.includes("INSPE") ||
+    u.includes("MOTORISTA") ||
+    u.includes("VEIC CAVALO") ||
+    u.includes("CARRETA") ||
+    u.includes("GPA ENGENHARIA E CONSTRUCOES LTDA") ||
+    u === "P GERAL" ||
+    u === "P OBRA" ||
+    /^UA-?\d+$/i.test(u)
+  ) {
+    return true;
+  }
+
+  // letras soltas tipo "C", "D", "X"
+  if (/^[A-Z]$/.test(u)) return true;
+
   return false;
 }
 
 /**
- * ✅ ENTRADA: corrige origem/destino/material/peso usando o OCR bruto.
- * - origem: linha após marcador "3"
- * - destino: linha após "1" (se existir), senão procura "GPA ENGENHARIA", senão 1ª linha útil após origem que não seja material
- * - material: após "4" ou varredura por BRITA/PÓ BRITA etc
- * - peso: número após a ÚLTIMA "PESAGEM INICIAL" (peso líquido)
+ * ✅ ENTRADA: correção forte via OCR bruto:
+ * - Origem = linha após marcador "3"
+ * - Destino = linha após marcador "1" (fallback: primeira ocorrência de "GPA ENGENHARIA")
+ * - Material = linha após marcador "4" (fallback: primeira linha que pareça material)
+ * - Peso = número logo após a ÚLTIMA "PESAGEM INICIAL" (peso líquido)
  */
 function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; material?: string; peso?: string } | null {
   const lines = String(raw || "")
@@ -377,9 +366,14 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     for (let j = idx + 1; j < lines.length; j++) {
       const s = (lines[j] || "").trim();
       if (!s) continue;
-      if (/^\d+$/.test(s)) continue; // marcadores
-      if (isHeaderLine(s)) continue;
+
+      if (/^\d+$/.test(s)) continue; // marcador isolado
       if (looksLikePlate(s)) continue;
+      if (isHeaderLine(s)) continue;
+
+      const u = normKey(s);
+      if (u.length <= 2) continue; // "C", "D", etc
+
       return s;
     }
     return null;
@@ -391,65 +385,33 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
   const i1 = findMarker("1");
   const i4 = findMarker("4");
 
-  // origem
   let origem: string | null = null;
-  let origemLineIdx = -1;
+  let destino: string | null = null;
+  let material: string | null = null;
+  let peso: string | null = null;
 
-  if (i3 >= 0) {
-    for (let j = i3 + 1; j < lines.length; j++) {
-      const s = (lines[j] || "").trim();
-      if (!s) continue;
-      if (/^\d+$/.test(s)) continue;
-      if (isHeaderLine(s)) continue;
-      if (looksLikePlate(s)) continue;
-      origem = s;
-      origemLineIdx = j;
-      break;
-    }
-  }
+  if (i3 >= 0) origem = nextMeaningful(i3);
+  if (i1 >= 0) destino = nextMeaningful(i1);
 
-  // destino
-  let destino: string | null = i1 >= 0 ? nextMeaningful(i1) : null;
-
-  // fallback #1: procura "GPA ENGENHARIA" no raw
+  // fallback destino: procura "GPA ENGENHARIA" no raw
   if (!destino) {
     const cand = lines.find((x) => /GPA\s+ENGENHARIA/i.test(x));
-    if (cand && !isHeaderLine(cand)) destino = cand.trim();
+    if (cand && !isHeaderLine(cand) && !isBadDestino(cand)) destino = cand.trim();
   }
-
-  // fallback #2: primeira linha útil após a origem que não seja material
-  if (!destino && origemLineIdx >= 0) {
-    for (let j = origemLineIdx + 1; j < lines.length; j++) {
-      const s = (lines[j] || "").trim();
-      if (!s) continue;
-      if (/^\d+$/.test(s)) continue;
-      if (isHeaderLine(s)) continue;
-      if (looksLikePlate(s)) continue;
-      if (isLikelyMaterial(s)) continue;
-      destino = s;
-      break;
-    }
-  }
-
-  // material
-  let material: string | null = null;
 
   if (i4 >= 0) {
     const cand = nextMeaningful(i4);
-    if (cand && isLikelyMaterial(cand)) material = cand;
+    if (cand && isLikelyMaterial(cand)) material = cand.trim();
   }
-
   if (!material) {
     const cand = lines.find((x) => isLikelyMaterial(x));
-    if (cand) material = cand;
+    if (cand) material = cand.trim();
   }
 
-  // peso líquido: após a ÚLTIMA "PESAGEM INICIAL"
-  let peso: string | null = null;
-
+  // peso líquido: após a ÚLTIMA "PESAGEM INICIAL" pegar um token "12.900" (não "9.900 10440")
   const idxsPI: number[] = [];
   for (let i = 0; i < lines.length; i++) {
-    if ((lines[i] || "").trim().toUpperCase() === "PESAGEM INICIAL") idxsPI.push(i);
+    if (normKey(lines[i]) === "PESAGEM INICIAL") idxsPI.push(i);
   }
   const lastPI = idxsPI.length ? idxsPI[idxsPI.length - 1] : -1;
 
@@ -457,7 +419,11 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
     for (let j = start + 1; j < lines.length; j++) {
       const s = (lines[j] || "").trim();
       if (!s) continue;
-      if (/^\d{1,3}\.\d{3}$/.test(s)) return s; // 12.900
+
+      // ignora linha com 2 tokens ("9.900 10440")
+      if (/^\d{1,3}[.,]\d{3}\s+\d{4,6}$/.test(s)) continue;
+
+      if (/^\d{1,3}\.\d{3}$/.test(s)) return s;
       if (/^\d{1,3},\d{3}$/.test(s)) return s.replace(",", ".");
     }
     return null;
@@ -476,59 +442,41 @@ function fixEntradaFromRaw(raw: string): { origem?: string; destino?: string; ma
   return out;
 }
 
-// ✅ ENTRADA: puxa do controle (material_entrada_controle_v)
-async function loadEntradaControle(origemVal: string, obraVal: string, matVal: string): Promise<EntradaControle | null> {
+function materialToProduto(material: string) {
+  const u = normKey(material || "");
+  if (!u) return "";
+
+  // PO BRITA
+  if (u === "PO BRITA" || u === "POBRITA" || u === "P O BRITA" || u === "POBRITA") return "PO BRITA";
+  if (u.includes("PO BRITA")) return "PO BRITA";
+
+  // BRITA ZERO
+  if (u.includes("BRITA ZERO") || u === "ZERO" || u === "BRITAZERO") return "BRITA ZERO";
+
+  // BRITA 01 / 1
+  if (u === "BRITA 01" || u === "BRITA01" || u === "BRITA 1" || u === "BRITA1" || u === "BRITA UM") return "BRITA 01";
+  if (u.includes("BRITA 01") || u.includes("BRITA 1")) return "BRITA 01";
+
+  // fallback: usa o próprio material (normalizado de espaços)
+  return (material || "").trim().toUpperCase();
+}
+
+// ✅ ENTRADA: puxa do resumo (material_entrada_resumo_v)
+async function loadEntradaResumo(produto: string): Promise<EntradaResumo | null> {
   try {
-    const o = (origemVal || "").trim();
-    const ob = (obraVal || "").trim();
-    const m = (matVal || "").trim();
-    if (!o || !m) return null;
+    const prod = (produto || "").trim();
+    if (!prod) return null;
 
-    // 1) tenta obra exata
-    {
-      let q = supabase
-        .from("material_entrada_controle_v")
-        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
-        .ilike("origem", o)
-        .ilike("material", m)
-        .order("plan_id", { ascending: false })
-        .limit(1);
+    const { data, error } = await supabase.from("material_entrada_resumo_v").select("produto,volume_entr,saldo_rest,pedido");
+    if (error || !Array.isArray(data)) return null;
 
-      if (ob) q = q.ilike("obra", ob);
+    const target = normKey(prod);
+    const hit =
+      data.find((r: any) => normKey(String(r?.produto || "")) === target) ||
+      data.find((r: any) => normKey(String(r?.produto || "")).includes(target)) ||
+      data.find((r: any) => target.includes(normKey(String(r?.produto || ""))));
 
-      const r = await q.maybeSingle();
-      if (!r.error && r.data) return (r.data as any) ?? null;
-    }
-
-    // 2) tenta só origem+material
-    {
-      const r = await supabase
-        .from("material_entrada_controle_v")
-        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
-        .ilike("origem", o)
-        .ilike("material", m)
-        .order("plan_id", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!r.error && r.data) return (r.data as any) ?? null;
-    }
-
-    // 3) fallback wildcard
-    {
-      const r = await supabase
-        .from("material_entrada_controle_v")
-        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
-        .ilike("origem", `%${o}%`)
-        .ilike("material", `%${m}%`)
-        .order("plan_id", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!r.error && r.data) return (r.data as any) ?? null;
-    }
-
-    return null;
+    return (hit as any) ?? null;
   } catch {
     return null;
   }
@@ -547,9 +495,9 @@ function buildWhatsappMessage(p: {
   savedId?: number | null;
   resumo?: OcResumo | null;
   acum?: Acumulados | null;
-  entradaCtl?: EntradaControle | null;
+  entradaResumo?: EntradaResumo | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum, entradaCtl } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum, entradaResumo } = p;
 
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
@@ -569,7 +517,7 @@ function buildWhatsappMessage(p: {
     `Ordem de Compra: ${oc ? oc : "-"}\n` +
     `Peso (t): ${pesoNum.toFixed(3)}\n`;
 
-  // ✅ SAÍDA: mantém acumulado e controle como estava
+  // ✅ SAÍDA: mantém exatamente como estava (acumulado + controle OC)
   if (tipo === "SAIDA") {
     if (acum) {
       msg += `\n📅 Acumulado Obra *${obra}*\n`;
@@ -597,30 +545,34 @@ function buildWhatsappMessage(p: {
     return msg;
   }
 
-  // ✅ ENTRADA: mensagem de controle (pedido/entrada/saldo) se existir plano
-  const ctl = entradaCtl;
+  // ✅ ENTRADA: mensagem “curta” de controle de entrada (FETZ)
+  const isFetz = /FETZ/i.test(origem || "");
+  const obraMsg = isFetz ? "PÁTIO USINA (FETZ+FRETE)" : obra;
 
-  const obraMsg = (ctl?.obra || "").trim() || obra;
-  const matMsg = (ctl?.material || "").trim() || material;
+  const prodMsg = (() => {
+    const p = (entradaResumo?.produto || "").trim();
+    return p ? p : materialToProduto(material);
+  })();
 
-  const pedido = ctl?.pedido_total_t ?? null;
-  const entradaTotal = ctl?.entrada_total_t ?? null;
-  const saldo = ctl?.saldo_rest_t ?? null;
+  const pedido = entradaResumo?.pedido ?? null;
+  const volumeEntr = entradaResumo?.volume_entr ?? null;
+  const saldoRest = entradaResumo?.saldo_rest ?? null;
 
   const temPedido = pedido !== null && Number.isFinite(Number(pedido)) && Number(pedido) > 0.0001;
 
   msg += `\nObra: ${obraMsg}\n`;
-  msg += `Material: ${matMsg}\n`;
+  msg += `Material: ${prodMsg}\n`;
 
   if (temPedido) {
     msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton\n`;
   }
 
-  const entradaComEsta = entradaTotal !== null ? entradaTotal : pesoNum;
+  // Se tiver resumo, usa “volume_entr” (já é com este ticket). Se não, cai pro peso do ticket.
+  const entradaComEsta = volumeEntr !== null && Number.isFinite(Number(volumeEntr)) ? Number(volumeEntr) : pesoNum;
   msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton\n`;
 
-  if (temPedido && saldo !== null) {
-    msg += `A entregar: ${fmtTonBR(saldo, 2)} ton\n`;
+  if (temPedido && saldoRest !== null && Number.isFinite(Number(saldoRest))) {
+    msg += `A entregar: ${fmtTonBR(saldoRest, 2)} ton\n`;
   }
 
   return msg;
@@ -668,7 +620,7 @@ export default function MaterialTicketNovoPage() {
 
   const [lastResumo, setLastResumo] = useState<OcResumo | null>(null);
   const [lastAcum, setLastAcum] = useState<Acumulados | null>(null);
-  const [lastEntradaCtl, setLastEntradaCtl] = useState<EntradaControle | null>(null);
+  const [lastEntradaResumo, setLastEntradaResumo] = useState<EntradaResumo | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -833,42 +785,59 @@ export default function MaterialTicketNovoPage() {
         throw new Error(js?.error || "OCR falhou.");
       }
 
-      setOcrRaw(js?.raw || null);
+      const rawText = String(js?.raw || "");
+      setOcrRaw(rawText || null);
 
       const f = js?.fields || {};
-      const v = normalizeVehicle(f.veiculo || null);
-      const o = normalizeText(f.origem || null);
-      const d = normalizeObraName(f.destino || null);
-      const m = normalizeText(f.material || null);
-      const dt = normalizeDateFromOcrToMasked(f.data_br || null);
-      const hr = normalizeTimeFromOcrToMasked(f.horario || null);
-      const p = normalizePesoFromOcrToMasked(f.peso_mask ?? f.peso_t ?? null);
 
-      if (v) setVeiculo(v);
-      if (o) setOrigem(o);
-      if (d) setDestino(d);
-      if (m) setMaterial(m);
-      if (dt) setDataBr(dt);
-      if (hr) setHora(hr);
-      if (p) setPeso(p);
+      // candidatos do "fields"
+      let nextVeiculo = normalizeVehicle(f.veiculo || null);
+      let nextOrigem = normalizeText(f.origem || null);
+      let nextDestino = normalizeObraName(f.destino || null);
+      let nextMaterial = normalizeText(f.material || null);
+      let nextData = normalizeDateFromOcrToMasked(f.data_br || null);
+      let nextHora = normalizeTimeFromOcrToMasked(f.horario || null);
+      let nextPeso = normalizePesoFromOcrToMasked(f.peso_mask ?? f.peso_t ?? null);
 
-      // ✅ FIX: ENTRADA -> reprocessa do OCR bruto quando fields vierem zoados (CARRETA/C/0.000 etc)
-      if (tipo === "ENTRADA" && js?.raw) {
-        const fixed = fixEntradaFromRaw(String(js.raw));
+      // ✅ ENTRADA: fortalece sempre pelo RAW (corrige C/CARRETA/0.000 e swaps)
+      if (tipo === "ENTRADA" && rawText) {
+        const fixed = fixEntradaFromRaw(rawText);
+
         if (fixed) {
-          if (fixed.origem) setOrigem(fixed.origem);
+          // origem: se fields vier vazio, ou veio "GPA..." (swap), força RAW
+          if (fixed.origem && (!nextOrigem || /GPA\s+ENGENHARIA/i.test(nextOrigem))) {
+            nextOrigem = fixed.origem;
+          } else if (fixed.origem && /FETZ/i.test(fixed.origem) && !/FETZ/i.test(nextOrigem)) {
+            nextOrigem = fixed.origem;
+          }
 
-          // ✅ se veio "C" / vazio, força o destino do RAW
-          if (fixed.destino && (isBadDestino(d) || isBadDestino(destino))) setDestino(normalizeObraName(fixed.destino));
+          // destino: se fields vier ruim (C/vazio), força RAW
+          if (fixed.destino && (isBadDestino(nextDestino) || !nextDestino)) {
+            nextDestino = normalizeObraName(fixed.destino);
+          } else if (fixed.destino && /GPA\s+ENGENHARIA/i.test(fixed.destino) && isBadDestino(nextDestino)) {
+            nextDestino = normalizeObraName(fixed.destino);
+          }
 
-          // material “CARRETA” / vazio -> força o do raw (ex.: BRITA ZERO)
-          if (fixed.material && (isBadMaterial(m) || !m || m.toUpperCase() === "CARRETA")) setMaterial(fixed.material);
+          // material: se fields vier CARRETA/vazio, força RAW
+          if (fixed.material && (isBadMaterial(nextMaterial) || !nextMaterial || normKey(nextMaterial) === "CARRETA")) {
+            nextMaterial = fixed.material;
+          }
 
-          // peso 0.000 / vazio -> força o líquido do raw (linha após última PESAGEM INICIAL)
-          const pNum = parsePesoMasked(p);
-          if (fixed.peso && (!p || pNum === null || pNum <= 0)) setPeso(fixed.peso);
+          // peso: se vier 0.000/vazio, força o líquido do RAW
+          const pNum = parsePesoMasked(nextPeso);
+          if (fixed.peso && (!nextPeso || pNum === null || pNum <= 0)) {
+            nextPeso = fixed.peso;
+          }
         }
       }
+
+      if (nextVeiculo) setVeiculo(nextVeiculo);
+      if (nextOrigem) setOrigem(nextOrigem);
+      if (nextDestino) setDestino(nextDestino);
+      if (nextMaterial) setMaterial(nextMaterial);
+      if (nextData) setDataBr(nextData);
+      if (nextHora) setHora(nextHora);
+      if (nextPeso) setPeso(nextPeso);
 
       setSavedMsg("OCR aplicado. Confira e ajuste se necessário.");
     } catch (e: any) {
@@ -885,7 +854,7 @@ export default function MaterialTicketNovoPage() {
     setError(null);
     setLastResumo(null);
     setLastAcum(null);
-    setLastEntradaCtl(null);
+    setLastEntradaResumo(null);
 
     try {
       const dateISO = parsed.dataISO!;
@@ -935,21 +904,28 @@ export default function MaterialTicketNovoPage() {
       const newId = ins.data?.id ?? null;
       setSavedId(newId);
 
-      if (tipo === "ENTRADA") {
-        const ctl = await loadEntradaControle(origem.trim(), obraVal, material.trim());
-        setLastEntradaCtl(ctl);
-        setSavedMsg("Salvo com sucesso!");
-      } else {
-        // ✅ SAÍDA: acumulados + plano OC
+      // ✅ SAÍDA: mantém acumulados
+      if (tipo === "SAIDA") {
         const acum = await loadAcumulados(tipo, obraVal, ocVal, material.trim(), dateISO);
         setLastAcum(acum);
+      }
 
+      // ✅ ENTRADA: carrega resumo por PRODUTO (material_entrada_resumo_v)
+      if (tipo === "ENTRADA") {
+        const produto = materialToProduto(material.trim());
+        const r = await loadEntradaResumo(produto);
+        setLastEntradaResumo(r);
+        setSavedMsg("Salvo com sucesso!");
+      } else {
+        // ✅ SAÍDA: controle OC/material
         let resumo = await loadResumo(obraVal, ocVal, material.trim());
         let createdPlan = false;
 
         if (!resumo) {
           createdPlan = await ensurePlanIlimitado(obraVal, ocVal, material.trim());
-          if (createdPlan) resumo = await loadResumo(obraVal, ocVal, material.trim());
+          if (createdPlan) {
+            resumo = await loadResumo(obraVal, ocVal, material.trim());
+          }
         }
 
         setLastResumo(resumo);
@@ -1009,7 +985,7 @@ export default function MaterialTicketNovoPage() {
       savedId: lastPayload.id,
       resumo: lastResumo,
       acum: lastAcum,
-      entradaCtl: lastEntradaCtl,
+      entradaResumo: lastEntradaResumo,
     });
 
     try {
@@ -1155,9 +1131,14 @@ export default function MaterialTicketNovoPage() {
                 marginBottom: 12,
               }}
             >
-              {savedMsg} {savedId ? <>ID: <b>{savedId}</b></> : null}
+              {savedMsg}{" "}
+              {savedId ? (
+                <>
+                  ID: <b>{savedId}</b>
+                </>
+              ) : null}
 
-              {lastPayload?.tipo === "SAIDA" && lastAcum ? (
+              {tipo === "SAIDA" && lastAcum ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
                   <b>Dia:</b> {fmtQtd(lastAcum.dia_qtd)} {unidadeQtd} • <b>Total no dia:</b> {fmtT(lastAcum.dia_total_t)} t
                   <br />
@@ -1167,22 +1148,19 @@ export default function MaterialTicketNovoPage() {
                 </div>
               ) : null}
 
-              {lastPayload?.tipo === "SAIDA" && lastResumo ? (
+              {tipo === "SAIDA" && lastResumo ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
                   <b>Controle:</b>{" "}
                   {lastResumo.ilimitado ? `ILIMITADO` : `Total: ${fmtT(lastResumo.total_t)} t • Saldo: ${fmtT(lastResumo.saldo_t)} t`}
                 </div>
               ) : null}
 
-              {lastPayload?.tipo === "ENTRADA" && lastEntradaCtl ? (
-                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
-                  <b>Obra:</b> {lastEntradaCtl.obra ?? "-"}
-                  <br />
-                  <b>Material:</b> {lastEntradaCtl.material ?? "-"}
-                  <br />
-                  <b>Pedido:</b> {lastEntradaCtl.pedido_total_t ? fmtTonBR(lastEntradaCtl.pedido_total_t, 0) : "-"} ton •{" "}
-                  <b>Entrada:</b> {lastEntradaCtl.entrada_total_t ? fmtTonBR(lastEntradaCtl.entrada_total_t, 2) : "-"} ton •{" "}
-                  <b>Saldo:</b> {lastEntradaCtl.saldo_rest_t ? fmtTonBR(lastEntradaCtl.saldo_rest_t, 2) : "-"} ton
+              {tipo === "ENTRADA" && lastEntradaResumo ? (
+                <div style={{ marginTop: 8, fontSize: 12, color: "#14532d" }}>
+                  <b>Controle entrada:</b>{" "}
+                  {lastEntradaResumo.pedido ? `Pedido: ${fmtTonBR(lastEntradaResumo.pedido, 0)} ton • ` : ""}
+                  Entrada: {fmtTonBR(lastEntradaResumo.volume_entr, 2)} ton
+                  {lastEntradaResumo.saldo_rest !== null && lastEntradaResumo.pedido ? ` • Saldo: ${fmtTonBR(lastEntradaResumo.saldo_rest, 2)} ton` : ""}
                 </div>
               ) : null}
             </div>
@@ -1213,7 +1191,7 @@ export default function MaterialTicketNovoPage() {
                   setLastShareFile(null);
                   setLastResumo(null);
                   setLastAcum(null);
-                  setLastEntradaCtl(null);
+                  setLastEntradaResumo(null);
                 }}
               />
 
@@ -1290,17 +1268,17 @@ export default function MaterialTicketNovoPage() {
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Origem *</label>
-              <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: USINA UA-03" />
+              <input style={styles.input} value={origem} onChange={(e) => setOrigem(e.target.value)} placeholder="Ex.: FETZ MINERADORA" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Obra / Destino *</label>
-              <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: PMRV TAPA BURACO" />
+              <input style={styles.input} value={destino} onChange={(e) => setDestino(e.target.value)} placeholder="Ex.: GPA ENGENHARIA" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
               <label style={styles.label}>Material *</label>
-              <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: MASSA USINADA (CBUQ)" />
+              <input style={styles.input} value={material} onChange={(e) => setMaterial(e.target.value)} placeholder="Ex.: BRITA ZERO" />
             </div>
 
             <div style={{ gridColumn: "span 12" }}>
