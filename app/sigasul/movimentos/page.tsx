@@ -1,4 +1,3 @@
-// FILE: app/sigasul/movimentos/page.tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
@@ -34,8 +33,9 @@ function pad2(n: number) {
 function fmtBR(d: Date) {
   return d.toLocaleString("pt-BR");
 }
-function minutesToHHMM(mins: number) {
-  const m = Math.max(0, Math.round(mins));
+function secondsToHHMM(sec: number) {
+  const s = Math.max(0, Math.round(sec));
+  const m = Math.floor(s / 60);
   const h = Math.floor(m / 60);
   const r = m % 60;
   return `${pad2(h)}:${pad2(r)}`;
@@ -101,7 +101,7 @@ export default function GPAsfaltoMovimentosPage() {
   }
 
   async function fetchIntervalsPaged() {
-    const pageSize = 1000; // PostgREST costuma limitar em 1000
+    const pageSize = 1000;
     const w0iso = w0.toISOString();
     const w1iso = w1.toISOString();
 
@@ -111,7 +111,7 @@ export default function GPAsfaltoMovimentosPage() {
       let q = supabase
         .from("sigasul_intervals")
         .select("pos_equip_id,codigo_equipamento,pos_placa,obra,ts_start,ts_end,dt_sec,status_operacao")
-        // pega intervalos que CRUZAM a janela (não só os que começam dentro)
+        // intervalos que CRUZAM a janela
         .lte("ts_start", w1iso)
         .gte("ts_end", w0iso)
         .order("ts_start", { ascending: true })
@@ -125,7 +125,7 @@ export default function GPAsfaltoMovimentosPage() {
       const batch = ((data ?? []) as unknown) as IntervalRow[];
       out = out.concat(batch);
 
-      if (batch.length < pageSize) break; // acabou
+      if (batch.length < pageSize) break;
     }
 
     return out;
@@ -184,7 +184,7 @@ export default function GPAsfaltoMovimentosPage() {
     if (devices.length === 0) return;
     load();
 
-    // só auto-refresh quando for "hoje" (senão vira consulta pesada à toa)
+    // auto-refresh só no "hoje"
     if (dateStr !== todayStr) return;
 
     const t = setInterval(load, 30000);
@@ -221,6 +221,7 @@ export default function GPAsfaltoMovimentosPage() {
     return m;
   }, [intervals]);
 
+  // ✅ Aqui está a correção: somar desloc/parado SÓ dentro de 06→19
   const rowsToShow = useMemo(() => {
     return devices
       .filter((d) => {
@@ -232,40 +233,50 @@ export default function GPAsfaltoMovimentosPage() {
       })
       .map((d) => {
         const segs = byEquip.get(d.pos_equip_id) ?? [];
+
         let secDesloc = 0;
-let secParado = 0;
+        let secParado = 0;
 
-for (const x of segs) {
-  const sMs = new Date(x.ts_start).getTime();
-  const eMs = new Date(x.ts_end).getTime();
+        for (const x of segs) {
+          const sMs = new Date(x.ts_start).getTime();
+          const eMs = new Date(x.ts_end).getTime();
 
-  const start = Math.max(sMs, w0.getTime());
-  const end = Math.min(eMs, w1.getTime());
-  if (end <= start) continue;
+          const start = Math.max(sMs, w0.getTime());
+          const end = Math.min(eMs, w1.getTime());
+          if (end <= start) continue;
 
-  const sec = Math.round((end - start) / 1000);
-  const st = (x.status_operacao || "").toUpperCase();
+          const sec = Math.round((end - start) / 1000);
+          const st = (x.status_operacao || "").toUpperCase();
 
-  if (st === "DESLOCANDO") secDesloc += sec;
-  if (st === "LIGADO_PARADO") secParado += sec;
-}
+          if (st === "DESLOCANDO") secDesloc += sec;
+          if (st === "LIGADO_PARADO") secParado += sec;
+        }
+
+        return { device: d, segs, secDesloc, secParado };
+      })
       .sort((a, b) =>
         String(a.device.codigo_equipamento ?? a.device.placa ?? a.device.pos_equip_id).localeCompare(
           String(b.device.codigo_equipamento ?? b.device.placa ?? b.device.pos_equip_id),
           "pt-BR"
         )
       );
-  }, [devices, byEquip, latest, obra]);
+  }, [devices, byEquip, latest, obra, w0, w1]);
 
   const styles: Record<string, React.CSSProperties> = {
     page: { padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif", background: "#f6f7fb", minHeight: "100vh" },
     topbar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
     brand: { display: "flex", gap: 12, alignItems: "center" },
     logo: {
-      width: 42, height: 42, borderRadius: 12,
+      width: 42,
+      height: 42,
+      borderRadius: 12,
       background: "linear-gradient(135deg,#111827,#2563eb)",
-      display: "flex", alignItems: "center", justifyContent: "center",
-      color: "white", fontWeight: 900, letterSpacing: 0.5
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "white",
+      fontWeight: 900,
+      letterSpacing: 0.5,
     },
     h1: { fontSize: 22, fontWeight: 900, margin: 0 },
     sub: { fontSize: 12, color: "#52525b", marginTop: 2 },
@@ -292,7 +303,6 @@ for (const x of segs) {
     mini: { fontSize: 12, color: "#52525b", marginTop: 8 },
 
     barOuter: { position: "relative", height: 30, borderRadius: 10, background: "#f4f4f5", overflow: "hidden" },
-    seg: { position: "absolute", top: 0, bottom: 0 },
   };
 
   return (
@@ -302,9 +312,7 @@ for (const x of segs) {
           <div style={styles.logo}>GP</div>
           <div>
             <h1 style={styles.h1}>GP Asfalto — Movimentos (Timeline v2)</h1>
-            <div style={styles.sub}>
-              Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido
-            </div>
+            <div style={styles.sub}>Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido</div>
           </div>
         </div>
       </div>
@@ -339,7 +347,7 @@ for (const x of segs) {
           </button>
 
           <div style={{ marginLeft: "auto", fontSize: 12, color: "#52525b" }}>
-            Equipamentos listados: <b>{rowsToShow.length}</b>
+            Equipamentos: <b>{rowsToShow.length}</b> &nbsp;·&nbsp; Intervalos carregados: <b>{intervals.length}</b>
           </div>
         </div>
       </div>
@@ -378,8 +386,8 @@ for (const x of segs) {
                   </div>
                   <div style={styles.placa}>{placa}</div>
                   <div style={styles.mini}>
-                    <b>Desloc:</b> {minutesToHHMM(secDesloc / 60)} <span style={{ margin: "0 6px" }}>·</span>
-                    <b>Parado:</b> {minutesToHHMM(secParado / 60)}
+                    <b>Desloc:</b> {secondsToHHMM(secDesloc)} <span style={{ margin: "0 6px" }}>·</span>
+                    <b>Parado:</b> {secondsToHHMM(secParado)}
                   </div>
                 </div>
 
