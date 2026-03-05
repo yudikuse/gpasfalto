@@ -233,14 +233,22 @@ export default function GPAsfaltoMovimentosPage() {
       .map((d) => {
         const segs = byEquip.get(d.pos_equip_id) ?? [];
         let secDesloc = 0;
-        let secParado = 0;
-        for (const x of segs) {
-          const s = (x.status_operacao || "").toUpperCase();
-          if (s === "DESLOCANDO") secDesloc += x.dt_sec;
-          if (s === "LIGADO_PARADO") secParado += x.dt_sec;
-        }
-        return { device: d, segs, secDesloc, secParado };
-      })
+let secParado = 0;
+
+for (const x of segs) {
+  const sMs = new Date(x.ts_start).getTime();
+  const eMs = new Date(x.ts_end).getTime();
+
+  const start = Math.max(sMs, w0.getTime());
+  const end = Math.min(eMs, w1.getTime());
+  if (end <= start) continue;
+
+  const sec = Math.round((end - start) / 1000);
+  const st = (x.status_operacao || "").toUpperCase();
+
+  if (st === "DESLOCANDO") secDesloc += sec;
+  if (st === "LIGADO_PARADO") secParado += sec;
+}
       .sort((a, b) =>
         String(a.device.codigo_equipamento ?? a.device.placa ?? a.device.pos_equip_id).localeCompare(
           String(b.device.codigo_equipamento ?? b.device.placa ?? b.device.pos_equip_id),
