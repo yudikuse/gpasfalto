@@ -26,10 +26,7 @@ type LatestRow = {
 type ObraRow = { obra: string };
 type DeviceRow = { pos_equip_id: string; codigo_equipamento: string | null; placa: string | null; ativo: boolean };
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-);
+const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!);
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -103,6 +100,35 @@ export default function GPAsfaltoMovimentosPage() {
     if (!error) setDevices(((data ?? []) as unknown) as DeviceRow[]);
   }
 
+  async function fetchIntervalsPaged() {
+    const pageSize = 1000; // PostgREST default limit é 1000
+    const w0iso = w0.toISOString();
+    const w1iso = w1.toISOString();
+
+    let out: IntervalRow[] = [];
+    for (let from = 0; from < 50000; from += pageSize) {
+      let q = supabase
+        .from("sigasul_intervals")
+        .select("pos_equip_id,codigo_equipamento,pos_placa,obra,ts_start,ts_end,dt_sec,status_operacao")
+        // pega qualquer intervalo que CRUZA a janela (não só os que começam dentro)
+        .lte("ts_start", w1iso)
+        .gte("ts_end", w0iso)
+        .order("ts_start", { ascending: true })
+        .range(from, from + pageSize - 1);
+
+      if (obra !== "TODAS") q = q.eq("obra", obra);
+
+      const { data, error } = await q;
+      if (error) throw error;
+
+      const batch = ((data ?? []) as unknown) as IntervalRow[];
+      out = out.concat(batch);
+
+      if (batch.length < pageSize) break; // acabou
+    }
+    return out;
+  }
+
   async function load() {
     setErr(null);
     setLoading(true);
@@ -114,27 +140,17 @@ export default function GPAsfaltoMovimentosPage() {
       return;
     }
 
-    // 1) intervalos
-    let q = supabase
-      .from("sigasul_intervals")
-      .select("pos_equip_id,codigo_equipamento,pos_placa,obra,ts_start,ts_end,dt_sec,status_operacao")
-      .gte("ts_start", w0.toISOString())
-      .lte("ts_start", w1.toISOString())
-      .order("ts_start", { ascending: true });
-
-    if (obra !== "TODAS") q = q.eq("obra", obra);
-
-    const { data, error } = await q;
-    if (error) {
+    // 1) intervalos (paginado + cruzando a janela inteira)
+    try {
+      const rows = await fetchIntervalsPaged();
+      setIntervals(rows);
+    } catch (e: any) {
       setIntervals([]);
       setLatest({});
-      setErr(error.message);
+      setErr(e?.message || String(e));
       setLoading(false);
       return;
     }
-
-    const rows = ((data ?? []) as unknown) as IntervalRow[];
-    setIntervals(rows);
 
     // 2) latest: pega de TODOS os devices ativos (pra não sumir ninguém)
     const ids = devices.map((d) => d.pos_equip_id).filter(Boolean);
@@ -167,10 +183,12 @@ export default function GPAsfaltoMovimentosPage() {
   useEffect(() => {
     if (devices.length === 0) return;
     load();
+    // só faz auto-refresh quando for "hoje" (senão vira consulta pesada à toa)
+    if (dateStr !== todayStr) return;
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateStr, obra, devices.length]);
+  }, [dateStr, obra, devices.length, todayStr]);
 
   const ticks = useMemo(() => {
     const out: { mins: number; label: string | null }[] = [];
@@ -223,10 +241,12 @@ export default function GPAsfaltoMovimentosPage() {
         }
         return { device: d, segs, secDesloc, secParado };
       })
-      .sort((a, b) => String(a.device.codigo_equipamento ?? a.device.placa ?? a.device.pos_equip_id).localeCompare(
-        String(b.device.codigo_equipamento ?? b.device.placa ?? b.device.pos_equip_id),
-        "pt-BR"
-      ));
+      .sort((a, b) =>
+        String(a.device.codigo_equipamento ?? a.device.placa ?? a.device.pos_equip_id).localeCompare(
+          String(b.device.codigo_equipamento ?? b.device.placa ?? b.device.pos_equip_id),
+          "pt-BR"
+        )
+      );
   }, [devices, byEquip, latest, obra]);
 
   const styles: Record<string, React.CSSProperties> = {
@@ -234,10 +254,16 @@ export default function GPAsfaltoMovimentosPage() {
     topbar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
     brand: { display: "flex", gap: 12, alignItems: "center" },
     logo: {
-      width: 42, height: 42, borderRadius: 12,
+      width: 42,
+      height: 42,
+      borderRadius: 12,
       background: "linear-gradient(135deg,#111827,#2563eb)",
-      display: "flex", alignItems: "center", justifyContent: "center",
-      color: "white", fontWeight: 900, letterSpacing: 0.5
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      color: "white",
+      fontWeight: 900,
+      letterSpacing: 0.5,
     },
     h1: { fontSize: 22, fontWeight: 900, margin: 0 },
     sub: { fontSize: 12, color: "#52525b", marginTop: 2 },
@@ -274,9 +300,7 @@ export default function GPAsfaltoMovimentosPage() {
           <div style={styles.logo}>GP</div>
           <div>
             <h1 style={styles.h1}>GP Asfalto — Movimentos (Timeline)</h1>
-            <div style={styles.sub}>
-              Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido
-            </div>
+            <div style={styles.sub}>Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido</div>
           </div>
         </div>
       </div>
@@ -396,9 +420,7 @@ export default function GPAsfaltoMovimentosPage() {
           })}
 
           {rowsToShow.length === 0 && (
-            <div style={{ padding: 14, color: "#52525b" }}>
-              {loading ? "Carregando..." : "Sem dados no período/obra selecionados."}
-            </div>
+            <div style={{ padding: 14, color: "#52525b" }}>{loading ? "Carregando..." : "Sem dados no período/obra selecionados."}</div>
           )}
         </div>
       </div>
