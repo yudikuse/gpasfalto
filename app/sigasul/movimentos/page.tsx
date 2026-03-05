@@ -11,7 +11,7 @@ type IntervalRow = {
   ts_start: string;
   ts_end: string;
   dt_sec: number;
-  status_operacao: "DESLIGADO" | "DESLOCANDO" | "LIGADO_PARADO" | "DESCONHECIDO" | string;
+  status_operacao: "DESLIGADO" | "DESLOCANDO" | "PARADO" | "DESCONHECIDO" | string;
 };
 
 type LatestRow = {
@@ -50,7 +50,7 @@ function getWindow(dateStr: string, hhStart = 6, hhEnd = 19) {
 function statusColor(status: string) {
   const t = (status || "").toUpperCase();
   if (t === "DESLOCANDO") return "#22c55e"; // verde
-  if (t === "LIGADO_PARADO") return "#ef4444"; // vermelho
+  if (t === "PARADO") return "#ef4444"; // vermelho (parado)
   if (t === "DESLIGADO") return "#d4d4d8"; // cinza
   return "#a855f7"; // roxo
 }
@@ -104,14 +104,12 @@ export default function GPAsfaltoMovimentosPage() {
     const pageSize = 1000;
     const w0iso = w0.toISOString();
     const w1iso = w1.toISOString();
-
     let out: IntervalRow[] = [];
 
     for (let from = 0; from < 50000; from += pageSize) {
       let q = supabase
         .from("sigasul_intervals")
         .select("pos_equip_id,codigo_equipamento,pos_placa,obra,ts_start,ts_end,dt_sec,status_operacao")
-        // intervalos que CRUZAM a janela
         .lte("ts_start", w1iso)
         .gte("ts_end", w0iso)
         .order("ts_start", { ascending: true })
@@ -124,7 +122,6 @@ export default function GPAsfaltoMovimentosPage() {
 
       const batch = ((data ?? []) as unknown) as IntervalRow[];
       out = out.concat(batch);
-
       if (batch.length < pageSize) break;
     }
 
@@ -160,12 +157,12 @@ export default function GPAsfaltoMovimentosPage() {
         .select("pos_equip_id,status_comunicacao,status_operacao,obra_final,data_ts")
         .in("pos_equip_id", ids);
 
-      if (latestErr) {
-        setLatest({});
-      } else {
+      if (!latestErr) {
         const map: Record<string, LatestRow> = {};
         for (const r of ((latestRows ?? []) as unknown) as LatestRow[]) map[r.pos_equip_id] = r;
         setLatest(map);
+      } else {
+        setLatest({});
       }
     } else {
       setLatest({});
@@ -183,10 +180,7 @@ export default function GPAsfaltoMovimentosPage() {
   useEffect(() => {
     if (devices.length === 0) return;
     load();
-
-    // auto-refresh só no "hoje"
     if (dateStr !== todayStr) return;
-
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -221,19 +215,10 @@ export default function GPAsfaltoMovimentosPage() {
     return m;
   }, [intervals]);
 
-  // ✅ Aqui está a correção: somar desloc/parado SÓ dentro de 06→19
   const rowsToShow = useMemo(() => {
     return devices
-      .filter((d) => {
-        if (obra === "TODAS") return true;
-        const hadInterval = (byEquip.get(d.pos_equip_id) ?? []).some((x) => (x.obra ?? "") === obra);
-        const l = latest[d.pos_equip_id];
-        const isThereNow = (l?.obra_final ?? "") === obra;
-        return hadInterval || isThereNow;
-      })
       .map((d) => {
         const segs = byEquip.get(d.pos_equip_id) ?? [];
-
         let secDesloc = 0;
         let secParado = 0;
 
@@ -249,7 +234,7 @@ export default function GPAsfaltoMovimentosPage() {
           const st = (x.status_operacao || "").toUpperCase();
 
           if (st === "DESLOCANDO") secDesloc += sec;
-          if (st === "LIGADO_PARADO") secParado += sec;
+          if (st === "PARADO") secParado += sec;
         }
 
         return { device: d, segs, secDesloc, secParado };
@@ -260,23 +245,17 @@ export default function GPAsfaltoMovimentosPage() {
           "pt-BR"
         )
       );
-  }, [devices, byEquip, latest, obra, w0, w1]);
+  }, [devices, byEquip, w0, w1]);
 
   const styles: Record<string, React.CSSProperties> = {
     page: { padding: 20, fontFamily: "system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif", background: "#f6f7fb", minHeight: "100vh" },
     topbar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
     brand: { display: "flex", gap: 12, alignItems: "center" },
     logo: {
-      width: 42,
-      height: 42,
-      borderRadius: 12,
+      width: 42, height: 42, borderRadius: 12,
       background: "linear-gradient(135deg,#111827,#2563eb)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      color: "white",
-      fontWeight: 900,
-      letterSpacing: 0.5,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      color: "white", fontWeight: 900
     },
     h1: { fontSize: 22, fontWeight: 900, margin: 0 },
     sub: { fontSize: 12, color: "#52525b", marginTop: 2 },
@@ -311,8 +290,10 @@ export default function GPAsfaltoMovimentosPage() {
         <div style={styles.brand}>
           <div style={styles.logo}>GP</div>
           <div>
-            <h1 style={styles.h1}>GP Asfalto — Movimentos (Timeline v2)</h1>
-            <div style={styles.sub}>Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido</div>
+            <h1 style={styles.h1}>GP Asfalto — Movimentos (Timeline v3)</h1>
+            <div style={styles.sub}>
+              Verde = deslocando · Vermelho = parado (motor indef.) · Cinza = desligado · Roxo = desconhecido
+            </div>
           </div>
         </div>
       </div>
@@ -347,7 +328,7 @@ export default function GPAsfaltoMovimentosPage() {
           </button>
 
           <div style={{ marginLeft: "auto", fontSize: 12, color: "#52525b" }}>
-            Equipamentos: <b>{rowsToShow.length}</b> &nbsp;·&nbsp; Intervalos carregados: <b>{intervals.length}</b>
+            Equipamentos: <b>{rowsToShow.length}</b> &nbsp;·&nbsp; Intervalos: <b>{intervals.length}</b>
           </div>
         </div>
       </div>
@@ -395,7 +376,7 @@ export default function GPAsfaltoMovimentosPage() {
                   <div style={styles.barOuter}>
                     {ticks.map((t, idx) => {
                       const leftPct = (t.mins / windowMinutes) * 100;
-                      return <div key={idx} style={{ ...styles.tickLine, left: `${leftPct}%` }} />;
+                      return <div key={idx} style={{ position: "absolute", top: 0, bottom: 0, width: 1, background: "#e5e7eb", left: `${leftPct}%` }} />;
                     })}
 
                     {segs.map((r, idx) => {
@@ -432,10 +413,6 @@ export default function GPAsfaltoMovimentosPage() {
               </div>
             );
           })}
-
-          {rowsToShow.length === 0 && (
-            <div style={{ padding: 14, color: "#52525b" }}>{loading ? "Carregando..." : "Sem dados no período/obra selecionados."}</div>
-          )}
         </div>
       </div>
     </div>
