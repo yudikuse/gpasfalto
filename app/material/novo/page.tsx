@@ -641,9 +641,7 @@ function buildWhatsappMessage(p: {
       } else {
         linhas.push(`Plano: Total ${fmtT(resumo.total_t)} t • Saldo ${fmtT(resumo.saldo_t)} t`);
       }
-    } else {
-      linhas.push(`Plano: ⚠️ não encontrado`);
-    }
+    } 
 
     if (acum) {
       linhas.push(`Hoje: ${fmtQtd(acum.dia_qtd)} tickets • ${fmtT(acum.dia_total_t)} t`);
