@@ -31,15 +31,11 @@ type Acumulados = {
   mes_total_t: number | null;
 };
 
-type EntradaControle = {
-  origem: string | null;
-  obra: string | null;
-  material: string | null;
-  pedido_total_t: number | null;
-  entrada_total_t: number | null;
-  saldo_rest_t: number | null;
-  plan_id: number | null;
-  inicio_em: string | null;
+type EntradaResumo = {
+  produto: string;
+  volume_entr: number | null;
+  saldo_rest: number | null;
+  pedido: number | null;
 };
 
 const PATIO_FETZ_OBRA = "PÁTIO USINA (FETZ+FRETE)";
@@ -552,43 +548,22 @@ function materialVariantsForLookup(mat: string) {
   return Array.from(out);
 }
 
-// ✅ ENTRADA: puxa do controle (material_entrada_controle_v)
-async function loadEntradaControle(origemVal: string, obraVal: string, matVal: string): Promise<EntradaControle | null> {
+// ✅ ENTRADA: puxa do resumo correto (material_entrada_resumo_v)
+// (não mexe em SAÍDA)
+async function loadEntradaResumo(matVal: string): Promise<EntradaResumo | null> {
   try {
-    const o = (origemVal || "").trim();
-    const ob = (obraVal || "").trim();
     const mats = materialVariantsForLookup(matVal);
-
-    if (!o || !mats.length) return null;
-
-    // tenta casar obra+origem+material, senão relaxa
-    const origemLike = isFetzOrigem(o) ? "%FETZ%" : `%${o}%`;
+    if (!mats.length) return null;
 
     for (const m of mats) {
-      // 1) origem + obra + material
-      if (ob) {
-        const r1 = await supabase
-          .from("material_entrada_controle_v")
-          .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
-          .ilike("origem", origemLike)
-          .ilike("obra", ob)
-          .ilike("material", m)
-          .order("plan_id", { ascending: false })
-          .limit(1)
-          .maybeSingle();
-        if (!r1.error && r1.data) return (r1.data as any) ?? null;
-      }
-
-      // 2) origem + material (sem obra)
-      const r2 = await supabase
-        .from("material_entrada_controle_v")
-        .select("origem,obra,material,pedido_total_t,entrada_total_t,saldo_rest_t,plan_id,inicio_em")
-        .ilike("origem", origemLike)
-        .ilike("material", m)
-        .order("plan_id", { ascending: false })
+      const r = await supabase
+        .from("material_entrada_resumo_v")
+        .select("produto,volume_entr,saldo_rest,pedido")
+        .ilike("produto", m)
         .limit(1)
         .maybeSingle();
-      if (!r2.error && r2.data) return (r2.data as any) ?? null;
+
+      if (!r.error && r.data) return (r.data as any) ?? null;
     }
 
     return null;
@@ -610,9 +585,9 @@ function buildWhatsappMessage(p: {
   savedId?: number | null;
   resumo?: OcResumo | null;
   acum?: Acumulados | null;
-  entradaCtl?: EntradaControle | null;
+  entradaResumo?: EntradaResumo | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum, entradaCtl } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum, entradaResumo } = p;
 
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
@@ -659,31 +634,44 @@ function buildWhatsappMessage(p: {
     return msg;
   }
 
-  // ✅ ENTRADA: mensagem no formato do print
-  const ctl = entradaCtl;
+  // ✅ ENTRADA: usa o resumo correto (material_entrada_resumo_v)
+  // Regra: no ticket a obra fica como GPA ENGENHARIA, mas no resumo mostramos o PÁTIO (planejamento/controle).
+  const r = entradaResumo;
 
-  const obraMsg = (ctl?.obra || "").trim() || obra;
-  const matMsg = normalizeMaterialForMsg((ctl?.material || "").trim() || material);
+  const obraMsg = isFetzOrigem((origem || "").trim()) ? PATIO_FETZ_OBRA : obra;
+  const matMsg = normalizeMaterialForMsg((r?.produto || "").trim() || material);
 
-  const pedido = ctl?.pedido_total_t ?? null;
-  const entradaTotal = ctl?.entrada_total_t ?? null;
-  const saldo = ctl?.saldo_rest_t ?? null;
+  const pedido = r?.pedido ?? null;
+  const entradaComEsta = r?.volume_entr ?? null;
+  const saldo = r?.saldo_rest ?? null;
 
   const temPedido = pedido !== null && Number.isFinite(Number(pedido)) && Number(pedido) > 0.0001;
 
-  msg += `\nObra: ${obraMsg}\n`;
-  msg += `Material: ${matMsg}\n`;
+  msg += `
+Obra: ${obraMsg}
+`;
+  msg += `Material: ${matMsg}
+`;
 
-  if (temPedido) {
-    msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton\n`;
+  if (temPedido) msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton
+`;
+  else msg += `Quantidade total: -
+`;
+
+  if (entradaComEsta !== null && Number.isFinite(Number(entradaComEsta))) {
+    msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton
+`;
+  } else {
+    msg += `Entrada total com esta: -
+`;
   }
 
-  // aqui é “com esta”, então usamos a view (já calculada com este insert)
-  const entradaComEsta = entradaTotal !== null ? entradaTotal : pesoNum;
-  msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton\n`;
-
-  if (temPedido && saldo !== null) {
-    msg += `A entregar: ${fmtTonBR(saldo, 2)} ton\n`;
+  if (temPedido && saldo !== null && Number.isFinite(Number(saldo))) {
+    msg += `A entregar: ${fmtTonBR(saldo, 2)} ton
+`;
+  } else {
+    msg += `A entregar: -
+`;
   }
 
   return msg;
@@ -731,7 +719,7 @@ export default function MaterialTicketNovoPage() {
 
   const [lastResumo, setLastResumo] = useState<OcResumo | null>(null);
   const [lastAcum, setLastAcum] = useState<Acumulados | null>(null);
-  const [lastEntradaCtl, setLastEntradaCtl] = useState<EntradaControle | null>(null);
+  const [lastEntradaResumo, setLastEntradaResumo] = useState<EntradaResumo | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -957,7 +945,7 @@ export default function MaterialTicketNovoPage() {
     setError(null);
     setLastResumo(null);
     setLastAcum(null);
-    setLastEntradaCtl(null);
+    setLastEntradaResumo(null);
 
     try {
       const dateISO = parsed.dataISO!;
@@ -1014,8 +1002,8 @@ export default function MaterialTicketNovoPage() {
       setLastAcum(acum);
 
       if (tipo === "ENTRADA") {
-        const ctl = await loadEntradaControle(origem.trim(), obraVal, normalizeMaterialForMsg(material.trim()));
-        setLastEntradaCtl(ctl);
+        const ent = await loadEntradaResumo(normalizeMaterialForMsg(material.trim()));
+        setLastEntradaResumo(ent);
         setSavedMsg("Salvo com sucesso!");
       } else {
         let resumo = await loadResumo(obraVal, ocVal, material.trim());
@@ -1085,7 +1073,7 @@ export default function MaterialTicketNovoPage() {
       savedId: lastPayload.id,
       resumo: lastResumo,
       acum: lastAcum,
-      entradaCtl: lastEntradaCtl,
+      entradaResumo: lastEntradaResumo,
     });
 
     try {
@@ -1252,17 +1240,17 @@ export default function MaterialTicketNovoPage() {
               ) : null}
 
               {/* ENTRADA: mostra controle de pedido/saldo */}
-              {tipo === "ENTRADA" && lastEntradaCtl ? (
+              {tipo === "ENTRADA" && lastEntradaResumo ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
-                  <b>Obra:</b> {lastEntradaCtl.obra ?? "-"}
+                  <b>Obra:</b> {PATIO_FETZ_OBRA}
                   <br />
-                  <b>Material:</b> {normalizeMaterialForMsg(lastEntradaCtl.material ?? "-")}
+                  <b>Material:</b> {normalizeMaterialForMsg(lastEntradaResumo.produto ?? "-")}
                   <br />
-                  <b>Pedido:</b> {lastEntradaCtl.pedido_total_t ? `${fmtTonBR(lastEntradaCtl.pedido_total_t, 0)} ton` : "-"}
+                  <b>Pedido:</b> {lastEntradaResumo.pedido !== null ? `${fmtTonBR(lastEntradaResumo.pedido, 0)} ton` : "-"}
                   <br />
-                  <b>Entrada total:</b> {lastEntradaCtl.entrada_total_t ? `${fmtTonBR(lastEntradaCtl.entrada_total_t, 2)} ton` : "-"}
+                  <b>Entrada total:</b> {lastEntradaResumo.volume_entr !== null ? `${fmtTonBR(lastEntradaResumo.volume_entr, 2)} ton` : "-"}
                   <br />
-                  <b>Saldo:</b> {lastEntradaCtl.saldo_rest_t ? `${fmtTonBR(lastEntradaCtl.saldo_rest_t, 2)} ton` : "-"}
+                  <b>Saldo:</b> {lastEntradaResumo.saldo_rest !== null ? `${fmtTonBR(lastEntradaResumo.saldo_rest, 2)} ton` : "-"}
                 </div>
               ) : null}
             </div>
@@ -1293,7 +1281,7 @@ export default function MaterialTicketNovoPage() {
                   setLastShareFile(null);
                   setLastResumo(null);
                   setLastAcum(null);
-                  setLastEntradaCtl(null);
+                  setLastEntradaResumo(null);
                 }}
               />
 
