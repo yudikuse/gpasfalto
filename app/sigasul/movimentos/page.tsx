@@ -101,16 +101,17 @@ export default function GPAsfaltoMovimentosPage() {
   }
 
   async function fetchIntervalsPaged() {
-    const pageSize = 1000; // PostgREST default limit é 1000
+    const pageSize = 1000; // PostgREST costuma limitar em 1000
     const w0iso = w0.toISOString();
     const w1iso = w1.toISOString();
 
     let out: IntervalRow[] = [];
+
     for (let from = 0; from < 50000; from += pageSize) {
       let q = supabase
         .from("sigasul_intervals")
         .select("pos_equip_id,codigo_equipamento,pos_placa,obra,ts_start,ts_end,dt_sec,status_operacao")
-        // pega qualquer intervalo que CRUZA a janela (não só os que começam dentro)
+        // pega intervalos que CRUZAM a janela (não só os que começam dentro)
         .lte("ts_start", w1iso)
         .gte("ts_end", w0iso)
         .order("ts_start", { ascending: true })
@@ -126,6 +127,7 @@ export default function GPAsfaltoMovimentosPage() {
 
       if (batch.length < pageSize) break; // acabou
     }
+
     return out;
   }
 
@@ -140,7 +142,6 @@ export default function GPAsfaltoMovimentosPage() {
       return;
     }
 
-    // 1) intervalos (paginado + cruzando a janela inteira)
     try {
       const rows = await fetchIntervalsPaged();
       setIntervals(rows);
@@ -152,7 +153,6 @@ export default function GPAsfaltoMovimentosPage() {
       return;
     }
 
-    // 2) latest: pega de TODOS os devices ativos (pra não sumir ninguém)
     const ids = devices.map((d) => d.pos_equip_id).filter(Boolean);
     if (ids.length > 0) {
       const { data: latestRows, error: latestErr } = await supabase
@@ -183,8 +183,10 @@ export default function GPAsfaltoMovimentosPage() {
   useEffect(() => {
     if (devices.length === 0) return;
     load();
-    // só faz auto-refresh quando for "hoje" (senão vira consulta pesada à toa)
+
+    // só auto-refresh quando for "hoje" (senão vira consulta pesada à toa)
     if (dateStr !== todayStr) return;
+
     const t = setInterval(load, 30000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,8 +222,6 @@ export default function GPAsfaltoMovimentosPage() {
   }, [intervals]);
 
   const rowsToShow = useMemo(() => {
-    // sempre mostrar todos os ativos; se obra != TODAS, filtra por:
-    // - teve intervalo nessa obra no dia OU latest.obra_final = obra
     return devices
       .filter((d) => {
         if (obra === "TODAS") return true;
@@ -254,16 +254,10 @@ export default function GPAsfaltoMovimentosPage() {
     topbar: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 },
     brand: { display: "flex", gap: 12, alignItems: "center" },
     logo: {
-      width: 42,
-      height: 42,
-      borderRadius: 12,
+      width: 42, height: 42, borderRadius: 12,
       background: "linear-gradient(135deg,#111827,#2563eb)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      color: "white",
-      fontWeight: 900,
-      letterSpacing: 0.5,
+      display: "flex", alignItems: "center", justifyContent: "center",
+      color: "white", fontWeight: 900, letterSpacing: 0.5
     },
     h1: { fontSize: 22, fontWeight: 900, margin: 0 },
     sub: { fontSize: 12, color: "#52525b", marginTop: 2 },
@@ -299,8 +293,10 @@ export default function GPAsfaltoMovimentosPage() {
         <div style={styles.brand}>
           <div style={styles.logo}>GP</div>
           <div>
-            <h1 style={styles.h1}>GP Asfalto — Movimentos (Timeline)</h1>
-            <div style={styles.sub}>Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido</div>
+            <h1 style={styles.h1}>GP Asfalto — Movimentos (Timeline v2)</h1>
+            <div style={styles.sub}>
+              Verde = deslocando · Vermelho = parado ligado · Cinza = desligado · Roxo = desconhecido
+            </div>
           </div>
         </div>
       </div>
@@ -404,7 +400,9 @@ export default function GPAsfaltoMovimentosPage() {
                         <div
                           key={`${device.pos_equip_id}-${r.ts_start}-${idx}`}
                           style={{
-                            ...styles.seg,
+                            position: "absolute",
+                            top: 0,
+                            bottom: 0,
                             left: `${leftPct}%`,
                             width: `${widthPct}%`,
                             background: statusColor(r.status_operacao),
