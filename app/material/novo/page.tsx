@@ -31,11 +31,31 @@ type Acumulados = {
   mes_total_t: number | null;
 };
 
-type EntradaResumo = {
+type EntradaPlanResumo = {
+  plan_id: number;
+  origem: string;
+  obra: string;
   produto: string;
+  pedido: number | null;
   volume_entr: number | null;
   saldo_rest: number | null;
-  pedido: number | null;
+};
+
+type EntradaPlan = {
+  id: number;
+  origem: string;
+  obra: string;
+  material: string;
+  pedido_t: number | null;
+  inicio_em: string | null;
+  offset_t: number | null;
+};
+
+type EntradaAlloc = {
+  plan_id: number | null;
+  obra: string;
+  peso: number;
+  over?: boolean;
 };
 
 const PATIO_FETZ_OBRA = "PÁTIO USINA (FETZ+FRETE)";
@@ -548,30 +568,58 @@ function materialVariantsForLookup(mat: string) {
   return Array.from(out);
 }
 
-// ✅ ENTRADA: puxa do resumo correto (material_entrada_resumo_v)
+// ✅ ENTRADA: lookup dos planos ativos (por origem+material) e resumo por plano
 // (não mexe em SAÍDA)
-async function loadEntradaResumo(matVal: string): Promise<EntradaResumo | null> {
+async function loadEntradaPlansForTicket(origemVal: string, matVal: string, dateISO: string): Promise<EntradaPlan[]> {
   try {
-    const mats = materialVariantsForLookup(matVal);
-    if (!mats.length) return null;
+    const matCanon = normalizeMaterialForMsg(matVal);
+    const mats = Array.from(new Set([matCanon, ...materialVariantsForLookup(matCanon)])).filter(Boolean);
 
-    for (const m of mats) {
-      const r = await supabase
-        .from("material_entrada_resumo_v")
-        .select("produto,volume_entr,saldo_rest,pedido")
-        .ilike("produto", m)
-        .limit(1)
-        .maybeSingle();
+    if (!mats.length) return [];
 
-      if (!r.error && r.data) return (r.data as any) ?? null;
-    }
+    let q = supabase
+      .from("material_entrada_plan")
+      .select("id,origem,obra,material,pedido_t,inicio_em,offset_t,ativo")
+      .eq("ativo", true)
+      .lte("inicio_em", dateISO)
+      .in("material", mats)
+      .order("inicio_em", { ascending: false });
 
-    return null;
+    if (isFetzOrigem((origemVal || "").trim())) q = q.ilike("origem", "%FETZ%");
+    else q = q.ilike("origem", `%${(origemVal || "").trim()}%`);
+
+    const { data, error } = await q;
+    if (error) return [];
+
+    const rows = Array.isArray(data) ? data : [];
+    return rows as any;
   } catch {
-    return null;
+    return [];
   }
 }
 
+async function loadEntradaPlanResumoByIds(planIds: number[]): Promise<Record<number, EntradaPlanResumo>> {
+  try {
+    const uniq = Array.from(new Set((planIds || []).filter((x) => Number.isFinite(Number(x))))) as number[];
+    if (!uniq.length) return {};
+
+    const { data, error } = await supabase
+      .from("material_entrada_resumo_por_plano_v")
+      .select("plan_id,origem,obra,produto,pedido,volume_entr,saldo_rest")
+      .in("plan_id", uniq);
+
+    if (error) return {};
+
+    const out: Record<number, EntradaPlanResumo> = {};
+    const rows = Array.isArray(data) ? data : [];
+    for (const r of rows as any[]) {
+      if (r?.plan_id !== null && r?.plan_id !== undefined) out[Number(r.plan_id)] = r as any;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
 function buildWhatsappMessage(p: {
   tipo: TicketTipo;
   veiculo: string;
@@ -583,11 +631,13 @@ function buildWhatsappMessage(p: {
   horarioISO: string;
   pesoNum: number;
   savedId?: number | null;
+  savedIds?: number[] | null;
   resumo?: OcResumo | null;
   acum?: Acumulados | null;
-  entradaResumo?: EntradaResumo | null;
+  entradaPlanRows?: EntradaPlanResumo[] | null;
+  entradaAlloc?: EntradaAlloc[] | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, resumo, acum, entradaResumo } = p;
+  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, savedIds, resumo, acum, entradaPlanRows, entradaAlloc } = p;
 
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
@@ -596,9 +646,11 @@ function buildWhatsappMessage(p: {
 
   const unidadeQtd = tipo === "SAIDA" ? "CB" : "tickets";
 
+  const idsLabel = (savedIds && savedIds.length) ? savedIds.join(" / ") : (savedId ?? "-");
+
   let msg =
     `✅ Ticket de ${tipo}\n` +
-    `ID: ${savedId ?? "-"}\n` +
+    `ID: ${idsLabel}\n` +
     `Veículo: ${veiculo}\n` +
     `Data/Hora: ${dateBR} ${horarioISO}\n` +
     `Origem: ${origem}\n` +
@@ -634,47 +686,56 @@ function buildWhatsappMessage(p: {
     return msg;
   }
 
-  // ✅ ENTRADA: usa o resumo correto (material_entrada_resumo_v)
-  // Regra: no ticket a obra fica como GPA ENGENHARIA, mas no resumo mostramos o PÁTIO (planejamento/controle).
-  const r = entradaResumo;
+    // ✅ ENTRADA: usa resumo por plano (material_entrada_resumo_por_plano_v)
+  // Ticket fica em GPA ENGENHARIA; o controle vem do(s) plano(s) (PÁTIO normal / PERMUTA)
+  const rows = (entradaPlanRows || []).slice();
 
-  const obraMsg = isFetzOrigem((origem || "").trim()) ? PATIO_FETZ_OBRA : obra;
-  const matMsg = normalizeMaterialForMsg((r?.produto || "").trim() || material);
-
-  const pedido = r?.pedido ?? null;
-  const entradaComEsta = r?.volume_entr ?? null;
-  const saldo = r?.saldo_rest ?? null;
-
-  const temPedido = pedido !== null && Number.isFinite(Number(pedido)) && Number(pedido) > 0.0001;
-
-  msg += `
-Obra: ${obraMsg}
-`;
-  msg += `Material: ${matMsg}
-`;
-
-  if (temPedido) msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton
-`;
-  else msg += `Quantidade total: -
-`;
-
-  if (entradaComEsta !== null && Number.isFinite(Number(entradaComEsta))) {
-    msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton
-`;
-  } else {
-    msg += `Entrada total com esta: -
-`;
+  // Se foi dividido (permuta + normal no mesmo caminhão), mostra quanto foi para cada plano
+  if (entradaAlloc && entradaAlloc.length > 1) {
+    msg += `\n🧩 Consumo (dividido)\n`;
+    for (const a of entradaAlloc) {
+      msg += `- ${fmtTonBR(a.peso, 2)} ton → ${a.obra}${a.over ? " (⚠️ excedeu saldo)" : ""}\n`;
+    }
   }
 
-  if (temPedido && saldo !== null && Number.isFinite(Number(saldo))) {
-    msg += `A entregar: ${fmtTonBR(saldo, 2)} ton
-`;
-  } else {
-    msg += `A entregar: -
-`;
+  if (rows.length) {
+    rows.sort((a, b) => String(a.obra || "").localeCompare(String(b.obra || "")));
+
+    for (const r of rows) {
+      const obraMsg = (r.obra || "").trim() || (isFetzOrigem((origem || "").trim()) ? PATIO_FETZ_OBRA : obra);
+      const matMsg = normalizeMaterialForMsg((r.produto || "").trim() || material);
+
+      const pedido = r.pedido ?? null;
+      const entradaComEsta = r.volume_entr ?? null;
+      const saldo = r.saldo_rest ?? null;
+
+      const temPedido = pedido !== null && Number.isFinite(Number(pedido)) && Number(pedido) > 0.0001;
+
+      msg += `\nObra: ${obraMsg}\n`;
+      msg += `Material: ${matMsg}\n`;
+
+      if (temPedido) msg += `Quantidade total: ${fmtTonBR(pedido, 0)} ton\n`;
+      else msg += `Quantidade total: -\n`;
+
+      if (entradaComEsta !== null && Number.isFinite(Number(entradaComEsta))) {
+        msg += `Entrada total com esta: ${fmtTonBR(entradaComEsta, 2)} ton\n`;
+      } else {
+        msg += `Entrada total com esta: -\n`;
+      }
+
+      if (temPedido && saldo !== null && Number.isFinite(Number(saldo))) {
+        msg += `A entregar: ${fmtTonBR(saldo, 2)} ton\n`;
+      } else {
+        msg += `A entregar: -\n`;
+      }
+    }
+
+    return msg;
   }
 
+  // fallback: sem plano/resumo (mostra só o ticket)
   return msg;
+
 }
 
 export default function MaterialTicketNovoPage() {
@@ -719,7 +780,9 @@ export default function MaterialTicketNovoPage() {
 
   const [lastResumo, setLastResumo] = useState<OcResumo | null>(null);
   const [lastAcum, setLastAcum] = useState<Acumulados | null>(null);
-  const [lastEntradaResumo, setLastEntradaResumo] = useState<EntradaResumo | null>(null);
+  const [lastEntradaPlanRows, setLastEntradaPlanRows] = useState<EntradaPlanResumo[] | null>(null);
+  const [lastEntradaAlloc, setLastEntradaAlloc] = useState<EntradaAlloc[] | null>(null);
+  const [lastSavedIds, setLastSavedIds] = useState<number[] | null>(null);
 
   useEffect(() => {
     if (!file) {
@@ -945,7 +1008,9 @@ export default function MaterialTicketNovoPage() {
     setError(null);
     setLastResumo(null);
     setLastAcum(null);
-    setLastEntradaResumo(null);
+    setLastEntradaPlanRows(null);
+    setLastEntradaAlloc(null);
+    setLastSavedIds(null);
 
     try {
       const dateISO = parsed.dataISO!;
@@ -968,9 +1033,136 @@ export default function MaterialTicketNovoPage() {
 
       const ocVal = oc.trim() ? oc.trim() : null;
 
-      // ✅ resolve “obra” de ENTRADA (FETZ -> PÁTIO)
+      // ✅ ENTRADA: ticket sempre fica em GPA ENGENHARIA (sua regra)
       const obraVal = tipo === "ENTRADA" ? resolveEntradaObra(origem.trim(), destino) : normalizeObraName(destino);
+      const matCanon = normalizeMaterialForMsg(material.trim());
 
+      // ---------------------------------------------------------
+      // ✅ ENTRADA: atribui plano(s) e grava entrada_plan_id
+      // - se PERMUTA estiver ativa e com saldo, consome primeiro
+      // - se precisar, divide o caminhão em 2 lançamentos
+      // - SAÍDA permanece intocada
+      // ---------------------------------------------------------
+      if (tipo === "ENTRADA") {
+        const plans = await loadEntradaPlansForTicket(origem.trim(), matCanon, dateISO);
+
+        let allocs: EntradaAlloc[] = [];
+        if (plans.length) {
+          const resumoByBefore = await loadEntradaPlanResumoByIds(plans.map((p) => Number(p.id)));
+
+          let remaining = pesoNum;
+
+          // plans já vêm ordenados por inicio_em desc
+          for (const p of plans) {
+            if (remaining <= 0.0001) break;
+
+            const r = resumoByBefore[Number(p.id)];
+            const saldoRaw = r?.saldo_rest ?? null;
+            const saldo = saldoRaw !== null && Number.isFinite(Number(saldoRaw)) ? Number(saldoRaw) : 0;
+
+            if (saldo <= 0.0001) continue;
+
+            const take = Math.min(remaining, saldo);
+            if (take > 0.0001) {
+              allocs.push({
+                plan_id: Number(p.id),
+                obra: String(p.obra || "").trim() || "-",
+                peso: take,
+              });
+              remaining -= take;
+            }
+          }
+
+          if (remaining > 0.0001) {
+            // sobra vai pro plano mais antigo (normal) — evita travar o lançamento
+            const fallback = plans[plans.length - 1];
+            allocs.push({
+              plan_id: fallback?.id ? Number(fallback.id) : null,
+              obra: String(fallback?.obra || "").trim() || "-",
+              peso: remaining,
+              over: true,
+            });
+            remaining = 0;
+          }
+        }
+
+        // sem planos -> grava sem plan_id (não deve acontecer no seu caso)
+        if (!allocs.length) {
+          allocs = [{ plan_id: null, obra: isFetzOrigem(origem.trim()) ? PATIO_FETZ_OBRA : obraVal, peso: pesoNum }];
+        }
+
+        const rowsToInsert = allocs.map((a) => ({
+          tipo,
+          veiculo: veiculo.trim(),
+          origem: origem.trim(),
+          destino: obraVal,
+          obra: obraVal,
+          material: matCanon,
+          oc: ocVal,
+          data: dateISO,
+          horario: timeISO,
+          peso_t: a.peso,
+          entrada_plan_id: a.plan_id,
+          arquivo_path: storagePath,
+          arquivo_nome: file!.name,
+          arquivo_mime: file!.type || null,
+          arquivo_size: file!.size,
+        }));
+
+        const insAll = await supabase.from("material_tickets").insert(rowsToInsert).select("id");
+        if (insAll.error) throw new Error(`Insert falhou: ${insAll.error.message}`);
+
+        const idsInserted: number[] = (Array.isArray(insAll.data) ? insAll.data : [])
+          .map((r: any) => Number(r?.id))
+          .filter((x: any) => Number.isFinite(Number(x)) && Number(x) > 0);
+
+
+        const firstId = idsInserted[0] ?? null;
+        setSavedId(firstId);
+        setLastSavedIds(idsInserted);
+        setLastEntradaAlloc(allocs);
+
+        // acumulados (não vai no WhatsApp de ENTRADA, mas mantém pra debug)
+        const acum = await loadAcumulados(tipo, obraVal, ocVal, matCanon, dateISO);
+        setLastAcum(acum);
+
+        // resumo por plano (para mensagem do WhatsApp)
+        const planIdsMsg = plans.map((p) => Number(p.id)).filter((x) => Number.isFinite(Number(x)));
+        const resumoByAfter = await loadEntradaPlanResumoByIds(planIdsMsg);
+        const rows = Object.values(resumoByAfter);
+        setLastEntradaPlanRows(rows.length ? rows : null);
+
+        setSavedMsg(idsInserted.length > 1 ? "Salvo com sucesso! (Entrada dividida em 2 lançamentos)" : "Salvo com sucesso!");
+
+        if (firstId) {
+          setLastPayload({
+            tipo,
+            veiculo: veiculo.trim(),
+            origem: origem.trim(),
+            obra: obraVal,
+            material: matCanon,
+            oc: ocVal,
+            dataISO: dateISO,
+            horarioISO: timeISO,
+            pesoNum: pesoNum, // peso total (mesmo se dividido)
+            id: firstId,
+          });
+        } else {
+          setLastPayload(null);
+        }
+
+        setLastShareFile(file!);
+
+        setFile(null);
+        setPreviewUrl(null);
+        setOcrRaw(null);
+        setOcrNote(null);
+        return;
+      }
+
+      // ---------------------------------------------------------
+      // ✅ SAÍDA: NÃO ALTERAR (intocada)
+      // ---------------------------------------------------------
       const ins = await supabase
         .from("material_tickets")
         .insert({
@@ -979,7 +1171,7 @@ export default function MaterialTicketNovoPage() {
           origem: origem.trim(),
           destino: obraVal,
           obra: obraVal,
-          material: normalizeMaterialForMsg(material.trim()),
+          material: matCanon,
           oc: ocVal,
           data: dateISO,
           horario: timeISO,
@@ -997,34 +1189,27 @@ export default function MaterialTicketNovoPage() {
       const newId = ins.data?.id ?? null;
       setSavedId(newId);
 
-      // SAÍDA usa acumulados. ENTRADA não depende disso, mas pode manter pra debug (não vai pra msg).
-      const acum = await loadAcumulados(tipo, obraVal, ocVal, normalizeMaterialForMsg(material.trim()), dateISO);
+      const acum = await loadAcumulados(tipo, obraVal, ocVal, matCanon, dateISO);
       setLastAcum(acum);
 
-      if (tipo === "ENTRADA") {
-        const ent = await loadEntradaResumo(normalizeMaterialForMsg(material.trim()));
-        setLastEntradaResumo(ent);
-        setSavedMsg("Salvo com sucesso!");
-      } else {
-        let resumo = await loadResumo(obraVal, ocVal, material.trim());
-        let createdPlan = false;
+      let resumo = await loadResumo(obraVal, ocVal, matCanon);
+      let createdPlan = false;
 
-        if (!resumo) {
-          createdPlan = await ensurePlanIlimitado(obraVal, ocVal, material.trim());
-          if (createdPlan) {
-            resumo = await loadResumo(obraVal, ocVal, material.trim());
-          }
-        }
-
-        setLastResumo(resumo);
-
+      if (!resumo) {
+        createdPlan = await ensurePlanIlimitado(obraVal, ocVal, matCanon);
         if (createdPlan) {
-          setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
-        } else if (!resumo) {
-          setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
-        } else {
-          setSavedMsg("Salvo com sucesso!");
+          resumo = await loadResumo(obraVal, ocVal, matCanon);
         }
+      }
+
+      setLastResumo(resumo);
+
+      if (createdPlan) {
+        setSavedMsg("Salvo com sucesso! Plano cadastrado como ILIMITADO (ajuste depois se necessário).");
+      } else if (!resumo) {
+        setSavedMsg("Salvo com sucesso! ⚠️ Plano não encontrado (confira Obra/Material e cadastre no plano).");
+      } else {
+        setSavedMsg("Salvo com sucesso!");
       }
 
       if (newId) {
@@ -1033,7 +1218,7 @@ export default function MaterialTicketNovoPage() {
           veiculo: veiculo.trim(),
           origem: origem.trim(),
           obra: obraVal,
-          material: normalizeMaterialForMsg(material.trim()),
+          material: matCanon,
           oc: ocVal,
           dataISO: dateISO,
           horarioISO: timeISO,
@@ -1057,6 +1242,7 @@ export default function MaterialTicketNovoPage() {
     }
   }
 
+
   async function handleShareWhatsApp() {
     if (!lastPayload) return;
 
@@ -1073,7 +1259,9 @@ export default function MaterialTicketNovoPage() {
       savedId: lastPayload.id,
       resumo: lastResumo,
       acum: lastAcum,
-      entradaResumo: lastEntradaResumo,
+      savedIds: lastSavedIds,
+      entradaPlanRows: lastEntradaPlanRows,
+      entradaAlloc: lastEntradaAlloc,
     });
 
     try {
@@ -1239,18 +1427,25 @@ export default function MaterialTicketNovoPage() {
                 </div>
               ) : null}
 
-              {/* ENTRADA: mostra controle de pedido/saldo */}
-              {tipo === "ENTRADA" && lastEntradaResumo ? (
+              {/* ENTRADA: mostra controle de pedido/saldo (por plano) */}
+              {tipo === "ENTRADA" && lastEntradaPlanRows && lastEntradaPlanRows.length ? (
                 <div style={{ marginTop: 8, fontSize: 12, color: "#14532d", lineHeight: 1.35 }}>
-                  <b>Obra:</b> {PATIO_FETZ_OBRA}
-                  <br />
-                  <b>Material:</b> {normalizeMaterialForMsg(lastEntradaResumo.produto ?? "-")}
-                  <br />
-                  <b>Pedido:</b> {lastEntradaResumo.pedido !== null ? `${fmtTonBR(lastEntradaResumo.pedido, 0)} ton` : "-"}
-                  <br />
-                  <b>Entrada total:</b> {lastEntradaResumo.volume_entr !== null ? `${fmtTonBR(lastEntradaResumo.volume_entr, 2)} ton` : "-"}
-                  <br />
-                  <b>Saldo:</b> {lastEntradaResumo.saldo_rest !== null ? `${fmtTonBR(lastEntradaResumo.saldo_rest, 2)} ton` : "-"}
+                  {lastEntradaPlanRows
+                    .slice()
+                    .sort((a, b) => String(a.obra || "").localeCompare(String(b.obra || "")))
+                    .map((r) => (
+                      <div key={r.plan_id} style={{ marginTop: 6 }}>
+                        <b>Obra:</b> {r.obra ?? "-"}
+                        <br />
+                        <b>Material:</b> {normalizeMaterialForMsg(r.produto ?? "-")}
+                        <br />
+                        <b>Pedido:</b> {r.pedido !== null ? `${fmtTonBR(r.pedido, 0)} ton` : "-"}
+                        <br />
+                        <b>Entrada total:</b> {r.volume_entr !== null ? `${fmtTonBR(r.volume_entr, 2)} ton` : "-"}
+                        <br />
+                        <b>Saldo:</b> {r.saldo_rest !== null ? `${fmtTonBR(r.saldo_rest, 2)} ton` : "-"}
+                      </div>
+                    ))}
                 </div>
               ) : null}
             </div>
@@ -1281,7 +1476,9 @@ export default function MaterialTicketNovoPage() {
                   setLastShareFile(null);
                   setLastResumo(null);
                   setLastAcum(null);
-                  setLastEntradaResumo(null);
+                  setLastEntradaPlanRows(null);
+                  setLastEntradaAlloc(null);
+                  setLastSavedIds(null);
                 }}
               />
 
