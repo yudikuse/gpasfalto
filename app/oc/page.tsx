@@ -1,7 +1,7 @@
 // FILE: app/oc/page.tsx
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 type OrderType =
@@ -17,6 +17,8 @@ type ItemRow = {
   descricao: string;
   valor: string; // BRL (mascarado) - NÃO salva em coluna (vira texto)
 };
+
+type SuggestMode = "startsWith" | "includes";
 
 function pad(n: number, size: number) {
   const s = String(n);
@@ -92,6 +94,39 @@ function resolvePublicSupabase(): { url: string; key: string; ok: boolean } {
   return { url, key, ok: Boolean(url && key) };
 }
 
+function normalizeText(s: string) {
+  return String(s || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+function getSuggestions(
+  value: string,
+  options: string[],
+  mode: SuggestMode = "startsWith",
+  limit = 8
+) {
+  const q = normalizeText(value);
+  if (!q) return [];
+
+  const starts = options.filter((opt) =>
+    normalizeText(opt).startsWith(q)
+  );
+
+  if (mode === "startsWith") {
+    return starts.slice(0, limit);
+  }
+
+  const contains = options.filter((opt) => {
+    const n = normalizeText(opt);
+    return !n.startsWith(q) && n.includes(q);
+  });
+
+  return [...starts, ...contains].slice(0, limit);
+}
+
 export default function OCPage() {
   const [tipo, setTipo] = useState<OrderType>("MANUTENCAO");
 
@@ -136,6 +171,37 @@ export default function OCPage() {
   const [saved, setSaved] = useState<boolean>(false);
   const [savedOrderId, setSavedOrderId] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState<string>("");
+
+  // autocomplete
+  const [showEquipSug, setShowEquipSug] = useState<boolean>(false);
+  const [showObraSug, setShowObraSug] = useState<boolean>(false);
+  const [showOperadorSug, setShowOperadorSug] = useState<boolean>(false);
+  const [showLocalSug, setShowLocalSug] = useState<boolean>(false);
+
+  const equipWrapRef = useRef<HTMLDivElement | null>(null);
+  const obraWrapRef = useRef<HTMLDivElement | null>(null);
+  const operadorWrapRef = useRef<HTMLDivElement | null>(null);
+  const localWrapRef = useRef<HTMLDivElement | null>(null);
+
+  const equipSuggestions = useMemo(
+    () => getSuggestions(equipamento, equipmentOptions, "startsWith", 8),
+    [equipamento, equipmentOptions]
+  );
+
+  const obraSuggestions = useMemo(
+    () => getSuggestions(obra, obraOptions, "startsWith", 8),
+    [obra, obraOptions]
+  );
+
+  const operadorSuggestions = useMemo(
+    () => getSuggestions(operador, operadorOptions, "startsWith", 8),
+    [operador, operadorOptions]
+  );
+
+  const localSuggestions = useMemo(
+    () => getSuggestions(localEntrega, localEntregaOptions, "startsWith", 8),
+    [localEntrega, localEntregaOptions]
+  );
 
   const computed = useMemo(() => {
     const p1 = parseBRLToNumber(preco1);
@@ -263,7 +329,6 @@ export default function OCPage() {
       }
 
       // 1) OC sequencial (editável)
-      // ✅ ÚNICA mudança: em vez de pegar "último por id", pega o MAIOR número de OC no banco.
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
@@ -277,7 +342,6 @@ export default function OCPage() {
           const raw = String(r?.numero_oc || "").trim();
           if (!raw) return;
 
-          // aceita "OC20892", "oc20892", " OC20892 " etc
           const up = raw.toUpperCase();
           if (!up.includes("OC")) return;
 
@@ -354,6 +418,20 @@ export default function OCPage() {
     })();
   }, [supabase]);
 
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      const target = e.target as Node;
+
+      if (equipWrapRef.current && !equipWrapRef.current.contains(target)) setShowEquipSug(false);
+      if (obraWrapRef.current && !obraWrapRef.current.contains(target)) setShowObraSug(false);
+      if (operadorWrapRef.current && !operadorWrapRef.current.contains(target)) setShowOperadorSug(false);
+      if (localWrapRef.current && !localWrapRef.current.contains(target)) setShowLocalSug(false);
+    }
+
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   function resetSaved() {
     setSaved(false);
     setSavedOrderId(null);
@@ -395,8 +473,6 @@ export default function OCPage() {
     setSaving(true);
 
     try {
-      // Para manter compatibilidade com a extração: Observações ficam no texto_original.
-      // A tabela NÃO tem coluna 'observacoes'.
       const firstItem = items[0] || null;
 
       const payload: any = {
@@ -424,14 +500,12 @@ export default function OCPage() {
         horimetro: horimetro || null,
         local_entrega: localEntrega || null,
 
-        // Campos "compat" usados pelo seu parse (não quebra):
         material: firstItem?.descricao ? String(firstItem.descricao).slice(0, 255) : null,
         quantidade_texto: firstItem?.qtd ? String(firstItem.qtd).slice(0, 50) : null,
         placa: null,
 
         texto_original: whatsappPreview,
 
-        // fornecedores
         fornecedor_1: tipo === "MANUTENCAO" ? (forn1 || null) : null,
         fornecedor_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
         fornecedor_3: tipo === "MANUTENCAO" && qtdFornecedores >= 3 ? (forn3 || null) : null,
@@ -456,8 +530,6 @@ export default function OCPage() {
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
-      // orders_2025_items: colunas reais (pelo seu CSV):
-      // ordem_id; data; hora; numero_oc; descricao; quantidade_texto; quantidade_num
       if (items.length) {
         const d = nowDateBr();
         const h = nowTime();
@@ -466,7 +538,6 @@ export default function OCPage() {
           const qtdNum = it.qtd ? Number(onlyDigits(it.qtd)) : null;
           const qtdText = it.qtd ? String(onlyDigits(it.qtd)) : null;
 
-          // valor NÃO existe em coluna: vira texto na descricao (sem perder informação)
           const desc =
             (it.descricao || "").trim() +
             (it.valor ? ` — ${it.valor}` : "");
@@ -487,8 +558,6 @@ export default function OCPage() {
       }
 
       setSaved(true);
-
-      // Atualiza próximo previsto (id real já exibido; o próximo vem no reload)
     } catch (e: any) {
       setSaved(false);
       setSavedOrderId(null);
@@ -830,6 +899,43 @@ export default function OCPage() {
           font-weight: 700;
         }
 
+        .autocomplete-wrap {
+          position: relative;
+        }
+
+        .autocomplete-list {
+          position: absolute;
+          top: calc(100% + 6px);
+          left: 0;
+          right: 0;
+          z-index: 30;
+          margin: 0;
+          padding: 6px;
+          list-style: none;
+          border: 1px solid #e5e7eb;
+          border-radius: 12px;
+          background: #fff;
+          box-shadow: 0 14px 34px rgba(15, 23, 42, 0.10);
+          max-height: 240px;
+          overflow-y: auto;
+        }
+
+        .autocomplete-item {
+          width: 100%;
+          border: none;
+          background: transparent;
+          text-align: left;
+          padding: 10px 12px;
+          border-radius: 10px;
+          font-size: 14px;
+          color: #0f172a;
+          cursor: pointer;
+        }
+
+        .autocomplete-item:hover {
+          background: #f3f4f6;
+        }
+
         @media (max-width: 560px) {
           .oc-title {
             font-size: 28px;
@@ -923,16 +1029,40 @@ export default function OCPage() {
 
             <div className="field" style={{ marginTop: 12 }}>
               <div className="label">Equipamento</div>
-              <input
-                className="input"
-                value={equipamento}
-                onChange={(e) => {
-                  setEquipamento(e.target.value);
-                  resetSaved();
-                }}
-                placeholder="Digite ou selecione o equipamento"
-                list="equipList"
-              />
+              <div className="autocomplete-wrap" ref={equipWrapRef}>
+                <input
+                  className="input"
+                  value={equipamento}
+                  onChange={(e) => {
+                    setEquipamento(e.target.value);
+                    setShowEquipSug(true);
+                    resetSaved();
+                  }}
+                  onFocus={() => setShowEquipSug(true)}
+                  placeholder="Digite ou selecione o equipamento"
+                  autoComplete="off"
+                />
+                {showEquipSug && equipSuggestions.length > 0 && (
+                  <ul className="autocomplete-list">
+                    {equipSuggestions.map((x) => (
+                      <li key={x}>
+                        <button
+                          type="button"
+                          className="autocomplete-item"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            setEquipamento(x);
+                            setShowEquipSug(false);
+                            resetSaved();
+                          }}
+                        >
+                          {x}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
               <datalist id="equipList">
                 {equipmentOptions.map((x) => (
                   <option key={x} value={x} />
@@ -964,30 +1094,78 @@ export default function OCPage() {
             <div className="grid-2">
               <div className="field">
                 <div className="label">Obra</div>
-                <input
-                  className="input"
-                  value={obra}
-                  list="obraList"
-                  onChange={(e) => {
-                    setObra(e.target.value);
-                    resetSaved();
-                  }}
-                  placeholder="Nome da obra"
-                />
+                <div className="autocomplete-wrap" ref={obraWrapRef}>
+                  <input
+                    className="input"
+                    value={obra}
+                    onChange={(e) => {
+                      setObra(e.target.value);
+                      setShowObraSug(true);
+                      resetSaved();
+                    }}
+                    onFocus={() => setShowObraSug(true)}
+                    placeholder="Nome da obra"
+                    autoComplete="off"
+                  />
+                  {showObraSug && obraSuggestions.length > 0 && (
+                    <ul className="autocomplete-list">
+                      {obraSuggestions.map((x) => (
+                        <li key={x}>
+                          <button
+                            type="button"
+                            className="autocomplete-item"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              setObra(x);
+                              setShowObraSug(false);
+                              resetSaved();
+                            }}
+                          >
+                            {x}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
 
               <div className="field">
                 <div className="label">Operador</div>
-                <input
-                  className="input"
-                  value={operador}
-                  list="operadorList"
-                  onChange={(e) => {
-                    setOperador(e.target.value);
-                    resetSaved();
-                  }}
-                  placeholder="Nome do operador"
-                />
+                <div className="autocomplete-wrap" ref={operadorWrapRef}>
+                  <input
+                    className="input"
+                    value={operador}
+                    onChange={(e) => {
+                      setOperador(e.target.value);
+                      setShowOperadorSug(true);
+                      resetSaved();
+                    }}
+                    onFocus={() => setShowOperadorSug(true)}
+                    placeholder="Nome do operador"
+                    autoComplete="off"
+                  />
+                  {showOperadorSug && operadorSuggestions.length > 0 && (
+                    <ul className="autocomplete-list">
+                      {operadorSuggestions.map((x) => (
+                        <li key={x}>
+                          <button
+                            type="button"
+                            className="autocomplete-item"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              setOperador(x);
+                              setShowOperadorSug(false);
+                              resetSaved();
+                            }}
+                          >
+                            {x}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             </div>
 
@@ -1008,16 +1186,40 @@ export default function OCPage() {
 
               <div className="field">
                 <div className="label">Local de entrega</div>
-                <input
-                  className="input"
-                  value={localEntrega}
-                  list="localEntregaList"
-                  onChange={(e) => {
-                    setLocalEntrega(e.target.value);
-                    resetSaved();
-                  }}
-                  placeholder="Endereço ou local"
-                />
+                <div className="autocomplete-wrap" ref={localWrapRef}>
+                  <input
+                    className="input"
+                    value={localEntrega}
+                    onChange={(e) => {
+                      setLocalEntrega(e.target.value);
+                      setShowLocalSug(true);
+                      resetSaved();
+                    }}
+                    onFocus={() => setShowLocalSug(true)}
+                    placeholder="Endereço ou local"
+                    autoComplete="off"
+                  />
+                  {showLocalSug && localSuggestions.length > 0 && (
+                    <ul className="autocomplete-list">
+                      {localSuggestions.map((x) => (
+                        <li key={x}>
+                          <button
+                            type="button"
+                            className="autocomplete-item"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              setLocalEntrega(x);
+                              setShowLocalSug(false);
+                              resetSaved();
+                            }}
+                          >
+                            {x}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </div>
             </div>
 
