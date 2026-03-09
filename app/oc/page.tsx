@@ -470,6 +470,12 @@ export default function OCPage() {
       return;
     }
 
+    const numeroOcNormalizado = (numeroOC || "").trim();
+    if (!numeroOcNormalizado) {
+      setErrorMsg("Informe a OC antes de salvar.");
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -493,7 +499,7 @@ export default function OCPage() {
             ? "PEDIDO_COMPRA"
             : "OC",
 
-        numero_oc: numeroOC || null,
+        numero_oc: numeroOcNormalizado,
         codigo_equipamento: equipamento || null,
         obra: obra || null,
         operador: operador || null,
@@ -518,15 +524,60 @@ export default function OCPage() {
         fornecedor_vencedor: tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
       };
 
-      const { data: inserted, error: err1 } = await supabase
+      const { data: existingRows, error: existingErr } = await supabase
         .from("orders_2025_raw")
-        .insert(payload)
         .select("id")
-        .single();
+        .eq("numero_oc", numeroOcNormalizado)
+        .order("id", { ascending: true })
+        .limit(2);
 
-      if (err1) throw err1;
+      if (existingErr) throw existingErr;
 
-      const orderId = inserted?.id as number;
+      if ((existingRows || []).length > 1) {
+        throw new Error(
+          `Já existe mais de um registro com a OC ${numeroOcNormalizado}. Não foi feita nenhuma alteração por segurança.`
+        );
+      }
+
+      let orderId: number;
+
+      if ((existingRows || []).length === 1) {
+        const confirmed = window.confirm(
+          `A OC ${numeroOcNormalizado} já existe. Deseja atualizar o registro existente?`
+        );
+
+        if (!confirmed) {
+          setSaving(false);
+          return;
+        }
+
+        orderId = Number(existingRows![0].id);
+
+        const { error: errUpdate } = await supabase
+          .from("orders_2025_raw")
+          .update(payload)
+          .eq("id", orderId);
+
+        if (errUpdate) throw errUpdate;
+
+        const { error: errDeleteItems } = await supabase
+          .from("orders_2025_items")
+          .delete()
+          .eq("ordem_id", orderId);
+
+        if (errDeleteItems) throw errDeleteItems;
+      } else {
+        const { data: inserted, error: errInsert } = await supabase
+          .from("orders_2025_raw")
+          .insert(payload)
+          .select("id")
+          .single();
+
+        if (errInsert) throw errInsert;
+
+        orderId = Number(inserted?.id);
+      }
+
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
@@ -546,15 +597,15 @@ export default function OCPage() {
             ordem_id: orderId,
             data: d,
             hora: h,
-            numero_oc: numeroOC || null,
+            numero_oc: numeroOcNormalizado,
             descricao: desc ? desc.slice(0, 500) : null,
             quantidade_texto: qtdText,
             quantidade_num: qtdNum,
           };
         });
 
-        const { error: err2 } = await supabase.from("orders_2025_items").insert(rows);
-        if (err2) throw err2;
+        const { error: errItems } = await supabase.from("orders_2025_items").insert(rows);
+        if (errItems) throw errItems;
       }
 
       setSaved(true);
