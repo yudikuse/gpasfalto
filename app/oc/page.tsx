@@ -138,6 +138,7 @@ export default function OCPage() {
   // cabeçalho
   const [idGerado, setIdGerado] = useState<string>("-");
   const [numeroOC, setNumeroOC] = useState<string>("");
+  const [ocInputVersion, setOcInputVersion] = useState<number>(0);
 
   // campos base
   const [equipamento, setEquipamento] = useState<string>("");
@@ -325,6 +326,11 @@ export default function OCPage() {
     }
   }
 
+  const forceNumeroOC = useCallback((nextOc: string) => {
+    setNumeroOC(nextOc);
+    setOcInputVersion((v) => v + 1);
+  }, []);
+
   const loadNextNumeroOC = useCallback(async () => {
     if (!supabase) return;
 
@@ -356,29 +362,26 @@ export default function OCPage() {
       });
 
       const nextNum = maxFound !== null ? maxFound + 1 : 20000;
+      const nextOc = `OC${nextNum}`;
 
       if (seq === ocLoadSeqRef.current) {
-        setNumeroOC(`OC${nextNum}`);
+        forceNumeroOC(nextOc);
       }
     } catch {
       if (seq === ocLoadSeqRef.current) {
-        setNumeroOC("OC20000");
+        forceNumeroOC("OC20000");
       }
     }
-  }, [supabase]);
+  }, [supabase, forceNumeroOC]);
 
   // ====== load defaults (ID, OC, listas) ======
   useEffect(() => {
     if (!supabase) return;
 
     (async () => {
-      // 0) Próximo ID previsto (último id + 1)
       await loadNextIdPrevisto();
-
-      // 1) Próxima OC prevista (MAIOR numero_oc + 1)
       await loadNextNumeroOC();
 
-      // 2) equipamentos (VIEW equipment_costs_2025_v / coluna equipamento)
       try {
         const { data } = await supabase
           .from("equipment_costs_2025_v")
@@ -395,7 +398,6 @@ export default function OCPage() {
         setEquipmentOptions([]);
       }
 
-      // 3) fornecedores + obra + operador + local_entrega (de pedidos existentes)
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
@@ -569,7 +571,7 @@ export default function OCPage() {
           return;
         }
 
-        orderId = Number(existingRows![0].id);
+        orderId = Number(existingRows[0].id);
 
         const { error: errUpdate } = await supabase
           .from("orders_2025_raw")
@@ -1088,6 +1090,9 @@ export default function OCPage() {
               <div className="field">
                 <div className="label">OC</div>
                 <input
+                  key={`oc-input-${ocInputVersion}`}
+                  id={`numero_oc_${ocInputVersion}`}
+                  name={`numero_oc_${ocInputVersion}`}
                   className="input"
                   value={numeroOC}
                   onChange={(e) => {
@@ -1095,7 +1100,8 @@ export default function OCPage() {
                     resetSaved();
                   }}
                   placeholder="OC20337"
-                  autoComplete="off"
+                  autoComplete="new-password"
+                  spellCheck={false}
                 />
               </div>
             </div>
