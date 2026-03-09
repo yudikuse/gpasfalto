@@ -111,9 +111,7 @@ function getSuggestions(
   const q = normalizeText(value);
   if (!q) return [];
 
-  const starts = options.filter((opt) =>
-    normalizeText(opt).startsWith(q)
-  );
+  const starts = options.filter((opt) => normalizeText(opt).startsWith(q));
 
   if (mode === "startsWith") {
     return starts.slice(0, limit);
@@ -309,56 +307,68 @@ export default function OCPage() {
     computed.fornecedorVencedor,
   ]);
 
+  async function loadNextIdPrevisto() {
+    if (!supabase) return;
+
+    try {
+      const { data } = await supabase
+        .from("orders_2025_raw")
+        .select("id")
+        .order("id", { ascending: false })
+        .limit(1);
+
+      const lastId = data?.[0]?.id ? Number(data[0].id) : null;
+      setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
+    } catch {
+      setIdGerado("-");
+    }
+  }
+
+  async function loadNextNumeroOC() {
+    if (!supabase) return;
+
+    try {
+      const { data } = await supabase
+        .from("orders_2025_raw")
+        .select("numero_oc")
+        .not("numero_oc", "is", null)
+        .limit(10000);
+
+      let maxFound: number | null = null;
+
+      (data || []).forEach((r: any) => {
+        const raw = String(r?.numero_oc || "").trim();
+        if (!raw) return;
+
+        const up = raw.toUpperCase();
+        if (!up.includes("OC")) return;
+
+        const digits = onlyDigits(up);
+        if (!digits) return;
+
+        const n = Number(digits);
+        if (!Number.isFinite(n)) return;
+
+        if (maxFound === null || n > maxFound) maxFound = n;
+      });
+
+      const nextNum = maxFound !== null ? maxFound + 1 : 20000;
+      setNumeroOC(`OC${nextNum}`);
+    } catch {
+      setNumeroOC("OC20000");
+    }
+  }
+
   // ====== load defaults (ID, OC, listas) ======
   useEffect(() => {
     if (!supabase) return;
 
     (async () => {
       // 0) Próximo ID previsto (último id + 1)
-      try {
-        const { data } = await supabase
-          .from("orders_2025_raw")
-          .select("id")
-          .order("id", { ascending: false })
-          .limit(1);
+      await loadNextIdPrevisto();
 
-        const lastId = data?.[0]?.id ? Number(data[0].id) : null;
-        setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
-      } catch {
-        setIdGerado("-");
-      }
-
-      // 1) OC sequencial (editável)
-      try {
-        const { data } = await supabase
-          .from("orders_2025_raw")
-          .select("numero_oc")
-          .not("numero_oc", "is", null)
-          .limit(10000);
-
-        let maxFound: number | null = null;
-
-        (data || []).forEach((r: any) => {
-          const raw = String(r?.numero_oc || "").trim();
-          if (!raw) return;
-
-          const up = raw.toUpperCase();
-          if (!up.includes("OC")) return;
-
-          const digits = onlyDigits(up);
-          if (!digits) return;
-
-          const n = Number(digits);
-          if (!Number.isFinite(n)) return;
-
-          if (maxFound === null || n > maxFound) maxFound = n;
-        });
-
-        const nextNum = maxFound !== null ? maxFound + 1 : 20000;
-        setNumeroOC(`OC${nextNum}`);
-      } catch {
-        setNumeroOC("OC20000");
-      }
+      // 1) Próxima OC prevista (MAIOR numero_oc + 1)
+      await loadNextNumeroOC();
 
       // 2) equipamentos (VIEW equipment_costs_2025_v / coluna equipamento)
       try {
@@ -607,6 +617,9 @@ export default function OCPage() {
         const { error: errItems } = await supabase.from("orders_2025_items").insert(rows);
         if (errItems) throw errItems;
       }
+
+      await loadNextIdPrevisto();
+      await loadNextNumeroOC();
 
       setSaved(true);
     } catch (e: any) {
