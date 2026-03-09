@@ -1,7 +1,7 @@
 // FILE: app/oc/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 type OrderType =
@@ -180,6 +180,7 @@ export default function OCPage() {
   const obraWrapRef = useRef<HTMLDivElement | null>(null);
   const operadorWrapRef = useRef<HTMLDivElement | null>(null);
   const localWrapRef = useRef<HTMLDivElement | null>(null);
+  const ocLoadSeqRef = useRef(0);
 
   const equipSuggestions = useMemo(
     () => getSuggestions(equipamento, equipmentOptions, "startsWith", 8),
@@ -324,8 +325,10 @@ export default function OCPage() {
     }
   }
 
-  async function loadNextNumeroOC() {
+  const loadNextNumeroOC = useCallback(async () => {
     if (!supabase) return;
+
+    const seq = ++ocLoadSeqRef.current;
 
     try {
       const { data } = await supabase
@@ -353,11 +356,16 @@ export default function OCPage() {
       });
 
       const nextNum = maxFound !== null ? maxFound + 1 : 20000;
-      setNumeroOC(`OC${nextNum}`);
+
+      if (seq === ocLoadSeqRef.current) {
+        setNumeroOC(`OC${nextNum}`);
+      }
     } catch {
-      setNumeroOC("OC20000");
+      if (seq === ocLoadSeqRef.current) {
+        setNumeroOC("OC20000");
+      }
     }
-  }
+  }, [supabase]);
 
   // ====== load defaults (ID, OC, listas) ======
   useEffect(() => {
@@ -426,7 +434,7 @@ export default function OCPage() {
         setLocalEntregaOptions([]);
       }
     })();
-  }, [supabase]);
+  }, [supabase, loadNextNumeroOC]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -1087,6 +1095,7 @@ export default function OCPage() {
                     resetSaved();
                   }}
                   placeholder="OC20337"
+                  autoComplete="off"
                 />
               </div>
             </div>
