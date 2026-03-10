@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-type OrderType =
+type OrderType = 
   | "COMPRA"
   | "ABASTECIMENTO"
   | "MANUTENCAO"
@@ -331,48 +331,28 @@ export default function OCPage() {
     setOcInputVersion((v) => v + 1);
   }, []);
 
-  const loadNextNumeroOC = useCallback(async () => {
-    if (!supabase) return;
+ const loadNextNumeroOC = useCallback(async () => {
+  if (!supabase) return;
 
-    const seq = ++ocLoadSeqRef.current;
+  try {
+    const { data, error } = await supabase
+      .from("orders_2025_raw")
+      .select("numero_oc")
+      .ilike("numero_oc", "OC%")
+      .order("numero_oc", { ascending: false })
+      .limit(1)
+      .maybeSingle();
 
-    try {
-      const { data } = await supabase
-        .from("orders_2025_raw")
-        .select("numero_oc")
-        .not("numero_oc", "is", null)
-        .limit(10000);
+    if (error) throw error;
 
-      let maxFound: number | null = null;
+    const atual = Number(onlyDigits(String(data?.numero_oc || "")));
+    const proximo = Number.isFinite(atual) && atual > 0 ? atual + 1 : 20000;
 
-      (data || []).forEach((r: any) => {
-        const raw = String(r?.numero_oc || "").trim();
-        if (!raw) return;
-
-        const up = raw.toUpperCase();
-        if (!up.includes("OC")) return;
-
-        const digits = onlyDigits(up);
-        if (!digits) return;
-
-        const n = Number(digits);
-        if (!Number.isFinite(n)) return;
-
-        if (maxFound === null || n > maxFound) maxFound = n;
-      });
-
-      const nextNum = maxFound !== null ? maxFound + 1 : 20000;
-      const nextOc = `OC${nextNum}`;
-
-      if (seq === ocLoadSeqRef.current) {
-        forceNumeroOC(nextOc);
-      }
-    } catch {
-      if (seq === ocLoadSeqRef.current) {
-        forceNumeroOC("OC20000");
-      }
-    }
-  }, [supabase, forceNumeroOC]);
+    setNumeroOC(`OC${proximo}`);
+  } catch {
+    setNumeroOC("OC20000");
+  }
+}, [supabase]);
 
   // ====== load defaults (ID, OC, listas) ======
   useEffect(() => {
