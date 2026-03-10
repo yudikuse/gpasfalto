@@ -60,11 +60,6 @@ type SavePayload = {
   updated_by_nome: string;
 };
 
-function pad(n: number, size: number) {
-  const s = String(n);
-  return s.length >= size ? s : "0".repeat(size - s.length) + s;
-}
-
 function toInputDate(d = new Date()) {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, "0");
@@ -481,9 +476,7 @@ export default function HorimetrosPage() {
       obra_padrao_id: p.obra_id,
     }));
 
-    await supabase
-      .from("horimetro_equipamentos")
-      .upsert(obraPadraoUpdates, { onConflict: "id" });
+    await supabase.from("horimetro_equipamentos").upsert(obraPadraoUpdates, { onConflict: "id" });
 
     setEquipamentos((prev) =>
       prev.map((eq) => {
@@ -515,238 +508,317 @@ export default function HorimetrosPage() {
 
   return (
     <>
-      <main className="page-root">
-        <div className="page-container">
-          <section className="hero-card">
-            <div className="hero-top">
-              <div className="brand-wrap">
-                <img src="/gpasfalto-logo.png" alt="GP Asfalto" className="brand-logo" />
-                <div>
-                  <div className="brand-kicker">GP ASFALTO</div>
-                  <h1 className="hero-title">Horímetros e Odômetros</h1>
-                  <p className="hero-subtitle">
-                    Lançamento diário por equipamento. A obra fica na própria linha. A leitura
-                    anterior é bloqueada e o sistema calcula horas e km automaticamente.
-                  </p>
-                </div>
-              </div>
+      <main className="page">
+        <div className="container">
+          <header className="page-head">
+            <img src="/gpasfalto-logo.png" alt="GP Asfalto" className="logo" />
+            <h1>Horímetros e Odômetros</h1>
+            <p>
+              Lançamento diário por equipamento. Leitura anterior bloqueada. Horas e km calculados automaticamente.
+            </p>
 
-              <div className="hero-actions">
-                <label className="field">
-                  <span className="field-label">Data do lançamento</span>
-                  <input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    className="gp-input"
-                  />
-                </label>
-
-                <button
-                  type="button"
-                  onClick={handleSaveAll}
-                  disabled={saving || loadingBase || loadingRows}
-                  className="primary-btn"
-                >
-                  {saving ? "Salvando..." : "Salvar tudo"}
-                </button>
-              </div>
+            <div className="head-pills">
+              <span>{equipamentos.length} equipamentos</span>
+              <span>{totalLancados} lançados</span>
+              <span>{totalPendentes} pendentes</span>
             </div>
+          </header>
 
-            <div className="stats-row">
-              <div className="pill">
-                Equipamentos <strong>{equipamentos.length}</strong>
-              </div>
-              <div className="pill">
-                Lançados <strong>{totalLancados}</strong>
-              </div>
-              <div className="pill">
-                Pendentes <strong>{totalPendentes}</strong>
-              </div>
-              <div className="pill pill-wide">
-                Período visível <strong>{previousDateLabel} → {currentDateLabel}</strong>
-              </div>
-            </div>
+          <section className="panel filters">
+            <div className="filters-grid">
+              <label className="field date-field">
+                <span>Data</span>
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="input"
+                />
+              </label>
 
-            <div className="legend-row">
-              <span className="legend-item">
-                <span className="legend-box readonly" />
-                leitura travada
-              </span>
-              <span className="legend-item">
-                <span className="legend-box editable" />
-                campo editável
-              </span>
-              <span className="legend-item">
-                <span className="legend-box saved" />
-                já salvo no dia
-              </span>
+              <label className="field search-field">
+                <span>Busca</span>
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  className="input"
+                  placeholder="MN-05"
+                />
+              </label>
+
+              <div className="period-box">
+                <span>Período</span>
+                <strong>
+                  {previousDateLabel} → {currentDateLabel}
+                </strong>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSaveAll}
+                disabled={saving || loadingBase || loadingRows}
+                className="save-btn"
+              >
+                {saving ? "Salvando..." : "Salvar tudo"}
+              </button>
             </div>
           </section>
 
-          <section className="toolbar-card">
-            <label className="field grow">
-              <span className="field-label">Buscar equipamento</span>
-              <input
-                type="text"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                className="gp-input"
-                placeholder="Ex.: MN-05"
-              />
-            </label>
+          {message ? <div className="message">{message}</div> : null}
 
-            <div className="toolbar-note">
-              Anterior = leitura final do dia anterior. Se não existir, usa a base do cadastro.
-            </div>
-          </section>
-
-          {message ? <div className="message-box">{message}</div> : null}
-
-          <section className="list-section">
+          <section className="panel desktop-table-wrap">
             {loadingBase || loadingRows ? (
-              <div className="empty-card">Carregando...</div>
+              <div className="empty">Carregando...</div>
             ) : filteredEquipamentos.length === 0 ? (
-              <div className="empty-card">Nenhum equipamento encontrado.</div>
+              <div className="empty">Nenhum equipamento encontrado.</div>
             ) : (
-              <div className="equipment-list">
-                {filteredEquipamentos.map((eq) => {
-                  const current = currentRows[eq.id];
-                  const draft = drafts[eq.id] || {
-                    obra_id: "",
-                    horimetro_final: "",
-                    odometro_final: "",
-                    observacao: "",
-                  };
+              <div className="table-scroll">
+                <table className="table">
+                  <thead>
+                    <tr>
+                      <th>Equip.</th>
+                      <th>Obra</th>
+                      <th>H anterior</th>
+                      <th>H atual</th>
+                      <th>Horas</th>
+                      <th>O anterior</th>
+                      <th>O atual</th>
+                      <th>Km</th>
+                      <th>Observação</th>
+                      <th>Atualizado</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredEquipamentos.map((eq) => {
+                      const current = currentRows[eq.id];
+                      const draft = drafts[eq.id] || {
+                        obra_id: "",
+                        horimetro_final: "",
+                        odometro_final: "",
+                        observacao: "",
+                      };
 
-                  const hIni = getInitialHorimetro(eq);
-                  const oIni = getInitialOdometro(eq);
-                  const horas = getHorasDoDia(eq);
-                  const km = getKmDoDia(eq);
-                  const saved = !!current?.updated_at;
+                      const hIni = getInitialHorimetro(eq);
+                      const oIni = getInitialOdometro(eq);
+                      const horas = getHorasDoDia(eq);
+                      const km = getKmDoDia(eq);
 
-                  return (
-                    <article
-                      key={eq.id}
-                      className={`equipment-card ${saved ? "equipment-card-saved" : ""}`}
-                    >
-                      <div className="equipment-header">
-                        <div className="equipment-main">
-                          <div className="equipment-code">{eq.codigo}</div>
-                          {saved ? <span className="status-badge">Salvo no dia</span> : null}
-                        </div>
+                      return (
+                        <tr key={eq.id}>
+                          <td className="equip-col">{eq.codigo}</td>
 
-                        <div className="equipment-meta">
-                          {current?.updated_at ? (
-                            <>
-                              <span className="meta-strong">
-                                {formatUpdatedAt(current.updated_at)}
-                              </span>
-                              <span>{current.updated_by_nome || "Usuário"}</span>
-                              <span>{obrasById.get(current.obra_id) || ""}</span>
-                            </>
-                          ) : (
-                            <span className="meta-muted">Ainda não salvo neste dia</span>
-                          )}
-                        </div>
+                          <td>
+                            <select
+                              value={draft.obra_id}
+                              onChange={(e) => updateDraft(eq.id, "obra_id", e.target.value)}
+                              className="input input-sm"
+                            >
+                              <option value="">Selecione</option>
+                              {obras.map((obra) => (
+                                <option key={obra.id} value={obra.id}>
+                                  {obra.obra}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+
+                          <td>
+                            <div className="readonly">{eq.usa_horimetro ? format1(hIni) || "—" : "—"}</div>
+                          </td>
+
+                          <td>
+                            {eq.usa_horimetro ? (
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={draft.horimetro_final}
+                                onChange={(e) =>
+                                  updateDraft(eq.id, "horimetro_final", onlyDecimalChars(e.target.value))
+                                }
+                                className="input input-sm num"
+                                placeholder="Digite"
+                              />
+                            ) : (
+                              <div className="readonly center">—</div>
+                            )}
+                          </td>
+
+                          <td>
+                            <div className="readonly">{eq.usa_horimetro ? format1(horas) || "—" : "—"}</div>
+                          </td>
+
+                          <td>
+                            <div className="readonly">{eq.usa_odometro ? format1(oIni) || "—" : "—"}</div>
+                          </td>
+
+                          <td>
+                            {eq.usa_odometro ? (
+                              <input
+                                type="text"
+                                inputMode="decimal"
+                                value={draft.odometro_final}
+                                onChange={(e) =>
+                                  updateDraft(eq.id, "odometro_final", onlyDecimalChars(e.target.value))
+                                }
+                                className="input input-sm num"
+                                placeholder="Digite"
+                              />
+                            ) : (
+                              <div className="readonly center">—</div>
+                            )}
+                          </td>
+
+                          <td>
+                            <div className="readonly">{eq.usa_odometro ? format1(km) || "—" : "—"}</div>
+                          </td>
+
+                          <td>
+                            <input
+                              type="text"
+                              value={draft.observacao}
+                              onChange={(e) => updateDraft(eq.id, "observacao", e.target.value)}
+                              className="input input-sm"
+                              placeholder="Observação"
+                            />
+                          </td>
+
+                          <td className="updated-col">
+                            {current?.updated_at ? (
+                              <>
+                                <div className="updated-main">{formatUpdatedAt(current.updated_at)}</div>
+                                <div className="updated-sub">{current.updated_by_nome || ""}</div>
+                                <div className="updated-sub">{obrasById.get(current.obra_id) || ""}</div>
+                              </>
+                            ) : (
+                              <span className="muted">—</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </section>
+
+          <section className="mobile-list">
+            {loadingBase || loadingRows ? (
+              <div className="empty">Carregando...</div>
+            ) : filteredEquipamentos.length === 0 ? (
+              <div className="empty">Nenhum equipamento encontrado.</div>
+            ) : (
+              filteredEquipamentos.map((eq) => {
+                const current = currentRows[eq.id];
+                const draft = drafts[eq.id] || {
+                  obra_id: "",
+                  horimetro_final: "",
+                  odometro_final: "",
+                  observacao: "",
+                };
+
+                const hIni = getInitialHorimetro(eq);
+                const oIni = getInitialOdometro(eq);
+                const horas = getHorasDoDia(eq);
+                const km = getKmDoDia(eq);
+
+                return (
+                  <article key={eq.id} className="mobile-card">
+                    <div className="mobile-top">
+                      <strong>{eq.codigo}</strong>
+                      <span className="mobile-status">
+                        {current?.updated_at ? "Salvo" : "Pendente"}
+                      </span>
+                    </div>
+
+                    <div className="mobile-grid">
+                      <label className="field full">
+                        <span>Obra</span>
+                        <select
+                          value={draft.obra_id}
+                          onChange={(e) => updateDraft(eq.id, "obra_id", e.target.value)}
+                          className="input"
+                        >
+                          <option value="">Selecione</option>
+                          {obras.map((obra) => (
+                            <option key={obra.id} value={obra.id}>
+                              {obra.obra}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <div className="field">
+                        <span>H anterior</span>
+                        <div className="readonly">{eq.usa_horimetro ? format1(hIni) || "—" : "—"}</div>
                       </div>
 
-                      <div className="equipment-grid">
-                        <div className="field-block obra-col">
-                          <span className="mini-label">Obra</span>
-                          <select
-                            value={draft.obra_id}
-                            onChange={(e) => updateDraft(eq.id, "obra_id", e.target.value)}
-                            className="gp-input"
-                          >
-                            <option value="">Selecione a obra</option>
-                            {obras.map((obra) => (
-                              <option key={obra.id} value={obra.id}>
-                                {obra.obra}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <div className="field-block">
-                          <span className="mini-label">Horímetro anterior ({previousDateLabel})</span>
-                          <div className="readonly-box-value">
-                            {eq.usa_horimetro ? format1(hIni) || "—" : "—"}
-                          </div>
-                        </div>
-
-                        <div className="field-block">
-                          <span className="mini-label">Horímetro atual ({currentDateLabel})</span>
-                          {eq.usa_horimetro ? (
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={draft.horimetro_final}
-                              onChange={(e) =>
-                                updateDraft(eq.id, "horimetro_final", onlyDecimalChars(e.target.value))
-                              }
-                              className="gp-input number-input"
-                              placeholder="Digite"
-                            />
-                          ) : (
-                            <div className="readonly-box-value center">—</div>
-                          )}
-                        </div>
-
-                        <div className="field-block small-result">
-                          <span className="mini-label">Horas do dia</span>
-                          <div className="result-box">
-                            {eq.usa_horimetro ? format1(horas) || "—" : "—"}
-                          </div>
-                        </div>
-
-                        <div className="field-block">
-                          <span className="mini-label">Odômetro anterior ({previousDateLabel})</span>
-                          <div className="readonly-box-value">
-                            {eq.usa_odometro ? format1(oIni) || "—" : "—"}
-                          </div>
-                        </div>
-
-                        <div className="field-block">
-                          <span className="mini-label">Odômetro atual ({currentDateLabel})</span>
-                          {eq.usa_odometro ? (
-                            <input
-                              type="text"
-                              inputMode="decimal"
-                              value={draft.odometro_final}
-                              onChange={(e) =>
-                                updateDraft(eq.id, "odometro_final", onlyDecimalChars(e.target.value))
-                              }
-                              className="gp-input number-input"
-                              placeholder="Digite"
-                            />
-                          ) : (
-                            <div className="readonly-box-value center">—</div>
-                          )}
-                        </div>
-
-                        <div className="field-block small-result">
-                          <span className="mini-label">Km do dia</span>
-                          <div className="result-box">
-                            {eq.usa_odometro ? format1(km) || "—" : "—"}
-                          </div>
-                        </div>
-
-                        <div className="field-block obs-col">
-                          <span className="mini-label">Observação</span>
+                      <label className="field">
+                        <span>H atual</span>
+                        {eq.usa_horimetro ? (
                           <input
                             type="text"
-                            value={draft.observacao}
-                            onChange={(e) => updateDraft(eq.id, "observacao", e.target.value)}
-                            className="gp-input"
-                            placeholder="Observação"
+                            inputMode="decimal"
+                            value={draft.horimetro_final}
+                            onChange={(e) =>
+                              updateDraft(eq.id, "horimetro_final", onlyDecimalChars(e.target.value))
+                            }
+                            className="input num"
+                            placeholder="Digite"
                           />
-                        </div>
+                        ) : (
+                          <div className="readonly center">—</div>
+                        )}
+                      </label>
+
+                      <div className="field">
+                        <span>Horas</span>
+                        <div className="readonly">{eq.usa_horimetro ? format1(horas) || "—" : "—"}</div>
                       </div>
-                    </article>
-                  );
-                })}
-              </div>
+
+                      <div className="field">
+                        <span>O anterior</span>
+                        <div className="readonly">{eq.usa_odometro ? format1(oIni) || "—" : "—"}</div>
+                      </div>
+
+                      <label className="field">
+                        <span>O atual</span>
+                        {eq.usa_odometro ? (
+                          <input
+                            type="text"
+                            inputMode="decimal"
+                            value={draft.odometro_final}
+                            onChange={(e) =>
+                              updateDraft(eq.id, "odometro_final", onlyDecimalChars(e.target.value))
+                            }
+                            className="input num"
+                            placeholder="Digite"
+                          />
+                        ) : (
+                          <div className="readonly center">—</div>
+                        )}
+                      </label>
+
+                      <div className="field">
+                        <span>Km</span>
+                        <div className="readonly">{eq.usa_odometro ? format1(km) || "—" : "—"}</div>
+                      </div>
+
+                      <label className="field full">
+                        <span>Observação</span>
+                        <input
+                          type="text"
+                          value={draft.observacao}
+                          onChange={(e) => updateDraft(eq.id, "observacao", e.target.value)}
+                          className="input"
+                          placeholder="Observação"
+                        />
+                      </label>
+                    </div>
+                  </article>
+                );
+              })
             )}
           </section>
         </div>
@@ -756,7 +828,7 @@ export default function HorimetrosPage() {
             type="button"
             onClick={handleSaveAll}
             disabled={saving || loadingBase || loadingRows}
-            className="primary-btn mobile-save-btn"
+            className="save-btn mobile-save-btn"
           >
             {saving ? "Salvando..." : "Salvar tudo"}
           </button>
@@ -765,23 +837,16 @@ export default function HorimetrosPage() {
 
       <style jsx global>{`
         :root {
-          --gp-bg: #f3f4f6;
-          --gp-surface: #ffffff;
-          --gp-border: #e5e7eb;
-          --gp-text: #0f172a;
-          --gp-muted: #475569;
-          --gp-muted-soft: #64748b;
-          --gp-primary: #0f172a;
-          --gp-primary-2: #111827;
-          --gp-accent: #f59e0b;
-          --gp-accent-2: #d97706;
-          --gp-soft: #f8fafc;
-          --gp-soft-2: #eef2f7;
-          --gp-readonly: #e5e7eb;
-          --gp-readonly-border: #d1d5db;
-          --gp-success-bg: #ecfdf5;
-          --gp-success-border: #86efac;
-          --gp-shadow: 0 16px 36px rgba(15, 23, 42, 0.07);
+          --bg: #f4f5f7;
+          --panel: #ffffff;
+          --line: #e5e7eb;
+          --text: #0f172a;
+          --muted: #667085;
+          --navy: #0b1733;
+          --navy-2: #142445;
+          --accent: #f59e0b;
+          --soft: #f8fafc;
+          --readonly: #eef2f6;
         }
 
         * {
@@ -789,507 +854,365 @@ export default function HorimetrosPage() {
         }
 
         body {
-          background: radial-gradient(circle at top, #f9fafb 0, #f3f4f6 45%, #e5e7eb 100%);
+          background: var(--bg);
+          color: var(--text);
         }
 
-        .page-root {
+        .page {
           min-height: 100vh;
-          padding: 24px 16px 92px;
+          padding: 28px 16px 88px;
         }
 
-        .page-container {
-          width: 100%;
-          max-width: 1180px;
+        .container {
+          max-width: 1120px;
           margin: 0 auto;
-          display: flex;
-          flex-direction: column;
-          gap: 16px;
         }
 
-        .hero-card,
-        .toolbar-card,
-        .equipment-card,
-        .empty-card {
-          border-radius: 22px;
-          background: var(--gp-surface);
-          border: 1px solid var(--gp-border);
-          box-shadow: var(--gp-shadow);
+        .page-head {
+          text-align: center;
+          margin-bottom: 18px;
         }
 
-        .hero-card {
-          padding: 20px;
-          background:
-            linear-gradient(135deg, rgba(15, 23, 42, 0.98) 0%, rgba(17, 24, 39, 0.98) 55%, rgba(30, 41, 59, 0.98) 100%);
-          color: #fff;
-          border-color: rgba(255, 255, 255, 0.08);
-        }
-
-        .hero-top {
-          display: flex;
-          justify-content: space-between;
-          gap: 18px;
-          align-items: flex-start;
-        }
-
-        .brand-wrap {
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          min-width: 0;
-        }
-
-        .brand-logo {
-          width: 82px;
-          height: 82px;
+        .logo {
+          width: 54px;
+          height: auto;
           object-fit: contain;
-          border-radius: 18px;
-          background: rgba(255, 255, 255, 0.04);
-          padding: 8px;
-          flex-shrink: 0;
+          margin: 0 auto 12px;
+          display: block;
         }
 
-        .brand-kicker {
-          font-size: 12px;
-          font-weight: 800;
-          text-transform: uppercase;
-          letter-spacing: 0.16em;
-          color: rgba(255, 255, 255, 0.68);
-          margin-bottom: 4px;
-        }
-
-        .hero-title {
+        .page-head h1 {
           margin: 0;
-          font-size: 34px;
-          line-height: 1.05;
-          font-weight: 900;
-          letter-spacing: -0.03em;
+          font-size: 26px;
+          line-height: 1.1;
+          font-weight: 800;
+          letter-spacing: -0.02em;
         }
 
-        .hero-subtitle {
-          margin: 8px 0 0;
-          max-width: 780px;
-          color: rgba(255, 255, 255, 0.8);
-          font-size: 14px;
+        .page-head p {
+          margin: 10px auto 0;
+          max-width: 720px;
+          color: var(--muted);
+          font-size: 13px;
           line-height: 1.5;
         }
 
-        .hero-actions {
+        .head-pills {
           display: flex;
-          align-items: flex-end;
-          gap: 12px;
+          justify-content: center;
+          gap: 10px;
           flex-wrap: wrap;
-          min-width: 290px;
-          justify-content: flex-end;
+          margin-top: 14px;
+        }
+
+        .head-pills span {
+          background: #fff;
+          border: 1px solid var(--line);
+          border-radius: 999px;
+          padding: 8px 12px;
+          font-size: 12px;
+          font-weight: 700;
+          color: var(--muted);
+        }
+
+        .panel {
+          background: var(--panel);
+          border-radius: 20px;
+          box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 10px 24px rgba(16, 24, 40, 0.04);
+        }
+
+        .filters {
+          padding: 16px;
+          margin-bottom: 14px;
+        }
+
+        .filters-grid {
+          display: grid;
+          grid-template-columns: 170px minmax(220px, 1fr) 240px 160px;
+          gap: 12px;
+          align-items: end;
         }
 
         .field {
           display: flex;
           flex-direction: column;
           gap: 6px;
-        }
-
-        .field.grow {
-          flex: 1;
-        }
-
-        .field-label {
-          font-size: 11px;
-          font-weight: 800;
-          text-transform: uppercase;
-          letter-spacing: 0.08em;
-          color: inherit;
-        }
-
-        .gp-input {
-          width: 100%;
-          height: 44px;
-          border-radius: 14px;
-          border: 1px solid #cfd7e3;
-          background: #fff;
-          color: var(--gp-text);
-          outline: none;
-          padding: 0 14px;
-          font-size: 14px;
-          transition: 0.18s ease;
-        }
-
-        .gp-input:focus {
-          border-color: #f59e0b;
-          box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.14);
-        }
-
-        .hero-card .gp-input {
-          background: rgba(255, 255, 255, 0.96);
-        }
-
-        .number-input {
-          text-align: right;
-          font-variant-numeric: tabular-nums;
-        }
-
-        .primary-btn {
-          height: 44px;
-          border: 0;
-          border-radius: 14px;
-          padding: 0 18px;
-          background: linear-gradient(135deg, var(--gp-accent) 0%, var(--gp-accent-2) 100%);
-          color: #111827;
-          font-weight: 900;
-          font-size: 14px;
-          cursor: pointer;
-          box-shadow: 0 12px 24px rgba(245, 158, 11, 0.22);
-          transition: 0.18s ease;
-          white-space: nowrap;
-        }
-
-        .primary-btn:hover {
-          transform: translateY(-1px);
-        }
-
-        .primary-btn:disabled {
-          opacity: 0.65;
-          cursor: not-allowed;
-          transform: none;
-        }
-
-        .stats-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 10px;
-          margin-top: 16px;
-        }
-
-        .pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 10px 12px;
-          border-radius: 999px;
-          background: rgba(255, 255, 255, 0.96);
-          color: var(--gp-muted);
-          font-size: 12px;
-          font-weight: 700;
-          border: 1px solid rgba(255, 255, 255, 0.12);
-        }
-
-        .pill strong {
-          color: var(--gp-text);
-          font-size: 13px;
-        }
-
-        .pill-wide {
-          min-width: 280px;
-        }
-
-        .legend-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 14px;
-          margin-top: 14px;
-          color: rgba(255, 255, 255, 0.86);
-          font-size: 12px;
-          font-weight: 700;
-        }
-
-        .legend-item {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-        }
-
-        .legend-box {
-          width: 15px;
-          height: 15px;
-          border-radius: 5px;
-          border: 1px solid rgba(255, 255, 255, 0.3);
-        }
-
-        .legend-box.readonly {
-          background: #d1d5db;
-        }
-
-        .legend-box.editable {
-          background: #ffffff;
-        }
-
-        .legend-box.saved {
-          background: #dcfce7;
-          border-color: #86efac;
-        }
-
-        .toolbar-card {
-          padding: 16px 18px;
-          display: flex;
-          align-items: flex-end;
-          gap: 14px;
-          justify-content: space-between;
-        }
-
-        .toolbar-note {
-          font-size: 12px;
-          color: var(--gp-muted-soft);
-          font-weight: 700;
-          line-height: 1.5;
-          max-width: 430px;
-        }
-
-        .message-box {
-          border-radius: 16px;
-          border: 1px solid rgba(251, 146, 60, 0.35);
-          background: rgba(255, 237, 213, 0.82);
-          padding: 12px 14px;
-          color: #9a3412;
-          font-weight: 800;
-          box-shadow: 0 12px 26px rgba(15, 23, 42, 0.06);
-        }
-
-        .list-section {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .equipment-list {
-          display: flex;
-          flex-direction: column;
-          gap: 12px;
-        }
-
-        .equipment-card {
-          padding: 16px;
-        }
-
-        .equipment-card-saved {
-          background: linear-gradient(180deg, #ffffff 0%, #f8fffb 100%);
-          border-color: #d3f4df;
-        }
-
-        .equipment-header {
-          display: flex;
-          justify-content: space-between;
-          gap: 16px;
-          align-items: flex-start;
-          margin-bottom: 14px;
-        }
-
-        .equipment-main {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          flex-wrap: wrap;
-        }
-
-        .equipment-code {
-          font-size: 22px;
-          line-height: 1;
-          font-weight: 900;
-          letter-spacing: -0.03em;
-          color: var(--gp-text);
-        }
-
-        .status-badge {
-          display: inline-flex;
-          align-items: center;
-          height: 28px;
-          padding: 0 10px;
-          border-radius: 999px;
-          background: var(--gp-success-bg);
-          border: 1px solid var(--gp-success-border);
-          color: #166534;
-          font-size: 12px;
-          font-weight: 800;
-        }
-
-        .equipment-meta {
-          display: flex;
-          flex-direction: column;
-          align-items: flex-end;
-          gap: 2px;
-          font-size: 12px;
-          color: var(--gp-muted-soft);
-          text-align: right;
-        }
-
-        .meta-strong {
-          color: var(--gp-text);
-          font-weight: 800;
-        }
-
-        .meta-muted {
-          color: var(--gp-muted-soft);
-          font-weight: 700;
-        }
-
-        .equipment-grid {
-          display: grid;
-          grid-template-columns: 1.35fr 1fr 1fr 0.72fr 1fr 1fr 0.72fr 1.25fr;
-          gap: 12px;
-          align-items: end;
-        }
-
-        .field-block {
-          display: flex;
-          flex-direction: column;
-          gap: 6px;
           min-width: 0;
         }
 
-        .obra-col {
-          grid-column: span 1;
-        }
-
-        .obs-col {
-          grid-column: span 1;
-        }
-
-        .small-result {
-          min-width: 120px;
-        }
-
-        .mini-label {
+        .field span {
           font-size: 11px;
           font-weight: 800;
           text-transform: uppercase;
-          letter-spacing: 0.06em;
-          color: var(--gp-muted-soft);
+          letter-spacing: 0.05em;
+          color: #475467;
         }
 
-        .readonly-box-value,
-        .result-box {
-          height: 44px;
-          border-radius: 14px;
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          padding: 0 14px;
+        .input {
+          width: 100%;
+          height: 42px;
+          border-radius: 12px;
+          border: 1px solid #d0d5dd;
+          background: #fff;
+          padding: 0 12px;
           font-size: 14px;
-          font-weight: 800;
+          color: var(--text);
+          outline: none;
+        }
+
+        .input:focus {
+          border-color: #94a3b8;
+          box-shadow: 0 0 0 3px rgba(148, 163, 184, 0.12);
+        }
+
+        .input-sm {
+          height: 38px;
+          font-size: 13px;
+        }
+
+        .num {
+          text-align: right;
           font-variant-numeric: tabular-nums;
         }
 
-        .readonly-box-value {
-          background: var(--gp-readonly);
-          border: 1px solid var(--gp-readonly-border);
-          color: #111827;
+        .period-box {
+          height: 42px;
+          border-radius: 12px;
+          background: #f8fafc;
+          border: 1px solid var(--line);
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          padding: 0 12px;
         }
 
-        .result-box {
-          background: #f8fafc;
-          border: 1px solid #dbe3ee;
-          color: #0f172a;
+        .period-box span {
+          font-size: 11px;
+          text-transform: uppercase;
+          font-weight: 800;
+          letter-spacing: 0.05em;
+          color: #475467;
+        }
+
+        .period-box strong {
+          font-size: 13px;
+          color: var(--text);
+          margin-top: 2px;
+        }
+
+        .save-btn {
+          height: 42px;
+          border: 0;
+          border-radius: 12px;
+          background: var(--navy);
+          color: #fff;
+          font-weight: 800;
+          font-size: 14px;
+          cursor: pointer;
+          padding: 0 18px;
+        }
+
+        .save-btn:hover {
+          background: var(--navy-2);
+        }
+
+        .save-btn:disabled {
+          opacity: 0.6;
+          cursor: not-allowed;
+        }
+
+        .message {
+          margin-bottom: 14px;
+          background: #fff7ed;
+          color: #9a3412;
+          border: 1px solid #fdba74;
+          border-radius: 14px;
+          padding: 12px 14px;
+          font-size: 13px;
+          font-weight: 700;
+        }
+
+        .desktop-table-wrap {
+          display: block;
+          padding: 0;
+          overflow: hidden;
+        }
+
+        .table-scroll {
+          overflow-x: auto;
+        }
+
+        .table {
+          width: 100%;
+          min-width: 1080px;
+          border-collapse: collapse;
+        }
+
+        .table thead th {
+          font-size: 11px;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          font-weight: 800;
+          color: #475467;
+          text-align: left;
+          padding: 14px 12px;
+          border-bottom: 1px solid var(--line);
+          background: #fff;
+          position: sticky;
+          top: 0;
+          z-index: 2;
+          white-space: nowrap;
+        }
+
+        .table tbody td {
+          padding: 10px 12px;
+          border-bottom: 1px solid #f0f2f5;
+          vertical-align: middle;
+          background: #fff;
+        }
+
+        .table tbody tr:hover td {
+          background: #fafbfc;
+        }
+
+        .equip-col {
+          font-weight: 800;
+          color: var(--navy);
+          white-space: nowrap;
+        }
+
+        .readonly {
+          height: 38px;
+          border-radius: 12px;
+          background: var(--readonly);
+          border: 1px solid #d8dee6;
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          padding: 0 12px;
+          font-size: 13px;
+          font-weight: 700;
+          color: var(--text);
+          font-variant-numeric: tabular-nums;
         }
 
         .center {
           justify-content: center;
-          color: var(--gp-muted-soft);
         }
 
-        .empty-card {
-          padding: 24px;
-          text-align: center;
-          color: var(--gp-muted-soft);
+        .updated-col {
+          min-width: 190px;
+          font-size: 12px;
+          line-height: 1.35;
+        }
+
+        .updated-main {
+          color: var(--text);
           font-weight: 700;
+        }
+
+        .updated-sub {
+          color: var(--muted);
+          margin-top: 2px;
+        }
+
+        .muted {
+          color: #98a2b3;
+        }
+
+        .empty {
+          padding: 26px;
+          text-align: center;
+          color: var(--muted);
+          font-weight: 700;
+        }
+
+        .mobile-list {
+          display: none;
         }
 
         .mobile-savebar {
           display: none;
         }
 
-        @media (max-width: 1180px) {
-          .equipment-grid {
-            grid-template-columns: 1.2fr 1fr 1fr 0.75fr 1fr 1fr 0.75fr;
-          }
-
-          .obs-col {
-            grid-column: 1 / -1;
-          }
-        }
-
-        @media (max-width: 980px) {
-          .page-root {
-            padding: 14px 12px 92px;
-          }
-
-          .hero-top,
-          .toolbar-card,
-          .equipment-header {
-            flex-direction: column;
-            align-items: stretch;
-          }
-
-          .hero-actions {
-            min-width: 0;
-            width: 100%;
-            justify-content: stretch;
-          }
-
-          .toolbar-note {
-            max-width: none;
-          }
-
-          .equipment-meta {
-            align-items: flex-start;
-            text-align: left;
-          }
-
-          .equipment-grid {
+        @media (max-width: 920px) {
+          .filters-grid {
             grid-template-columns: 1fr 1fr;
           }
 
-          .obra-col,
-          .obs-col {
-            grid-column: 1 / -1;
-          }
-
-          .small-result {
-            min-width: 0;
-          }
-
-          .hero-title {
-            font-size: 28px;
-          }
-
-          .brand-logo {
-            width: 70px;
-            height: 70px;
+          .period-box {
+            order: 3;
           }
         }
 
-        @media (max-width: 640px) {
-          .page-root {
-            padding: 10px 10px 96px;
+        @media (max-width: 760px) {
+          .page {
+            padding: 16px 10px 92px;
           }
 
-          .hero-card,
-          .toolbar-card,
-          .equipment-card {
-            border-radius: 18px;
+          .page-head {
+            margin-bottom: 14px;
           }
 
-          .hero-card {
-            padding: 16px;
+          .page-head h1 {
+            font-size: 23px;
           }
 
-          .toolbar-card,
-          .equipment-card {
-            padding: 14px;
+          .page-head p {
+            font-size: 12px;
           }
 
-          .hero-title {
-            font-size: 26px;
+          .filters {
+            padding: 12px;
           }
 
-          .hero-subtitle {
-            font-size: 13px;
-          }
-
-          .equipment-code {
-            font-size: 20px;
-          }
-
-          .equipment-grid {
+          .filters-grid {
             grid-template-columns: 1fr;
+          }
+
+          .desktop-table-wrap {
+            display: none;
+          }
+
+          .mobile-list {
+            display: flex;
+            flex-direction: column;
             gap: 10px;
+          }
+
+          .mobile-card {
+            background: #fff;
+            border-radius: 16px;
+            padding: 12px;
+            box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04), 0 8px 20px rgba(16, 24, 40, 0.04);
+          }
+
+          .mobile-top {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+          }
+
+          .mobile-top strong {
+            font-size: 20px;
+            color: var(--navy);
+          }
+
+          .mobile-status {
+            font-size: 11px;
+            font-weight: 800;
+            color: var(--muted);
+          }
+
+          .mobile-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+          }
+
+          .mobile-grid .full {
+            grid-column: 1 / -1;
           }
 
           .mobile-savebar {
@@ -1299,15 +1222,14 @@ export default function HorimetrosPage() {
             right: 0;
             bottom: 0;
             padding: 10px 12px 14px;
-            background: linear-gradient(180deg, rgba(243, 244, 246, 0) 0%, rgba(243, 244, 246, 0.95) 28%, rgba(243, 244, 246, 1) 100%);
-            backdrop-filter: blur(8px);
-            z-index: 40;
+            background: linear-gradient(180deg, rgba(244,245,247,0) 0%, rgba(244,245,247,0.94) 24%, rgba(244,245,247,1) 100%);
+            z-index: 20;
           }
 
           .mobile-save-btn {
             width: 100%;
             height: 48px;
-            border-radius: 16px;
+            border-radius: 14px;
           }
         }
       `}</style>
