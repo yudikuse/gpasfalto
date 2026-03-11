@@ -122,45 +122,40 @@ function parsePtNumber(value: string) {
   return Number.isFinite(n) ? n : null;
 }
 
-function stripToDecimalDraft(value: string) {
-  let s = String(value || "").replace(/\s+/g, "").replace(/\./g, ",");
-  s = s.replace(/[^0-9,\-]/g, "");
+function sanitizeDecimalDraft(value: string) {
+  let s = String(value || "")
+    .replace(/\s+/g, "")
+    .replace(/\./g, ",")
+    .replace(/[^0-9,\-]/g, "");
 
-  const isNegative = s.startsWith("-");
+  const negative = s.startsWith("-");
   s = s.replace(/-/g, "");
 
-  const firstComma = s.indexOf(",");
-  if (firstComma >= 0) {
-    const intPart = s.slice(0, firstComma).replace(/,/g, "");
-    const decPart = s.slice(firstComma + 1).replace(/,/g, "").slice(0, 1);
-    s = `${intPart},${decPart}`;
-  } else {
-    s = s.replace(/,/g, "");
-  }
+  const parts = s.split(",");
+  const intPart = (parts[0] || "").replace(/\D/g, "");
+  const decPart = parts.length > 1 ? (parts.slice(1).join("") || "").replace(/\D/g, "").slice(0, 1) : "";
 
-  return `${isNegative ? "-" : ""}${s}`;
+  return {
+    negative,
+    hasComma: parts.length > 1,
+    intPart,
+    decPart,
+  };
+}
+
+function formatThousandsPtBrFromDigits(digits: string) {
+  if (!digits) return "";
+  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 }
 
 function formatDecimalWhileTyping(value: string) {
-  const draft = stripToDecimalDraft(value);
-  if (!draft || draft === "-") return draft;
+  const { negative, hasComma, intPart, decPart } = sanitizeDecimalDraft(value);
+  const cleanInt = intPart.replace(/^0+(?=\d)/, "");
+  const formattedInt = formatThousandsPtBrFromDigits(cleanInt || (hasComma ? "0" : ""));
+  const signal = negative ? "-" : "";
 
-  const isNegative = draft.startsWith("-");
-  const unsigned = draft.replace(/^-/, "");
-  const hasComma = unsigned.includes(",");
-  const [intRaw = "", decRaw = ""] = unsigned.split(",");
-  const intDigits = intRaw.replace(/^0+(?=\d)/, "");
-  const intFormatted = intDigits
-    ? Number(intDigits).toLocaleString("pt-BR")
-    : hasComma
-      ? "0"
-      : "";
-
-  if (!hasComma) {
-    return `${isNegative ? "-" : ""}${intFormatted}`;
-  }
-
-  return `${isNegative ? "-" : ""}${intFormatted},${decRaw}`;
+  if (!hasComma) return `${signal}${formattedInt}`;
+  return `${signal}${formattedInt},${decPart}`;
 }
 
 function finalizeDecimalInput(value: string) {
@@ -225,10 +220,6 @@ function buildRows(params: {
   });
 }
 
-function statusLabel(row: RowState) {
-  return row.registroId ? "Salvo no dia" : "Pendente";
-}
-
 export default function HorimetrosPage() {
   const env = resolveSupabaseEnv();
 
@@ -268,9 +259,7 @@ export default function HorimetrosPage() {
     const total = rows.length;
     const lancados = rows.filter((row) => row.registroId != null).length;
     const pendentes = Math.max(total - lancados, 0);
-    const comHorimetro = rows.filter((row) => row.usaHorimetro).length;
-    const comOdometro = rows.filter((row) => row.usaOdometro).length;
-    return { total, lancados, pendentes, comHorimetro, comOdometro };
+    return { total, lancados, pendentes };
   }, [rows]);
 
   const loadData = useCallback(async () => {
@@ -445,21 +434,25 @@ export default function HorimetrosPage() {
     <>
       <style jsx global>{`
         :root {
-          --bg: #f4f6f8;
+          --bg: #f4f7fb;
           --surface: #ffffff;
-          --surface-soft: #f9fafb;
-          --line: #d9e0e7;
-          --line-strong: #c7d0da;
-          --text: #152232;
-          --muted: #6a7786;
-          --navy: #1f344a;
-          --navy-soft: #edf3f9;
-          --yellow: #f4b400;
-          --green: #17a672;
-          --green-soft: #e9fbf4;
-          --red: #c83d36;
-          --red-soft: #fff2f1;
-          --shadow: 0 12px 30px rgba(24, 39, 58, 0.06);
+          --surface-2: #f8fbff;
+          --surface-3: #eef4fb;
+          --text: #0f172a;
+          --muted: #6b7280;
+          --blue: #0f3d91;
+          --blue-soft: #dbeafe;
+          --green: #0f9f6e;
+          --green-soft: #eafaf4;
+          --yellow: #f5b301;
+          --danger: #d84d4d;
+          --danger-soft: #fff3f3;
+          --radius-xl: 28px;
+          --radius-lg: 22px;
+          --radius-md: 18px;
+          --radius-sm: 14px;
+          --shadow-1: 0 16px 40px rgba(15, 23, 42, 0.06);
+          --shadow-2: 0 8px 24px rgba(15, 23, 42, 0.05);
         }
 
         * {
@@ -470,7 +463,7 @@ export default function HorimetrosPage() {
         body {
           margin: 0;
           padding: 0;
-          background: var(--bg);
+          background: linear-gradient(180deg, #f7faff 0%, #f1f5f9 100%);
           color: var(--text);
         }
 
@@ -478,194 +471,190 @@ export default function HorimetrosPage() {
           font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
 
+        input,
+        select,
+        button,
+        textarea {
+          font: inherit;
+        }
+
         .page {
           min-height: 100vh;
-          background: var(--bg);
+          padding: 16px 12px 120px;
         }
 
-        .shell {
-          width: min(1680px, 100%);
+        .wrap {
+          width: 100%;
+          max-width: 860px;
           margin: 0 auto;
-          padding: 24px;
-        }
-
-        .hero {
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 24px;
-          box-shadow: var(--shadow);
-          padding: 24px;
-        }
-
-        .hero-top {
-          display: flex;
-          justify-content: space-between;
-          gap: 18px;
-          align-items: flex-start;
-        }
-
-        .hero-brand {
-          display: flex;
-          align-items: center;
+          display: grid;
           gap: 14px;
         }
 
-        .hero-logo {
-          width: 52px;
-          height: 52px;
-          border-radius: 16px;
-          background: #fff8e1;
-          border: 1px solid #f6df8f;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          overflow: hidden;
-          flex: 0 0 auto;
+        .hero {
+          background: linear-gradient(145deg, #08214d 0%, #10397f 58%, #2053ab 100%);
+          border-radius: 28px;
+          box-shadow: 0 22px 48px rgba(16, 57, 127, 0.24);
+          padding: 18px;
+          color: #fff;
         }
 
-        .hero-logo img {
+        .hero-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+        }
+
+        .brand {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          min-width: 0;
+        }
+
+        .brand-logo {
+          width: 46px;
+          height: 46px;
+          border-radius: 14px;
+          overflow: hidden;
+          background: rgba(255, 255, 255, 0.16);
+          flex: 0 0 auto;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          backdrop-filter: blur(8px);
+        }
+
+        .brand-logo img {
           width: 100%;
           height: 100%;
           object-fit: cover;
         }
 
         .eyebrow {
-          margin: 0 0 6px;
+          margin: 0 0 4px;
           font-size: 11px;
           font-weight: 800;
           letter-spacing: 0.12em;
           text-transform: uppercase;
-          color: var(--muted);
+          opacity: 0.78;
         }
 
         .title {
           margin: 0;
-          font-size: 34px;
-          line-height: 1.02;
-          font-weight: 900;
-          letter-spacing: -0.04em;
-          color: var(--navy);
-        }
-
-        .subtitle {
-          margin-top: 8px;
-          max-width: 760px;
-          color: var(--muted);
-          font-size: 14px;
-          line-height: 1.45;
-          font-weight: 600;
-        }
-
-        .hero-actions {
-          min-width: 320px;
-          display: grid;
-          gap: 12px;
-        }
-
-        .hero-actions-grid {
-          display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 10px;
-          align-items: end;
-        }
-
-        .field-block {
-          display: grid;
-          gap: 8px;
-        }
-
-        .field-label {
-          font-size: 11px;
-          font-weight: 800;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--muted);
-        }
-
-        .stats-grid {
-          margin-top: 22px;
-          display: grid;
-          grid-template-columns: repeat(4, minmax(0, 1fr));
-          gap: 14px;
-        }
-
-        .stat-card {
-          border: 1px solid var(--line);
-          border-radius: 20px;
-          background: var(--surface-soft);
-          padding: 16px;
-          min-height: 110px;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
-        }
-
-        .stat-label {
-          font-size: 12px;
-          font-weight: 800;
-          text-transform: uppercase;
-          letter-spacing: 0.06em;
-          color: var(--muted);
-        }
-
-        .stat-value {
-          margin-top: 6px;
-          font-size: 34px;
+          font-size: 28px;
           line-height: 1;
           font-weight: 900;
           letter-spacing: -0.04em;
-          color: var(--navy);
         }
 
-        .stat-note {
-          margin-top: 10px;
+        .subtitle {
+          margin: 10px 0 0;
+          color: rgba(255, 255, 255, 0.86);
           font-size: 13px;
-          color: var(--muted);
-          font-weight: 700;
+          line-height: 1.45;
+          max-width: 540px;
+          font-weight: 600;
+        }
+
+        .hero-stats {
+          margin-top: 16px;
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .hero-stat {
+          min-height: 74px;
+          background: rgba(255, 255, 255, 0.12);
+          border-radius: 18px;
+          padding: 12px;
+          backdrop-filter: blur(10px);
+        }
+
+        .hero-stat-label {
+          font-size: 11px;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          opacity: 0.8;
+        }
+
+        .hero-stat-value {
+          margin-top: 6px;
+          font-size: 28px;
+          line-height: 1;
+          font-weight: 900;
+          letter-spacing: -0.04em;
+        }
+
+        .hero-stat-note {
+          margin-top: 6px;
+          font-size: 12px;
+          line-height: 1.25;
+          opacity: 0.82;
+          font-weight: 600;
         }
 
         .toolbar {
-          margin-top: 18px;
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 24px;
-          box-shadow: var(--shadow);
-          padding: 18px;
-          display: grid;
-          grid-template-columns: minmax(280px, 1.4fr) minmax(180px, 220px) minmax(240px, 1fr) auto;
-          gap: 14px;
-          align-items: end;
+          position: sticky;
+          top: 10px;
+          z-index: 30;
+          background: rgba(244, 247, 251, 0.86);
+          backdrop-filter: blur(16px);
+          border-radius: 26px;
+          padding: 10px;
         }
 
-        .helper-box {
-          height: 48px;
-          border-radius: 14px;
-          border: 1px dashed var(--line-strong);
-          background: #fbfcfd;
+        .toolbar-grid {
+          display: grid;
+          gap: 10px;
+          grid-template-columns: 1fr 150px;
+        }
+
+        .search-shell,
+        .date-shell,
+        .action-shell,
+        .message,
+        .card {
+          background: var(--surface);
+          border-radius: 22px;
+          box-shadow: var(--shadow-2);
+        }
+
+        .search-shell,
+        .date-shell {
+          padding: 8px;
+        }
+
+        .field-label {
+          display: block;
+          padding: 0 6px 6px;
+          font-size: 10px;
+          font-weight: 900;
           color: var(--muted);
-          padding: 0 14px;
-          display: flex;
-          align-items: center;
-          font-size: 13px;
-          font-weight: 700;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
         }
 
         .search-input,
         .date-input,
         .select,
-        .number-input,
-        .text-input {
+        .text-input,
+        .number-input {
           width: 100%;
-          height: 48px;
-          border-radius: 14px;
-          border: 1px solid var(--line-strong);
-          background: #fff;
-          color: var(--text);
+          height: 46px;
+          border: 0;
           outline: none;
+          background: var(--surface-2);
+          border-radius: 16px;
           padding: 0 14px;
-          font-size: 14px;
+          color: var(--text);
+          font-size: 15px;
           font-weight: 700;
-          transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+          box-shadow: inset 0 0 0 1px transparent;
+          transition: box-shadow 0.16s ease, background 0.16s ease, transform 0.16s ease;
         }
 
         .text-input {
@@ -675,606 +664,546 @@ export default function HorimetrosPage() {
         .search-input:focus,
         .date-input:focus,
         .select:focus,
-        .number-input:focus,
-        .text-input:focus {
-          border-color: #7ea0c4;
-          box-shadow: 0 0 0 4px rgba(78, 114, 152, 0.12);
+        .text-input:focus,
+        .number-input:focus {
+          background: #edf5ff;
+          box-shadow: inset 0 0 0 2px rgba(32, 83, 171, 0.14);
         }
 
         .number-input[disabled],
-        .text-input[disabled] {
-          background: #f1f4f7;
-          color: #8b98a7;
-          cursor: not-allowed;
+        .text-input[disabled],
+        .select[disabled] {
+          background: #eef2f7;
+          color: #9aa4b2;
         }
 
-        .save-btn {
-          height: 48px;
-          border: 0;
-          border-radius: 14px;
-          padding: 0 20px;
-          font-size: 14px;
-          font-weight: 900;
-          background: var(--yellow);
-          color: #1b2430;
-          cursor: pointer;
-          box-shadow: 0 10px 24px rgba(244, 180, 0, 0.18);
-          white-space: nowrap;
-        }
-
-        .save-btn[disabled] {
-          opacity: 0.65;
-          cursor: wait;
-        }
-
-        .alerts {
-          margin-top: 14px;
-          display: grid;
-          gap: 12px;
-        }
-
-        .alert {
-          border-radius: 16px;
-          padding: 13px 15px;
-          font-size: 14px;
-          font-weight: 800;
-          border: 1px solid transparent;
-          background: var(--surface);
-        }
-
-        .alert.error {
-          background: #fff3f2;
-          border-color: #f0c1bc;
-          color: #9a2920;
-        }
-
-        .alert.ok {
-          background: #edfdf5;
-          border-color: #b7efcf;
-          color: #0d7c4f;
-        }
-
-        .alert.warn {
-          background: #fff8ea;
-          border-color: #f3d596;
-          color: #8a5b00;
-        }
-
-        .table-card {
-          margin-top: 18px;
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 24px;
-          box-shadow: var(--shadow);
-          overflow: hidden;
-        }
-
-        .table-head {
-          padding: 18px 20px;
-          border-bottom: 1px solid var(--line);
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 14px;
-          background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
-        }
-
-        .table-title {
-          display: grid;
-          gap: 5px;
-        }
-
-        .table-title strong {
-          font-size: 17px;
-          color: var(--navy);
-        }
-
-        .table-title span {
-          font-size: 13px;
-          color: var(--muted);
-          font-weight: 700;
-        }
-
-        .table-chip-row {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 8px;
-        }
-
-        .table-chip {
-          height: 34px;
-          border-radius: 999px;
-          padding: 0 12px;
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          border: 1px solid var(--line);
-          background: #fff;
-          color: var(--text);
-          font-size: 12px;
-          font-weight: 800;
-        }
-
-        .table-wrap {
-          overflow: auto;
-          max-height: calc(100vh - 330px);
-        }
-
-        table {
-          width: 100%;
-          min-width: 1540px;
-          border-collapse: separate;
-          border-spacing: 0;
-        }
-
-        thead th {
-          position: sticky;
-          top: 0;
-          z-index: 5;
-          padding: 14px 10px;
-          background: #f5f8fb;
-          color: var(--navy);
-          border-bottom: 1px solid var(--line);
-          border-right: 1px solid #edf1f5;
-          font-size: 11px;
-          font-weight: 900;
-          letter-spacing: 0.06em;
-          text-transform: uppercase;
-          line-height: 1.25;
-          white-space: nowrap;
-        }
-
-        thead th:last-child {
-          border-right: 0;
-        }
-
-        tbody td {
-          padding: 10px 8px;
-          border-top: 1px solid #eef2f6;
-          background: #fff;
-          vertical-align: middle;
-        }
-
-        tbody tr:hover td {
-          background: #fcfdff;
-        }
-
-        .equip-cell {
-          min-width: 92px;
-        }
-
-        .equip-code {
-          font-size: 15px;
-          font-weight: 900;
-          color: var(--navy);
-          line-height: 1.1;
-        }
-
-        .equip-mode {
-          margin-top: 5px;
-          font-size: 11px;
-          color: var(--muted);
-          font-weight: 800;
-          text-transform: uppercase;
-          letter-spacing: 0.04em;
-        }
-
-        .readonly-box {
-          min-width: 132px;
-          height: 48px;
-          border-radius: 14px;
-          border: 1px solid var(--line);
-          background: #f9fbfc;
-          color: var(--text);
-          padding: 0 14px;
-          display: flex;
-          align-items: center;
-          justify-content: flex-end;
-          font-weight: 900;
-          font-size: 15px;
-        }
-
-        .readonly-box.disabled {
-          background: #f1f4f7;
-          color: #8b98a7;
-          justify-content: center;
-        }
-
-        .right-input {
+        .number-input {
           text-align: right;
           font-variant-numeric: tabular-nums;
         }
 
-        .delta-positive {
-          color: #0e8a5d;
+        .action-shell {
+          padding: 8px;
+          display: grid;
+          align-items: end;
         }
 
-        .delta-negative {
-          color: var(--red);
+        .save-btn {
+          width: 100%;
+          height: 62px;
+          border: 0;
+          outline: none;
+          border-radius: 18px;
+          background: linear-gradient(135deg, #f7c321 0%, #f4b400 100%);
+          color: #13233f;
+          font-size: 16px;
+          font-weight: 900;
+          box-shadow: 0 14px 32px rgba(244, 180, 0, 0.26);
+          cursor: pointer;
         }
 
-        .status-cell {
-          min-width: 215px;
+        .save-btn[disabled] {
+          opacity: 0.7;
+          cursor: wait;
         }
 
-        .status-badge {
-          display: inline-flex;
-          align-items: center;
+        .chips {
+          display: flex;
           gap: 8px;
-          padding: 0 10px;
-          height: 32px;
+          overflow-x: auto;
+          padding: 2px 2px 0;
+          scrollbar-width: none;
+        }
+
+        .chips::-webkit-scrollbar {
+          display: none;
+        }
+
+        .chip {
+          white-space: nowrap;
+          border: 0;
           border-radius: 999px;
+          background: var(--surface);
+          box-shadow: var(--shadow-2);
+          padding: 10px 14px;
+          font-size: 12px;
+          font-weight: 800;
+          color: #334155;
+        }
+
+        .message {
+          padding: 14px 16px;
+          font-size: 14px;
+          font-weight: 800;
+          line-height: 1.45;
+        }
+
+        .message.error {
+          background: var(--danger-soft);
+          color: #9a2d2d;
+        }
+
+        .message.ok {
+          background: var(--green-soft);
+          color: #0b7b52;
+        }
+
+        .message.warn {
+          background: #fff7df;
+          color: #8a6200;
+        }
+
+        .list {
+          display: grid;
+          gap: 12px;
+        }
+
+        .card {
+          padding: 14px;
+          display: grid;
+          gap: 14px;
+        }
+
+        .card-top {
+          display: flex;
+          align-items: flex-start;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        .equip-box {
+          min-width: 0;
+        }
+
+        .equip-code {
+          margin: 0;
+          font-size: 24px;
+          line-height: 1;
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          color: #0f172a;
+        }
+
+        .equip-sub {
+          margin-top: 6px;
+          display: flex;
+          flex-wrap: wrap;
+          gap: 6px;
+        }
+
+        .mini-tag {
+          border-radius: 999px;
+          padding: 6px 10px;
+          background: var(--surface-3);
+          color: #355076;
+          font-size: 11px;
+          font-weight: 800;
+        }
+
+        .status-pill {
+          flex: 0 0 auto;
+          min-width: fit-content;
+          border-radius: 999px;
+          padding: 8px 12px;
           font-size: 12px;
           font-weight: 900;
-          border: 1px solid var(--line);
-          background: #f7f9fb;
-          color: var(--muted);
+          background: #eef2f7;
+          color: #64748b;
         }
 
-        .status-badge.saved {
+        .status-pill.saved {
           background: var(--green-soft);
-          color: #0d7c4f;
-          border-color: #b7efcf;
+          color: #0b7b52;
         }
 
-        .status-dot {
-          width: 9px;
-          height: 9px;
-          border-radius: 999px;
-          background: #b6c0cb;
+        .section-grid {
+          display: grid;
+          grid-template-columns: 1fr;
+          gap: 10px;
         }
 
-        .status-badge.saved .status-dot {
-          background: var(--green);
+        .panel {
+          background: var(--surface-2);
+          border-radius: 20px;
+          padding: 12px;
         }
 
-        .status-meta {
+        .panel-head {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+
+        .panel-title {
+          font-size: 12px;
+          font-weight: 900;
+          color: #334155;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+        }
+
+        .panel-date {
+          font-size: 11px;
+          font-weight: 800;
+          color: #64748b;
+        }
+
+        .reading-grid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .reading-box {
+          background: #fff;
+          border-radius: 18px;
+          padding: 12px;
+          min-height: 78px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+        }
+
+        .reading-label {
+          font-size: 11px;
+          font-weight: 800;
+          color: #64748b;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+        }
+
+        .reading-value {
           margin-top: 8px;
+          font-size: 22px;
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          color: #0f172a;
+          line-height: 1;
+        }
+
+        .reading-value.muted {
+          color: #94a3b8;
+        }
+
+        .reading-value.positive {
+          color: var(--green);
+        }
+
+        .reading-value.negative {
+          color: var(--danger);
+        }
+
+        .stack {
+          display: grid;
+          gap: 10px;
+        }
+
+        .meta {
           display: grid;
           gap: 4px;
+          color: #64748b;
           font-size: 12px;
-          color: var(--muted);
           font-weight: 700;
         }
 
         .empty {
-          padding: 28px 24px;
-          color: var(--muted);
+          padding: 22px 18px;
+          text-align: center;
+          background: var(--surface);
+          border-radius: 22px;
+          box-shadow: var(--shadow-2);
+          color: #64748b;
           font-size: 14px;
-          font-weight: 700;
+          font-weight: 800;
         }
 
-        @media (max-width: 1280px) {
-          .stats-grid {
+        @media (min-width: 768px) {
+          .page {
+            padding: 22px 18px 120px;
+          }
+
+          .hero {
+            padding: 22px;
+          }
+
+          .toolbar-grid {
+            grid-template-columns: 1.4fr 220px 180px;
+          }
+
+          .section-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
 
-          .toolbar {
-            grid-template-columns: 1fr 220px;
-          }
-        }
-
-        @media (max-width: 980px) {
-          .shell {
-            padding: 16px;
-          }
-
-          .hero-top {
-            flex-direction: column;
-          }
-
-          .hero-actions {
-            min-width: 0;
-            width: 100%;
-          }
-
-          .hero-actions-grid,
-          .toolbar {
-            grid-template-columns: 1fr;
-          }
-
-          .stats-grid {
-            grid-template-columns: 1fr;
-          }
-
-          .table-wrap {
-            max-height: none;
+          .stack.two {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
           }
         }
       `}</style>
 
       <main className="page">
-        <div className="shell">
+        <div className="wrap">
           <section className="hero">
-            <div className="hero-top">
-              <div>
-                <div className="hero-brand">
-                  <div className="hero-logo">
-                    <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
-                  </div>
-                  <div>
-                    <p className="eyebrow">GP Asfalto</p>
-                    <h1 className="title">Horímetros e Odômetros</h1>
-                  </div>
+            <div className="hero-head">
+              <div className="brand">
+                <div className="brand-logo">
+                  <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
                 </div>
-                <div className="subtitle">
-                  Lançamento diário por equipamento, com visual mais clean, leitura anterior bloqueada e número formatado automaticamente durante a digitação.
-                </div>
-              </div>
-
-              <div className="hero-actions">
-                <div className="hero-actions-grid">
-                  <div className="field-block">
-                    <label className="field-label" htmlFor="data-lancamento">
-                      Data do lançamento
-                    </label>
-                    <input
-                      id="data-lancamento"
-                      className="date-input"
-                      type="date"
-                      value={selectedDate}
-                      onChange={(e) => setSelectedDate(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    className="save-btn"
-                    type="button"
-                    onClick={() => void handleSaveAll()}
-                    disabled={saving || loading || !env.ok}
-                  >
-                    {saving ? "Salvando..." : "Salvar tudo"}
-                  </button>
+                <div>
+                  <p className="eyebrow">GP Asfalto</p>
+                  <h1 className="title">Horímetros</h1>
                 </div>
               </div>
             </div>
 
-            <div className="stats-grid">
-              <div className="stat-card">
-                <div>
-                  <div className="stat-label">Equipamentos</div>
-                  <div className="stat-value">{stats.total}</div>
-                </div>
-                <div className="stat-note">Linhas carregadas para o dia atual.</div>
-              </div>
+            <p className="subtitle">
+              Tela mobile, limpa e applike. Sem tabela pesada. Cada equipamento fica em um card com leitura anterior, leitura atual e resultado do dia.
+            </p>
 
-              <div className="stat-card">
-                <div>
-                  <div className="stat-label">Lançados</div>
-                  <div className="stat-value">{stats.lancados}</div>
-                </div>
-                <div className="stat-note">Já possuem registro salvo em {isoToBr(selectedDate)}.</div>
+            <div className="hero-stats">
+              <div className="hero-stat">
+                <div className="hero-stat-label">Equipamentos</div>
+                <div className="hero-stat-value">{stats.total}</div>
+                <div className="hero-stat-note">Linhas disponíveis</div>
               </div>
-
-              <div className="stat-card">
-                <div>
-                  <div className="stat-label">Pendentes</div>
-                  <div className="stat-value">{stats.pendentes}</div>
-                </div>
-                <div className="stat-note">Sem lançamento salvo no dia selecionado.</div>
+              <div className="hero-stat">
+                <div className="hero-stat-label">Lançados</div>
+                <div className="hero-stat-value">{stats.lancados}</div>
+                <div className="hero-stat-note">Já salvos no dia</div>
               </div>
-
-              <div className="stat-card">
-                <div>
-                  <div className="stat-label">Período visível</div>
-                  <div className="stat-value" style={{ fontSize: 22 }}>
-                    {isoToBr(periodoAnterior)}
-                  </div>
-                </div>
-                <div className="stat-note">Base anterior: {isoToBr(periodoAnterior)} · Atual: {isoToBr(selectedDate)}</div>
+              <div className="hero-stat">
+                <div className="hero-stat-label">Pendentes</div>
+                <div className="hero-stat-value">{stats.pendentes}</div>
+                <div className="hero-stat-note">Aguardando leitura</div>
               </div>
             </div>
           </section>
 
           <section className="toolbar">
-            <div className="field-block">
-              <label className="field-label" htmlFor="busca-equip">
-                Buscar equipamento
-              </label>
-              <input
-                id="busca-equip"
-                className="search-input"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Ex.: MN-05, obra, código..."
-              />
-            </div>
-
-            <div className="field-block">
-              <label className="field-label">Leituras</label>
-              <div className="helper-box">
-                {stats.comHorimetro} com horímetro · {stats.comOdometro} com odômetro
+            <div className="toolbar-grid">
+              <div className="search-shell">
+                <label className="field-label" htmlFor="busca-equipamento">
+                  Buscar equipamento
+                </label>
+                <input
+                  id="busca-equipamento"
+                  className="search-input"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Ex.: CB-02, obra..."
+                />
               </div>
-            </div>
 
-            <div className="field-block">
-              <label className="field-label">Regra</label>
-              <div className="helper-box">
-                Anterior = final do dia anterior. Sem histórico, usa base do cadastro.
+              <div className="date-shell">
+                <label className="field-label" htmlFor="data-lancamento">
+                  Data do lançamento
+                </label>
+                <input
+                  id="data-lancamento"
+                  className="date-input"
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                />
               </div>
-            </div>
 
-            <div className="field-block">
-              <label className="field-label">Atualização</label>
-              <div className="helper-box">Máscara automática em pt-BR nos campos numéricos.</div>
+              <div className="action-shell">
+                <button
+                  className="save-btn"
+                  type="button"
+                  onClick={() => void handleSaveAll()}
+                  disabled={saving || loading || !env.ok}
+                >
+                  {saving ? "Salvando..." : "Salvar tudo"}
+                </button>
+              </div>
             </div>
           </section>
 
-          <div className="alerts">
-            {!env.ok ? (
-              <div className="alert warn">
-                Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
-              </div>
-            ) : null}
-            {errorMsg ? <div className="alert error">{errorMsg}</div> : null}
-            {okMsg ? <div className="alert ok">{okMsg}</div> : null}
+          <div className="chips">
+            <div className="chip">Anterior: {isoToBr(periodoAnterior)}</div>
+            <div className="chip">Atual: {isoToBr(selectedDate)}</div>
+            <div className="chip">Máscara pt-BR automática</div>
+            <div className="chip">Leitura anterior bloqueada</div>
           </div>
 
-          <section className="table-card">
-            <div className="table-head">
-              <div className="table-title">
-                <strong>Lançamento diário</strong>
-                <span>Horímetro e odômetro por equipamento, obra, status e observação.</span>
-              </div>
-
-              <div className="table-chip-row">
-                <div className="table-chip">Anterior: {isoToBr(periodoAnterior)}</div>
-                <div className="table-chip">Atual: {isoToBr(selectedDate)}</div>
-                <div className="table-chip">Busca: {search.trim() ? search.trim() : "todas"}</div>
-              </div>
+          {!env.ok ? (
+            <div className="message warn">
+              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
             </div>
+          ) : null}
 
-            {loading ? (
-              <div className="empty">Carregando...</div>
-            ) : filteredRows.length === 0 ? (
-              <div className="empty">Nenhum equipamento encontrado para a busca atual.</div>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Equip.</th>
-                      <th>Obra</th>
-                      <th>Horímetro anterior<br />{isoToBr(periodoAnterior)}</th>
-                      <th>Horímetro atual<br />{isoToBr(selectedDate)}</th>
-                      <th>Horas do dia</th>
-                      <th>Odômetro anterior<br />{isoToBr(periodoAnterior)}</th>
-                      <th>Odômetro atual<br />{isoToBr(selectedDate)}</th>
-                      <th>KM do dia</th>
-                      <th>Última atualização</th>
-                      <th>Observação</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredRows.map((row) => {
-                      const obraSelecionada = row.obraId ? Number(row.obraId) : 0;
-                      const horasNegative = (row.horasDia ?? 0) < 0;
-                      const kmNegative = (row.kmDia ?? 0) < 0;
+          {errorMsg ? <div className="message error">{errorMsg}</div> : null}
+          {okMsg ? <div className="message ok">{okMsg}</div> : null}
 
-                      return (
-                        <tr key={row.equipamentoId}>
-                          <td className="equip-cell">
-                            <div className="equip-code">{row.codigo}</div>
-                            <div className="equip-mode">
-                              {row.usaHorimetro ? "Horímetro" : "—"} · {row.usaOdometro ? "Odômetro" : "—"}
+          {loading ? (
+            <div className="empty">Carregando...</div>
+          ) : filteredRows.length === 0 ? (
+            <div className="empty">Nenhum equipamento encontrado.</div>
+          ) : (
+            <section className="list">
+              {filteredRows.map((row) => {
+                const horasNegative = (row.horasDia ?? 0) < 0;
+                const kmNegative = (row.kmDia ?? 0) < 0;
+
+                return (
+                  <article key={row.equipamentoId} className="card">
+                    <div className="card-top">
+                      <div className="equip-box">
+                        <h2 className="equip-code">{row.codigo}</h2>
+                        <div className="equip-sub">
+                          {row.usaHorimetro ? <span className="mini-tag">Horímetro</span> : null}
+                          {row.usaOdometro ? <span className="mini-tag">Odômetro</span> : null}
+                          {!row.usaHorimetro && !row.usaOdometro ? <span className="mini-tag">Sem leitura</span> : null}
+                        </div>
+                      </div>
+
+                      <div className={`status-pill ${row.registroId ? "saved" : ""}`}>
+                        {row.registroId ? "Salvo" : "Pendente"}
+                      </div>
+                    </div>
+
+                    <div className="stack">
+                      <div>
+                        <label className="field-label">Obra</label>
+                        <select
+                          className="select"
+                          value={row.obraId}
+                          onChange={(e) => updateRow(row.equipamentoId, { obraId: e.target.value })}
+                        >
+                          <option value="">Selecione</option>
+                          {obras.map((obra) => (
+                            <option key={obra.id} value={obra.id}>
+                              {obra.obra}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {row.usaHorimetro ? (
+                        <div className="panel">
+                          <div className="panel-head">
+                            <div className="panel-title">Horímetro</div>
+                            <div className="panel-date">{isoToBr(selectedDate)}</div>
+                          </div>
+
+                          <div className="reading-grid">
+                            <div className="reading-box">
+                              <div className="reading-label">Anterior {isoToBr(periodoAnterior)}</div>
+                              <div className="reading-value">{format1(row.horimetroAnterior)}</div>
                             </div>
-                          </td>
 
-                          <td>
-                            <select
-                              className="select"
-                              value={row.obraId}
-                              onChange={(e) => updateRow(row.equipamentoId, { obraId: e.target.value })}
-                            >
-                              <option value="">Selecione</option>
-                              {obras.map((obra) => (
-                                <option key={obra.id} value={obra.id}>
-                                  {obra.obra}
-                                </option>
-                              ))}
-                            </select>
-                          </td>
-
-                          <td>
-                            <div className={`readonly-box ${!row.usaHorimetro ? "disabled" : ""}`}>
-                              {row.usaHorimetro ? format1(row.horimetroAnterior) : "—"}
+                            <div>
+                              <label className="field-label">Atual</label>
+                              <input
+                                type="text"
+                                className="number-input"
+                                value={row.horimetroAtual}
+                                onChange={(e) =>
+                                  updateRow(row.equipamentoId, {
+                                    horimetroAtual: formatDecimalWhileTyping(e.target.value),
+                                  })
+                                }
+                                onBlur={(e) =>
+                                  updateRow(row.equipamentoId, {
+                                    horimetroAtual: finalizeDecimalInput(e.target.value),
+                                  })
+                                }
+                                inputMode="decimal"
+                                placeholder="Digite"
+                              />
                             </div>
-                          </td>
 
-                          <td>
-                            <input
-                              type="text"
-                              className="number-input right-input"
-                              value={row.horimetroAtual}
-                              onChange={(e) =>
-                                updateRow(row.equipamentoId, {
-                                  horimetroAtual: formatDecimalWhileTyping(e.target.value),
-                                })
-                              }
-                              onBlur={(e) =>
-                                updateRow(row.equipamentoId, {
-                                  horimetroAtual: finalizeDecimalInput(e.target.value),
-                                })
-                              }
-                              inputMode="decimal"
-                              placeholder="Digite"
-                              disabled={!row.usaHorimetro}
-                            />
-                          </td>
-
-                          <td>
-                            <div
-                              className={`readonly-box ${!row.usaHorimetro ? "disabled" : ""} ${
-                                horasNegative ? "delta-negative" : "delta-positive"
-                              }`}
-                            >
-                              {row.usaHorimetro ? format1(row.horasDia) : "—"}
+                            <div className="reading-box">
+                              <div className="reading-label">Horas do dia</div>
+                              <div
+                                className={`reading-value ${
+                                  horasNegative ? "negative" : row.horasDia == null ? "muted" : "positive"
+                                }`}
+                              >
+                                {format1(row.horasDia)}
+                              </div>
                             </div>
-                          </td>
+                          </div>
+                        </div>
+                      ) : null}
 
-                          <td>
-                            <div className={`readonly-box ${!row.usaOdometro ? "disabled" : ""}`}>
-                              {row.usaOdometro ? format1(row.odometroAnterior) : "—"}
+                      {row.usaOdometro ? (
+                        <div className="panel">
+                          <div className="panel-head">
+                            <div className="panel-title">Odômetro</div>
+                            <div className="panel-date">{isoToBr(selectedDate)}</div>
+                          </div>
+
+                          <div className="reading-grid">
+                            <div className="reading-box">
+                              <div className="reading-label">Anterior {isoToBr(periodoAnterior)}</div>
+                              <div className="reading-value">{format1(row.odometroAnterior)}</div>
                             </div>
-                          </td>
 
-                          <td>
-                            <input
-                              type="text"
-                              className="number-input right-input"
-                              value={row.odometroAtual}
-                              onChange={(e) =>
-                                updateRow(row.equipamentoId, {
-                                  odometroAtual: formatDecimalWhileTyping(e.target.value),
-                                })
-                              }
-                              onBlur={(e) =>
-                                updateRow(row.equipamentoId, {
-                                  odometroAtual: finalizeDecimalInput(e.target.value),
-                                })
-                              }
-                              inputMode="decimal"
-                              placeholder="Digite"
-                              disabled={!row.usaOdometro}
-                            />
-                          </td>
-
-                          <td>
-                            <div
-                              className={`readonly-box ${!row.usaOdometro ? "disabled" : ""} ${
-                                kmNegative ? "delta-negative" : "delta-positive"
-                              }`}
-                            >
-                              {row.usaOdometro ? format1(row.kmDia) : "—"}
+                            <div>
+                              <label className="field-label">Atual</label>
+                              <input
+                                type="text"
+                                className="number-input"
+                                value={row.odometroAtual}
+                                onChange={(e) =>
+                                  updateRow(row.equipamentoId, {
+                                    odometroAtual: formatDecimalWhileTyping(e.target.value),
+                                  })
+                                }
+                                onBlur={(e) =>
+                                  updateRow(row.equipamentoId, {
+                                    odometroAtual: finalizeDecimalInput(e.target.value),
+                                  })
+                                }
+                                inputMode="decimal"
+                                placeholder="Digite"
+                              />
                             </div>
-                          </td>
 
-                          <td className="status-cell">
-                            <div className={`status-badge ${row.registroId ? "saved" : ""}`}>
-                              <span className="status-dot" />
-                              {statusLabel(row)}
+                            <div className="reading-box">
+                              <div className="reading-label">KM do dia</div>
+                              <div
+                                className={`reading-value ${
+                                  kmNegative ? "negative" : row.kmDia == null ? "muted" : "positive"
+                                }`}
+                              >
+                                {format1(row.kmDia)}
+                              </div>
                             </div>
-                            <div className="status-meta">
-                              <div>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("pt-BR") : "Ainda não salvo neste dia"}</div>
-                              <div>{row.updatedByNome || (obraSelecionada ? obraNameById.get(obraSelecionada) || "" : "")}</div>
-                            </div>
-                          </td>
+                          </div>
+                        </div>
+                      ) : null}
 
-                          <td>
-                            <input
-                              className="text-input"
-                              value={row.observacao}
-                              onChange={(e) => updateRow(row.equipamentoId, { observacao: e.target.value })}
-                              placeholder="Observação"
-                            />
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
+                      <div className="stack two">
+                        <div>
+                          <label className="field-label">Observação</label>
+                          <input
+                            className="text-input"
+                            value={row.observacao}
+                            onChange={(e) => updateRow(row.equipamentoId, { observacao: e.target.value })}
+                            placeholder="Observação"
+                          />
+                        </div>
+
+                        <div className="panel">
+                          <div className="panel-title" style={{ marginBottom: 10 }}>
+                            Última atualização
+                          </div>
+                          <div className="meta">
+                            <div>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("pt-BR") : "Ainda não salvo neste dia"}</div>
+                            <div>{row.updatedByNome || "—"}</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </section>
+          )}
         </div>
       </main>
     </>
