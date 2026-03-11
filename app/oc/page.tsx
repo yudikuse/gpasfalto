@@ -1,7 +1,7 @@
 // FILE: app/oc/page.tsx
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 type OrderType =
@@ -111,9 +111,7 @@ function getSuggestions(
   const q = normalizeText(value);
   if (!q) return [];
 
-  const starts = options.filter((opt) =>
-    normalizeText(opt).startsWith(q)
-  );
+  const starts = options.filter((opt) => normalizeText(opt).startsWith(q));
 
   if (mode === "startsWith") {
     return starts.slice(0, limit);
@@ -140,6 +138,7 @@ export default function OCPage() {
   // cabeçalho
   const [idGerado, setIdGerado] = useState<string>("-");
   const [numeroOC, setNumeroOC] = useState<string>("");
+  const [ocInputVersion, setOcInputVersion] = useState<number>(0);
 
   // campos base
   const [equipamento, setEquipamento] = useState<string>("");
@@ -182,6 +181,7 @@ export default function OCPage() {
   const obraWrapRef = useRef<HTMLDivElement | null>(null);
   const operadorWrapRef = useRef<HTMLDivElement | null>(null);
   const localWrapRef = useRef<HTMLDivElement | null>(null);
+  const ocLoadSeqRef = useRef(0);
 
   const equipSuggestions = useMemo(
     () => getSuggestions(equipamento, equipmentOptions, "startsWith", 8),
@@ -309,58 +309,79 @@ export default function OCPage() {
     computed.fornecedorVencedor,
   ]);
 
+  async function loadNextIdPrevisto() {
+    if (!supabase) return;
+
+    try {
+      const { data } = await supabase
+        .from("orders_2025_raw")
+        .select("id")
+        .order("id", { ascending: false })
+        .limit(1);
+
+      const lastId = data?.[0]?.id ? Number(data[0].id) : null;
+      setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
+    } catch {
+      setIdGerado("-");
+    }
+  }
+
+  const forceNumeroOC = useCallback((nextOc: string) => {
+    setNumeroOC(nextOc);
+    setOcInputVersion((v) => v + 1);
+  }, []);
+
+  const loadNextNumeroOC = useCallback(async () => {
+    if (!supabase) return;
+
+    const seq = ++ocLoadSeqRef.current;
+
+    try {
+      const { data } = await supabase
+        .from("orders_2025_raw")
+        .select("numero_oc")
+        .not("numero_oc", "is", null)
+        .limit(10000);
+
+      let maxFound: number | null = null;
+
+      (data || []).forEach((r: any) => {
+        const raw = String(r?.numero_oc || "").trim();
+        if (!raw) return;
+
+        const up = raw.toUpperCase();
+        if (!up.includes("OC")) return;
+
+        const digits = onlyDigits(up);
+        if (!digits) return;
+
+        const n = Number(digits);
+        if (!Number.isFinite(n)) return;
+
+        if (maxFound === null || n > maxFound) maxFound = n;
+      });
+
+      const nextNum = maxFound !== null ? maxFound + 1 : 20000;
+      const nextOc = `OC${nextNum}`;
+
+      if (seq === ocLoadSeqRef.current) {
+        forceNumeroOC(nextOc);
+      }
+    } catch {
+      if (seq === ocLoadSeqRef.current) {
+        forceNumeroOC("OC20000");
+      }
+    }
+  }, [supabase, forceNumeroOC]);
+
   // ====== load defaults (ID, OC, listas) ======
   useEffect(() => {
     if (!supabase) return;
 
     (async () => {
-      // 0) Próximo ID previsto (último id + 1)
-      try {
-        const { data } = await supabase
-          .from("orders_2025_raw")
-          .select("id")
-          .order("id", { ascending: false })
-          .limit(1);
+      await loadNextIdPrevisto();
+      await loadNextNumeroOC();
 
-        const lastId = data?.[0]?.id ? Number(data[0].id) : null;
-        setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
-      } catch {
-        setIdGerado("-");
-      }
-
-      // 1) OC sequencial (editável)
-      try {
-        const { data } = await supabase
-          .from("orders_2025_raw")
-          .select("numero_oc")
-          .not("numero_oc", "is", null)
-          .limit(10000);
-
-        let maxFound: number | null = null;
-
-        (data || []).forEach((r: any) => {
-          const raw = String(r?.numero_oc || "").trim();
-          if (!raw) return;
-
-          const up = raw.toUpperCase();
-          if (!up.includes("OC")) return;
-
-          const digits = onlyDigits(up);
-          if (!digits) return;
-
-          const n = Number(digits);
-          if (!Number.isFinite(n)) return;
-
-          if (maxFound === null || n > maxFound) maxFound = n;
-        });
-
-        const nextNum = maxFound !== null ? maxFound + 1 : 20000;
-        setNumeroOC(`OC${nextNum}`);
-      } catch {
-        setNumeroOC("OC20000");
-      }
-
-      // 2) equipamentos (VIEW equipment_costs_2025_v / coluna equipamento)
       try {
         const { data } = await supabase
           .from("equipment_costs_2025_v")
@@ -377,7 +398,6 @@ export default function OCPage() {
         setEquipmentOptions([]);
       }
 
-      // 3) fornecedores + obra + operador + local_entrega (de pedidos existentes)
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
@@ -416,7 +436,7 @@ export default function OCPage() {
         setLocalEntregaOptions([]);
       }
     })();
-  }, [supabase]);
+  }, [supabase, loadNextNumeroOC]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -470,6 +490,12 @@ export default function OCPage() {
       return;
     }
 
+    const numeroOcNormalizado = (numeroOC || "").trim();
+    if (!numeroOcNormalizado) {
+      setErrorMsg("Informe a OC antes de salvar.");
+      return;
+    }
+
     setSaving(true);
 
     try {
@@ -493,7 +519,7 @@ export default function OCPage() {
             ? "PEDIDO_COMPRA"
             : "OC",
 
-        numero_oc: numeroOC || null,
+        numero_oc: numeroOcNormalizado,
         codigo_equipamento: equipamento || null,
         obra: obra || null,
         operador: operador || null,
@@ -518,15 +544,60 @@ export default function OCPage() {
         fornecedor_vencedor: tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
       };
 
-      const { data: inserted, error: err1 } = await supabase
+      const { data: existingRows, error: existingErr } = await supabase
         .from("orders_2025_raw")
-        .insert(payload)
         .select("id")
-        .single();
+        .eq("numero_oc", numeroOcNormalizado)
+        .order("id", { ascending: true })
+        .limit(2);
 
-      if (err1) throw err1;
+      if (existingErr) throw existingErr;
 
-      const orderId = inserted?.id as number;
+      if ((existingRows || []).length > 1) {
+        throw new Error(
+          `Já existe mais de um registro com a OC ${numeroOcNormalizado}. Não foi feita nenhuma alteração por segurança.`
+        );
+      }
+
+      let orderId: number;
+
+      if ((existingRows || []).length === 1) {
+        const confirmed = window.confirm(
+          `A OC ${numeroOcNormalizado} já existe. Deseja atualizar o registro existente?`
+        );
+
+        if (!confirmed) {
+          setSaving(false);
+          return;
+        }
+
+        orderId = Number(existingRows[0].id);
+
+        const { error: errUpdate } = await supabase
+          .from("orders_2025_raw")
+          .update(payload)
+          .eq("id", orderId);
+
+        if (errUpdate) throw errUpdate;
+
+        const { error: errDeleteItems } = await supabase
+          .from("orders_2025_items")
+          .delete()
+          .eq("ordem_id", orderId);
+
+        if (errDeleteItems) throw errDeleteItems;
+      } else {
+        const { data: inserted, error: errInsert } = await supabase
+          .from("orders_2025_raw")
+          .insert(payload)
+          .select("id")
+          .single();
+
+        if (errInsert) throw errInsert;
+
+        orderId = Number(inserted?.id);
+      }
+
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
@@ -546,16 +617,19 @@ export default function OCPage() {
             ordem_id: orderId,
             data: d,
             hora: h,
-            numero_oc: numeroOC || null,
+            numero_oc: numeroOcNormalizado,
             descricao: desc ? desc.slice(0, 500) : null,
             quantidade_texto: qtdText,
             quantidade_num: qtdNum,
           };
         });
 
-        const { error: err2 } = await supabase.from("orders_2025_items").insert(rows);
-        if (err2) throw err2;
+        const { error: errItems } = await supabase.from("orders_2025_items").insert(rows);
+        if (errItems) throw errItems;
       }
+
+      await loadNextIdPrevisto();
+      await loadNextNumeroOC();
 
       setSaved(true);
     } catch (e: any) {
@@ -1016,6 +1090,9 @@ export default function OCPage() {
               <div className="field">
                 <div className="label">OC</div>
                 <input
+                  key={`oc-input-${ocInputVersion}`}
+                  id={`numero_oc_${ocInputVersion}`}
+                  name={`numero_oc_${ocInputVersion}`}
                   className="input"
                   value={numeroOC}
                   onChange={(e) => {
@@ -1023,6 +1100,8 @@ export default function OCPage() {
                     resetSaved();
                   }}
                   placeholder="OC20337"
+                  autoComplete="new-password"
+                  spellCheck={false}
                 />
               </div>
             </div>
