@@ -133,7 +133,10 @@ function sanitizeDecimalDraft(value: string) {
 
   const parts = s.split(",");
   const intPart = (parts[0] || "").replace(/\D/g, "");
-  const decPart = parts.length > 1 ? (parts.slice(1).join("") || "").replace(/\D/g, "").slice(0, 1) : "";
+  const decPart =
+    parts.length > 1
+      ? (parts.slice(1).join("") || "").replace(/\D/g, "").slice(0, 1)
+      : "";
 
   return {
     negative,
@@ -271,6 +274,7 @@ export default function HorimetrosPage() {
           .eq("ativo", true)
           .order("obra", { ascending: true })
           .limit(500),
+
         supabase
           .from("horimetro_equipamentos")
           .select(
@@ -279,6 +283,7 @@ export default function HorimetrosPage() {
           .eq("ativo", true)
           .order("codigo", { ascending: true })
           .limit(500),
+
         supabase
           .from("horimetro_leituras_diarias")
           .select(
@@ -287,6 +292,7 @@ export default function HorimetrosPage() {
           .eq("data", selectedDate)
           .order("equipamento_id", { ascending: true })
           .limit(1000),
+
         supabase
           .from("horimetro_leituras_diarias")
           .select(
@@ -341,8 +347,8 @@ export default function HorimetrosPage() {
     setRows((current) =>
       current.map((row) => {
         if (row.equipamentoId !== equipamentoId) return row;
-        const next: RowState = { ...row, ...patch };
 
+        const next: RowState = { ...row, ...patch };
         const hAtual = parsePtNumber(next.horimetroAtual);
         const oAtual = parsePtNumber(next.odometroAtual);
 
@@ -393,14 +399,19 @@ export default function HorimetrosPage() {
           odometro_final: row.usaOdometro ? odometroFinal : null,
           km_rodados: row.usaOdometro ? kmDia : null,
           observacao: String(row.observacao || "").trim() || null,
-          status: horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
+          status:
+            horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
           updated_by_user_id: updatedById,
           updated_by_nome: updatedByName,
           updated_at: new Date().toISOString(),
         };
 
         if (row.registroId != null) {
-          const res = await supabase.from("horimetro_leituras_diarias").update(payload).eq("id", row.registroId);
+          const res = await supabase
+            .from("horimetro_leituras_diarias")
+            .update(payload)
+            .eq("id", row.registroId);
+
           if (res.error) throw res.error;
         } else {
           const res = await supabase
@@ -408,6 +419,7 @@ export default function HorimetrosPage() {
             .insert(payload)
             .select("id")
             .single();
+
           if (res.error) throw res.error;
         }
       }
@@ -425,62 +437,79 @@ export default function HorimetrosPage() {
     <>
       <style jsx global>{`
         :root {
-          --bg: #f5f7fa;
+          --bg: #eff2ff;
           --surface: #ffffff;
-          --surface-soft: #f0f4f8;
-          --line: #e8edf3;
-          --text: #0f172a;
-          --muted: #64748b;
-          --brand: #0f2747;
-          --accent: #f4b400;
-          --ok: #0f9f6e;
-          --danger: #d14343;
-          --radius: 18px;
-          --shadow: 0 10px 30px rgba(15, 23, 42, 0.05);
+          --surface-soft: #f7f8fc;
+          --surface-muted: #f2f4fa;
+          --line: #e9edf5;
+          --line-strong: #dce3ef;
+          --text: #161c2d;
+          --muted: #7b8498;
+          --brand: #6e86f8;
+          --brand-soft: #eef1ff;
+          --success: #16a34a;
+          --danger: #ef4444;
+          --warning: #f4b400;
+          --shadow: 0 18px 45px rgba(34, 40, 73, 0.08);
+          --radius-xl: 26px;
+          --radius-lg: 20px;
+          --radius-md: 14px;
+          --radius-sm: 12px;
         }
 
-        * { box-sizing: border-box; }
-        html, body {
+        * {
+          box-sizing: border-box;
+        }
+
+        html,
+        body {
           margin: 0;
           padding: 0;
           background: var(--bg);
           color: var(--text);
         }
+
         body {
-          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+            "Segoe UI", sans-serif;
         }
-        input, select, button { font: inherit; }
+
+        input,
+        select,
+        button {
+          font: inherit;
+        }
 
         .page {
           min-height: 100vh;
-          padding: 16px;
+          padding: 18px;
         }
 
-        .wrap {
-          max-width: 1400px;
+        .shell {
+          width: min(1460px, 100%);
           margin: 0 auto;
           display: grid;
-          gap: 14px;
+          gap: 16px;
         }
 
         .header {
           background: var(--surface);
-          border-radius: 22px;
+          border-radius: var(--radius-xl);
           box-shadow: var(--shadow);
-          padding: 18px;
-          display: grid;
-          gap: 14px;
+          overflow: hidden;
         }
 
         .header-top {
+          background: #26262a;
+          color: #fff;
+          padding: 14px 18px;
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 12px;
-          flex-wrap: wrap;
         }
 
-        .title-box {
+        .brand-row {
           display: flex;
           align-items: center;
           gap: 12px;
@@ -488,11 +517,14 @@ export default function HorimetrosPage() {
         }
 
         .logo {
-          width: 44px;
-          height: 44px;
+          width: 42px;
+          height: 42px;
           border-radius: 12px;
+          background: rgba(255, 255, 255, 0.1);
           overflow: hidden;
-          background: #fff6d9;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
           flex: 0 0 auto;
         }
 
@@ -502,51 +534,58 @@ export default function HorimetrosPage() {
           object-fit: cover;
         }
 
-        .eyebrow {
-          margin: 0 0 4px;
+        .header-top small {
+          display: block;
           font-size: 11px;
-          font-weight: 800;
-          text-transform: uppercase;
           letter-spacing: 0.08em;
-          color: var(--muted);
+          text-transform: uppercase;
+          opacity: 0.7;
+          margin-bottom: 4px;
+          font-weight: 800;
         }
 
-        .title {
+        .header-top h1 {
           margin: 0;
-          font-size: 28px;
+          font-size: 24px;
           line-height: 1;
           letter-spacing: -0.04em;
           font-weight: 900;
-          color: var(--brand);
         }
 
-        .subtitle {
-          margin: 6px 0 0;
+        .header-top .period {
+          white-space: nowrap;
+          font-size: 13px;
+          font-weight: 700;
+          opacity: 0.88;
+        }
+
+        .header-body {
+          padding: 18px;
+          display: grid;
+          gap: 16px;
+        }
+
+        .header-row {
+          display: grid;
+          grid-template-columns: 1.3fr 220px 180px;
+          gap: 14px;
+          align-items: end;
+        }
+
+        .intro h2 {
+          margin: 0;
+          font-size: 18px;
+          line-height: 1.1;
+          font-weight: 900;
+          color: var(--brand);
+          letter-spacing: -0.03em;
+        }
+
+        .intro p {
+          margin: 8px 0 0;
           color: var(--muted);
           font-size: 14px;
-          font-weight: 600;
-        }
-
-        .stats {
-          display: flex;
-          gap: 10px;
-          flex-wrap: wrap;
-        }
-
-        .stat {
-          background: var(--surface-soft);
-          border-radius: 999px;
-          padding: 10px 14px;
-          font-size: 13px;
-          font-weight: 800;
-          color: #334155;
-        }
-
-        .filters {
-          display: grid;
-          grid-template-columns: minmax(240px, 1.2fr) 190px 180px;
-          gap: 12px;
-          align-items: end;
+          font-weight: 500;
         }
 
         .field {
@@ -554,7 +593,7 @@ export default function HorimetrosPage() {
           gap: 6px;
         }
 
-        .label {
+        .field label {
           font-size: 11px;
           font-weight: 800;
           text-transform: uppercase;
@@ -565,56 +604,61 @@ export default function HorimetrosPage() {
         .search,
         .date,
         .select,
-        .text-input,
-        .number-input {
+        .number-input,
+        .text-input {
           width: 100%;
-          height: 46px;
-          border: 0;
-          border-radius: 14px;
-          background: var(--surface-soft);
+          height: 42px;
+          border: 1px solid transparent;
           outline: none;
-          padding: 0 14px;
+          border-radius: var(--radius-sm);
+          background: var(--surface-soft);
           color: var(--text);
+          padding: 0 14px;
           font-size: 14px;
           font-weight: 700;
+          transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
         }
 
-        .text-input {
-          height: 42px;
-        }
-
+        .text-input,
+        .select,
         .number-input {
-          text-align: right;
-          font-variant-numeric: tabular-nums;
-          min-width: 116px;
+          height: 40px;
         }
 
         .search:focus,
         .date:focus,
         .select:focus,
-        .text-input:focus,
-        .number-input:focus {
-          box-shadow: inset 0 0 0 2px rgba(15, 39, 71, 0.12);
-          background: #edf3f9;
+        .number-input:focus,
+        .text-input:focus {
+          background: #fff;
+          border-color: var(--line-strong);
+          box-shadow: 0 0 0 4px rgba(110, 134, 248, 0.09);
+        }
+
+        .number-input {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+          min-width: 112px;
         }
 
         .number-input[disabled],
         .text-input[disabled],
         .select[disabled] {
-          color: #94a3b8;
-          background: #f3f6f9;
+          background: var(--surface-muted);
+          color: #a0a8b8;
         }
 
         .save-btn {
           width: 100%;
-          height: 46px;
+          height: 42px;
           border: 0;
-          border-radius: 14px;
-          background: var(--accent);
-          color: #14223a;
-          font-size: 15px;
+          border-radius: 12px;
+          background: var(--brand);
+          color: #fff;
+          font-size: 14px;
           font-weight: 900;
           cursor: pointer;
+          box-shadow: 0 10px 22px rgba(110, 134, 248, 0.25);
         }
 
         .save-btn[disabled] {
@@ -622,24 +666,70 @@ export default function HorimetrosPage() {
           cursor: wait;
         }
 
+        .pills {
+          display: flex;
+          gap: 10px;
+          flex-wrap: wrap;
+        }
+
+        .pill {
+          background: var(--surface-soft);
+          color: #505a70;
+          border-radius: 999px;
+          padding: 9px 12px;
+          font-size: 12px;
+          font-weight: 800;
+        }
+
         .message {
           background: var(--surface);
-          border-radius: 16px;
-          padding: 12px 14px;
+          border-radius: var(--radius-lg);
           box-shadow: var(--shadow);
+          padding: 12px 14px;
           font-size: 14px;
           font-weight: 800;
         }
 
-        .message.error { color: #9f2c2c; }
-        .message.ok { color: #0b7b52; }
-        .message.warn { color: #8a6200; }
+        .message.error {
+          color: #9f2c2c;
+        }
+
+        .message.ok {
+          color: #0b7b52;
+        }
+
+        .message.warn {
+          color: #8a6200;
+        }
 
         .table-card {
           background: var(--surface);
-          border-radius: 22px;
+          border-radius: var(--radius-xl);
           box-shadow: var(--shadow);
           overflow: hidden;
+        }
+
+        .table-head {
+          padding: 18px 18px 10px;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+          flex-wrap: wrap;
+        }
+
+        .table-head h3 {
+          margin: 0;
+          font-size: 18px;
+          font-weight: 900;
+          letter-spacing: -0.03em;
+        }
+
+        .table-head p {
+          margin: 6px 0 0;
+          font-size: 13px;
+          color: var(--muted);
+          font-weight: 600;
         }
 
         .table-wrap {
@@ -649,98 +739,116 @@ export default function HorimetrosPage() {
 
         table {
           width: 100%;
-          min-width: 1320px;
-          border-collapse: collapse;
+          min-width: 1500px;
+          border-collapse: separate;
+          border-spacing: 0;
         }
 
         thead th {
           position: sticky;
           top: 0;
-          z-index: 2;
+          z-index: 5;
           background: var(--surface);
-          color: var(--brand);
+          padding: 14px 12px;
           text-align: left;
           font-size: 11px;
           font-weight: 900;
+          color: #4e5870;
           text-transform: uppercase;
           letter-spacing: 0.08em;
-          padding: 16px 12px;
+          border-bottom: 1px solid var(--line);
           white-space: nowrap;
         }
 
         tbody td {
-          padding: 12px;
-          border-top: 1px solid var(--line);
+          padding: 10px 12px;
+          border-bottom: 1px solid var(--line);
           vertical-align: middle;
-          font-size: 14px;
+          background: #fff;
         }
 
-        tbody tr:hover {
-          background: #fafcff;
+        tbody tr:hover td {
+          background: #fbfcff;
         }
 
-        .equip-cell {
-          min-width: 96px;
+        tbody tr:last-child td {
+          border-bottom: 0;
+        }
+
+        .equip {
+          min-width: 86px;
         }
 
         .equip-code {
-          font-size: 16px;
+          font-size: 15px;
           font-weight: 900;
-          color: var(--brand);
+          color: var(--text);
+          line-height: 1;
         }
 
-        .mini {
+        .equip-meta {
           margin-top: 4px;
           font-size: 11px;
-          font-weight: 700;
           color: var(--muted);
+          font-weight: 700;
         }
 
-        .value {
+        .readonly {
+          font-size: 14px;
           font-weight: 800;
-          color: #0f172a;
+          color: #263042;
           white-space: nowrap;
         }
 
-        .value.muted {
-          color: #94a3b8;
+        .readonly.muted {
+          color: #a0a8b8;
         }
 
-        .value.ok {
-          color: var(--ok);
+        .readonly.success {
+          color: var(--success);
         }
 
-        .value.danger {
+        .readonly.danger {
           color: var(--danger);
         }
 
         .status {
           display: inline-flex;
           align-items: center;
+          gap: 8px;
+          padding: 7px 11px;
           border-radius: 999px;
-          padding: 8px 12px;
           background: var(--surface-soft);
-          color: #64748b;
+          color: #677287;
           font-size: 12px;
           font-weight: 900;
           white-space: nowrap;
         }
 
         .status.saved {
-          background: #eafaf4;
-          color: #0b7b52;
+          background: #ecfdf3;
+          color: #118244;
+        }
+
+        .status-dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 999px;
+          background: #b4bdcc;
+          flex: 0 0 auto;
+        }
+
+        .status.saved .status-dot {
+          background: #16a34a;
         }
 
         .meta {
+          margin-top: 6px;
           display: grid;
           gap: 2px;
-          font-size: 12px;
+          font-size: 11px;
           color: var(--muted);
           font-weight: 700;
-        }
-
-        .obs-input {
-          min-width: 180px;
         }
 
         .empty {
@@ -750,84 +858,118 @@ export default function HorimetrosPage() {
           font-weight: 800;
         }
 
-        @media (max-width: 900px) {
-          .page { padding: 12px; }
-          .header { padding: 14px; }
-          .title { font-size: 24px; }
-          .filters {
-            grid-template-columns: 1fr;
+        @media (max-width: 980px) {
+          .page {
+            padding: 12px;
           }
-          .save-btn {
-            position: sticky;
-            bottom: 10px;
+
+          .header-top,
+          .header-row {
+            grid-template-columns: 1fr;
+            display: grid;
+          }
+
+          .header-top {
+            gap: 10px;
+          }
+
+          .brand-row {
+            align-items: flex-start;
+          }
+
+          .header-top .period {
+            white-space: normal;
+          }
+
+          .header-body {
+            padding: 14px;
+          }
+
+          .table-head {
+            padding: 14px 14px 8px;
           }
         }
       `}</style>
 
       <main className="page">
-        <div className="wrap">
+        <div className="shell">
           <section className="header">
             <div className="header-top">
-              <div className="title-box">
+              <div className="brand-row">
                 <div className="logo">
                   <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
                 </div>
                 <div>
-                  <p className="eyebrow">GP Asfalto</p>
-                  <h1 className="title">Horímetros e Odômetros</h1>
-                  <p className="subtitle">
-                    Tela clean, simples e intuitiva. Uma linha por equipamento, com leitura anterior, atual e resultado do dia.
-                  </p>
+                  <small>GP Asfalto</small>
+                  <h1>Horímetros e Odômetros</h1>
                 </div>
               </div>
-
-              <div className="stats">
-                <div className="stat">Equipamentos: {stats.total}</div>
-                <div className="stat">Lançados: {stats.lancados}</div>
-                <div className="stat">Pendentes: {stats.pendentes}</div>
+              <div className="period">
+                Anterior: {isoToBr(periodoAnterior)} · Atual: {isoToBr(selectedDate)}
               </div>
             </div>
 
-            <div className="filters">
-              <div className="field">
-                <label className="label" htmlFor="busca">Buscar equipamento</label>
-                <input
-                  id="busca"
-                  className="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Ex.: CB-02, obra..."
-                />
+            <div className="header-body">
+              <div className="header-row">
+                <div className="intro">
+                  <h2>Uma linha por equipamento</h2>
+                  <p>Layout limpo, tabela direta e todos os campos na mesma linha.</p>
+                </div>
+
+                <div className="field">
+                  <label htmlFor="date">Data do lançamento</label>
+                  <input
+                    id="date"
+                    className="date"
+                    type="date"
+                    value={selectedDate}
+                    onChange={(e) => setSelectedDate(e.target.value)}
+                  />
+                </div>
+
+                <div className="field">
+                  <label>Ação</label>
+                  <button
+                    className="save-btn"
+                    type="button"
+                    onClick={() => void handleSaveAll()}
+                    disabled={saving || loading || !env.ok}
+                  >
+                    {saving ? "Salvando..." : "Salvar tudo"}
+                  </button>
+                </div>
               </div>
 
-              <div className="field">
-                <label className="label" htmlFor="data">Data do lançamento</label>
-                <input
-                  id="data"
-                  className="date"
-                  type="date"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                />
-              </div>
+              <div className="header-row" style={{ gridTemplateColumns: "1fr 1fr 1fr" }}>
+                <div className="field">
+                  <label htmlFor="busca">Buscar equipamento</label>
+                  <input
+                    id="busca"
+                    className="search"
+                    value={search}
+                    onChange={(e) => setSearch(e.target.value)}
+                    placeholder="Ex.: CB-02, obra..."
+                  />
+                </div>
 
-              <div className="field">
-                <label className="label">Ação</label>
-                <button
-                  className="save-btn"
-                  type="button"
-                  onClick={() => void handleSaveAll()}
-                  disabled={saving || loading || !env.ok}
-                >
-                  {saving ? "Salvando..." : "Salvar tudo"}
-                </button>
+                <div className="pills">
+                  <div className="pill">Equipamentos: {stats.total}</div>
+                  <div className="pill">Lançados: {stats.lancados}</div>
+                  <div className="pill">Pendentes: {stats.pendentes}</div>
+                </div>
+
+                <div className="pills" style={{ justifyContent: "flex-end" }}>
+                  <div className="pill">Máscara pt-BR automática</div>
+                </div>
               </div>
             </div>
           </section>
 
           {!env.ok ? (
             <div className="message warn">
-              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
+              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e
+              NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou
+              NEXT_PUBLIC_SUPABASE_ANON_KEY.
             </div>
           ) : null}
 
@@ -835,6 +977,13 @@ export default function HorimetrosPage() {
           {okMsg ? <div className="message ok">{okMsg}</div> : null}
 
           <section className="table-card">
+            <div className="table-head">
+              <div>
+                <h3>Lançamento diário</h3>
+                <p>Todos os equipamentos em uma única grade, uma linha por equipamento.</p>
+              </div>
+            </div>
+
             {loading ? (
               <div className="empty">Carregando...</div>
             ) : filteredRows.length === 0 ? (
@@ -846,12 +995,12 @@ export default function HorimetrosPage() {
                     <tr>
                       <th>Equip.</th>
                       <th>Obra</th>
-                      <th>H. anterior<br />{isoToBr(periodoAnterior)}</th>
-                      <th>H. atual<br />{isoToBr(selectedDate)}</th>
-                      <th>Horas do dia</th>
-                      <th>O. anterior<br />{isoToBr(periodoAnterior)}</th>
-                      <th>O. atual<br />{isoToBr(selectedDate)}</th>
-                      <th>KM do dia</th>
+                      <th>H. anterior</th>
+                      <th>H. atual</th>
+                      <th>Horas dia</th>
+                      <th>O. anterior</th>
+                      <th>O. atual</th>
+                      <th>KM dia</th>
                       <th>Observação</th>
                       <th>Status</th>
                     </tr>
@@ -863,10 +1012,10 @@ export default function HorimetrosPage() {
 
                       return (
                         <tr key={row.equipamentoId}>
-                          <td className="equip-cell">
+                          <td className="equip">
                             <div className="equip-code">{row.codigo}</div>
-                            <div className="mini">
-                              {row.usaHorimetro ? "Horímetro" : "—"} · {row.usaOdometro ? "Odômetro" : "—"}
+                            <div className="equip-meta">
+                              {row.usaHorimetro ? "H" : "—"} · {row.usaOdometro ? "O" : "—"}
                             </div>
                           </td>
 
@@ -874,7 +1023,9 @@ export default function HorimetrosPage() {
                             <select
                               className="select"
                               value={row.obraId}
-                              onChange={(e) => updateRow(row.equipamentoId, { obraId: e.target.value })}
+                              onChange={(e) =>
+                                updateRow(row.equipamentoId, { obraId: e.target.value })
+                              }
                             >
                               <option value="">Selecione</option>
                               {obras.map((obra) => (
@@ -886,7 +1037,7 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
-                            <span className={`value ${!row.usaHorimetro ? "muted" : ""}`}>
+                            <span className={`readonly ${!row.usaHorimetro ? "muted" : ""}`}>
                               {row.usaHorimetro ? format1(row.horimetroAnterior) : "—"}
                             </span>
                           </td>
@@ -914,8 +1065,14 @@ export default function HorimetrosPage() {
 
                           <td>
                             <span
-                              className={`value ${
-                                !row.usaHorimetro ? "muted" : horasNegative ? "danger" : row.horasDia == null ? "muted" : "ok"
+                              className={`readonly ${
+                                !row.usaHorimetro
+                                  ? "muted"
+                                  : horasNegative
+                                    ? "danger"
+                                    : row.horasDia == null
+                                      ? "muted"
+                                      : "success"
                               }`}
                             >
                               {row.usaHorimetro ? format1(row.horasDia) : "—"}
@@ -923,7 +1080,7 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
-                            <span className={`value ${!row.usaOdometro ? "muted" : ""}`}>
+                            <span className={`readonly ${!row.usaOdometro ? "muted" : ""}`}>
                               {row.usaOdometro ? format1(row.odometroAnterior) : "—"}
                             </span>
                           </td>
@@ -951,8 +1108,14 @@ export default function HorimetrosPage() {
 
                           <td>
                             <span
-                              className={`value ${
-                                !row.usaOdometro ? "muted" : kmNegative ? "danger" : row.kmDia == null ? "muted" : "ok"
+                              className={`readonly ${
+                                !row.usaOdometro
+                                  ? "muted"
+                                  : kmNegative
+                                    ? "danger"
+                                    : row.kmDia == null
+                                      ? "muted"
+                                      : "success"
                               }`}
                             >
                               {row.usaOdometro ? format1(row.kmDia) : "—"}
@@ -961,19 +1124,26 @@ export default function HorimetrosPage() {
 
                           <td>
                             <input
-                              className="text-input obs-input"
+                              className="text-input"
                               value={row.observacao}
-                              onChange={(e) => updateRow(row.equipamentoId, { observacao: e.target.value })}
+                              onChange={(e) =>
+                                updateRow(row.equipamentoId, { observacao: e.target.value })
+                              }
                               placeholder="Observação"
                             />
                           </td>
 
                           <td>
                             <div className={`status ${row.registroId ? "saved" : ""}`}>
+                              <span className="status-dot" />
                               {row.registroId ? "Salvo" : "Pendente"}
                             </div>
-                            <div className="meta" style={{ marginTop: 8 }}>
-                              <div>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("pt-BR") : "Ainda não salvo"}</div>
+                            <div className="meta">
+                              <div>
+                                {row.updatedAt
+                                  ? new Date(row.updatedAt).toLocaleString("pt-BR")
+                                  : "Ainda não salvo"}
+                              </div>
                               <div>{row.updatedByNome || "—"}</div>
                             </div>
                           </td>
