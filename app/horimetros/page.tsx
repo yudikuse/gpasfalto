@@ -46,7 +46,6 @@ type RowState = {
   equipamentoId: number;
   codigo: string;
   obraId: string;
-  obraPadraoId: number | null;
   selectedMode: MeasurementMode;
   horimetroAnterior: number | null;
   horimetroAtual: string;
@@ -117,54 +116,49 @@ function formatInput1(value: number | null | undefined) {
 function parsePtNumber(value: string) {
   const s = String(value || "").trim();
   if (!s) return null;
-  const cleaned = s.replace(/\./g, "").replace(/,/g, ".").replace(/[^0-9.-]/g, "");
-  if (!cleaned || cleaned === "-" || cleaned === "." || cleaned === "-.") return null;
-  const n = Number(cleaned);
+
+  const normalized = s.replace(/\./g, "").replace(",", ".").replace(/[^0-9.-]/g, "");
+  if (!normalized || normalized === "-" || normalized === "." || normalized === "-.") return null;
+
+  const n = Number(normalized);
   return Number.isFinite(n) ? n : null;
 }
 
-function sanitizeDecimalDraft(value: string) {
-  let s = String(value || "")
-    .replace(/\s+/g, "")
-    .replace(/\./g, ",")
-    .replace(/[^0-9,\-]/g, "");
-
-  const negative = s.startsWith("-");
-  s = s.replace(/-/g, "");
-
-  const parts = s.split(",");
-  const intPart = (parts[0] || "").replace(/\D/g, "");
-  const decPart =
-    parts.length > 1
-      ? (parts.slice(1).join("") || "").replace(/\D/g, "").slice(0, 1)
-      : "";
-
-  return {
-    negative,
-    hasComma: parts.length > 1,
-    intPart,
-    decPart,
-  };
-}
-
-function formatThousandsPtBrFromDigits(digits: string) {
-  if (!digits) return "";
-  return digits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
-}
-
 function formatDecimalWhileTyping(value: string) {
-  const { negative, hasComma, intPart, decPart } = sanitizeDecimalDraft(value);
-  const cleanInt = intPart.replace(/^0+(?=\d)/, "");
-  const formattedInt = formatThousandsPtBrFromDigits(cleanInt || (hasComma ? "0" : ""));
-  const signal = negative ? "-" : "";
+  let raw = String(value || "");
 
-  if (!hasComma) return `${signal}${formattedInt}`;
-  return `${signal}${formattedInt},${decPart}`;
+  const hasTrailingComma = raw.endsWith(",") || raw.endsWith(".");
+  raw = raw.replace(/\./g, ",");
+  raw = raw.replace(/[^0-9,-]/g, "");
+
+  const negative = raw.startsWith("-");
+  raw = raw.replace(/-/g, "");
+
+  const parts = raw.split(",");
+  const intDigits = (parts[0] || "").replace(/\D/g, "");
+  const decDigits = parts.slice(1).join("").replace(/\D/g, "").slice(0, 1);
+
+  const intNormalized = intDigits.replace(/^0+(?=\d)/, "") || (intDigits ? "0" : "");
+  const intFormatted = intNormalized
+    ? intNormalized.replace(/\B(?=(\d{3})+(?!\d))/g, ".")
+    : "";
+
+  const prefix = negative ? "-" : "";
+
+  if (hasTrailingComma && parts.length === 1) {
+    return `${prefix}${intFormatted || "0"},`;
+  }
+
+  if (parts.length > 1) {
+    return `${prefix}${intFormatted || "0"},${decDigits}`;
+  }
+
+  return `${prefix}${intFormatted}`;
 }
 
 function finalizeDecimalInput(value: string) {
-  const n = parsePtNumber(value);
-  return n == null ? "" : formatInput1(n);
+  const parsed = parsePtNumber(value);
+  return parsed == null ? "" : formatInput1(parsed);
 }
 
 function safeDiff(finalValue: number | null, initialValue: number | null) {
@@ -191,6 +185,7 @@ function resolveInitialMode(eq: EquipamentoRow, atual?: LeituraRow | null): Meas
     atual?.horimetro_final != null ||
     atual?.horimetro_inicial != null ||
     eq.usa_horimetro === true;
+
   const hasO =
     atual?.odometro_final != null ||
     atual?.odometro_inicial != null ||
@@ -208,6 +203,7 @@ function buildRows(params: {
   anteriores: LeituraRow[];
 }): RowState[] {
   const { equipamentos, atuais, anteriores } = params;
+
   const atualMap = new Map<number, LeituraRow>();
   const anteriorMap = new Map<number, LeituraRow>();
 
@@ -236,7 +232,6 @@ function buildRows(params: {
       equipamentoId: eq.id,
       codigo: eq.codigo,
       obraId: String(atual?.obra_id ?? eq.obra_padrao_id ?? ""),
-      obraPadraoId: eq.obra_padrao_id ?? null,
       selectedMode: resolveInitialMode(eq, atual),
       horimetroAnterior,
       horimetroAtual: formatInput1(horimetroAtualNum),
@@ -252,20 +247,16 @@ function buildRows(params: {
   });
 }
 
-function getRowPrevious(row: RowState) {
+function getPreviousValue(row: RowState) {
   return row.selectedMode === "horimetro" ? row.horimetroAnterior : row.odometroAnterior;
 }
 
-function getRowCurrent(row: RowState) {
+function getCurrentValue(row: RowState) {
   return row.selectedMode === "horimetro" ? row.horimetroAtual : row.odometroAtual;
 }
 
-function getRowDayValue(row: RowState) {
+function getDayValue(row: RowState) {
   return row.selectedMode === "horimetro" ? row.horasDia : row.kmDia;
-}
-
-function getModeLabel(mode: MeasurementMode) {
-  return mode === "horimetro" ? "Horímetro" : "Odômetro";
 }
 
 export default function HorimetrosPage() {
@@ -288,6 +279,13 @@ export default function HorimetrosPage() {
 
   const periodoAnterior = useMemo(() => previousIso(selectedDate), [selectedDate]);
 
+  const stats = useMemo(() => {
+    const total = rows.length;
+    const lancados = rows.filter((row) => row.registroId != null).length;
+    const pendentes = Math.max(total - lancados, 0);
+    return { total, lancados, pendentes };
+  }, [rows]);
+
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
@@ -297,17 +295,10 @@ export default function HorimetrosPage() {
       return (
         row.codigo.toLowerCase().includes(q) ||
         obra.toLowerCase().includes(q) ||
-        getModeLabel(row.selectedMode).toLowerCase().includes(q)
+        row.selectedMode.toLowerCase().includes(q)
       );
     });
   }, [rows, search, obras]);
-
-  const stats = useMemo(() => {
-    const total = rows.length;
-    const lancados = rows.filter((row) => row.registroId != null).length;
-    const pendentes = Math.max(total - lancados, 0);
-    return { total, lancados, pendentes };
-  }, [rows]);
 
   const loadData = useCallback(async () => {
     if (!supabase) return;
@@ -399,7 +390,7 @@ export default function HorimetrosPage() {
       current.map((row) => {
         if (row.equipamentoId !== equipamentoId) return row;
 
-        const next: RowState = { ...row, ...patch };
+        const next = { ...row, ...patch };
 
         const hAtual = parsePtNumber(next.horimetroAtual);
         const oAtual = parsePtNumber(next.odometroAtual);
@@ -412,39 +403,30 @@ export default function HorimetrosPage() {
     );
   }, []);
 
-  const updateCurrentValue = useCallback(
-    (equipamentoId: number, value: string) => {
-      setRows((current) =>
-        current.map((row) => {
-          if (row.equipamentoId !== equipamentoId) return row;
+  const updateActiveInput = useCallback((equipamentoId: number, rawValue: string, finalize = false) => {
+    setRows((current) =>
+      current.map((row) => {
+        if (row.equipamentoId !== equipamentoId) return row;
 
-          const next = { ...row };
+        const next = { ...row };
+        const value = finalize ? finalizeDecimalInput(rawValue) : formatDecimalWhileTyping(rawValue);
 
-          if (next.selectedMode === "horimetro") {
-            next.horimetroAtual = value;
-          } else {
-            next.odometroAtual = value;
-          }
+        if (next.selectedMode === "horimetro") {
+          next.horimetroAtual = value;
+        } else {
+          next.odometroAtual = value;
+        }
 
-          const hAtual = parsePtNumber(next.horimetroAtual);
-          const oAtual = parsePtNumber(next.odometroAtual);
+        const hAtual = parsePtNumber(next.horimetroAtual);
+        const oAtual = parsePtNumber(next.odometroAtual);
 
-          next.horasDia = safeDiff(hAtual, next.horimetroAnterior);
-          next.kmDia = safeDiff(oAtual, next.odometroAnterior);
+        next.horasDia = safeDiff(hAtual, next.horimetroAnterior);
+        next.kmDia = safeDiff(oAtual, next.odometroAnterior);
 
-          return next;
-        })
-      );
-    },
-    []
-  );
-
-  const finalizeCurrentValue = useCallback(
-    (equipamentoId: number, value: string) => {
-      updateCurrentValue(equipamentoId, finalizeDecimalInput(value));
-    },
-    [updateCurrentValue]
-  );
+        return next;
+      })
+    );
+  }, []);
 
   const handleSaveAll = useCallback(async () => {
     if (!supabase) return;
@@ -525,23 +507,23 @@ export default function HorimetrosPage() {
     <>
       <style jsx global>{`
         :root {
-          --bg: #f5f7fb;
+          --bg: #f6f7fb;
           --surface: #ffffff;
           --surface-soft: #f8fafc;
           --surface-muted: #f1f5f9;
-          --line: #e7edf5;
-          --line-strong: #d8e1ee;
+          --line: #e9edf5;
+          --line-strong: #d9e1ec;
           --text: #111827;
           --muted: #6b7280;
-          --brand: #4f6ef7;
+          --brand: #5b6df6;
           --brand-soft: #eef2ff;
           --success: #16a34a;
           --danger: #ef4444;
           --warning: #f4b400;
-          --shadow: 0 12px 34px rgba(15, 23, 42, 0.06);
-          --radius-xl: 24px;
-          --radius-lg: 18px;
-          --radius-md: 14px;
+          --shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+          --radius-xl: 20px;
+          --radius-lg: 16px;
+          --radius-md: 12px;
           --radius-sm: 10px;
         }
 
@@ -558,8 +540,7 @@ export default function HorimetrosPage() {
         }
 
         body {
-          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
-            "Segoe UI", sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
         }
 
         input,
@@ -570,34 +551,35 @@ export default function HorimetrosPage() {
 
         .page {
           min-height: 100vh;
-          padding: 16px;
+          padding: 14px;
         }
 
         .shell {
           width: min(1480px, 100%);
           margin: 0 auto;
           display: grid;
-          gap: 16px;
+          gap: 14px;
         }
 
         .header {
           background: var(--surface);
+          border: 1px solid var(--line);
           border-radius: var(--radius-xl);
           box-shadow: var(--shadow);
-          padding: 18px;
+          padding: 16px;
           display: grid;
-          gap: 16px;
+          gap: 14px;
         }
 
         .header-top {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 14px;
+          gap: 12px;
           flex-wrap: wrap;
         }
 
-        .brand-row {
+        .brand {
           display: flex;
           align-items: center;
           gap: 12px;
@@ -605,15 +587,15 @@ export default function HorimetrosPage() {
         }
 
         .logo {
-          width: 42px;
-          height: 42px;
-          border-radius: 12px;
-          background: #fff6d9;
+          width: 38px;
+          height: 38px;
+          border-radius: 10px;
+          background: #fff8e8;
           overflow: hidden;
+          flex: 0 0 auto;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          flex: 0 0 auto;
         }
 
         .logo img {
@@ -623,9 +605,9 @@ export default function HorimetrosPage() {
         }
 
         .eyebrow {
-          margin: 0 0 4px;
+          margin: 0 0 3px;
           font-size: 11px;
-          font-weight: 900;
+          font-weight: 800;
           letter-spacing: 0.08em;
           text-transform: uppercase;
           color: var(--muted);
@@ -635,35 +617,27 @@ export default function HorimetrosPage() {
           margin: 0;
           font-size: 20px;
           line-height: 1;
-          font-weight: 900;
-          letter-spacing: -0.03em;
+          font-weight: 800;
+          letter-spacing: -0.02em;
         }
 
         .subtitle {
-          margin: 6px 0 0;
+          margin: 5px 0 0;
           font-size: 13px;
           color: var(--muted);
-          font-weight: 600;
+          font-weight: 500;
         }
 
-        .stats {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-        }
-
-        .stat {
-          padding: 8px 12px;
-          border-radius: 999px;
-          background: var(--surface-soft);
+        .period {
+          font-size: 13px;
           color: #475569;
-          font-size: 12px;
-          font-weight: 800;
+          font-weight: 600;
+          white-space: nowrap;
         }
 
         .controls {
           display: grid;
-          grid-template-columns: minmax(260px, 1fr) 190px 160px;
+          grid-template-columns: minmax(240px, 1fr) 180px 160px;
           gap: 12px;
           align-items: end;
         }
@@ -675,7 +649,7 @@ export default function HorimetrosPage() {
 
         .field label {
           font-size: 11px;
-          font-weight: 900;
+          font-weight: 800;
           letter-spacing: 0.08em;
           text-transform: uppercase;
           color: var(--muted);
@@ -687,16 +661,16 @@ export default function HorimetrosPage() {
         .number-input,
         .text-input {
           width: 100%;
-          height: 42px;
+          height: 40px;
           border: 1px solid transparent;
-          outline: none;
-          border-radius: 12px;
+          border-radius: 10px;
           background: var(--surface-soft);
           color: var(--text);
-          padding: 0 14px;
+          outline: none;
+          padding: 0 12px;
           font-size: 14px;
-          font-weight: 700;
-          transition: background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease;
+          font-weight: 600;
+          transition: 0.15s ease;
         }
 
         .search:focus,
@@ -706,24 +680,24 @@ export default function HorimetrosPage() {
         .text-input:focus {
           background: #fff;
           border-color: var(--line-strong);
-          box-shadow: 0 0 0 4px rgba(79, 110, 247, 0.08);
+          box-shadow: 0 0 0 4px rgba(91, 109, 246, 0.08);
         }
 
         .number-input {
-          min-width: 112px;
+          min-width: 110px;
           text-align: right;
           font-variant-numeric: tabular-nums;
         }
 
         .save-btn {
           width: 100%;
-          height: 42px;
+          height: 40px;
           border: 0;
-          border-radius: 12px;
+          border-radius: 10px;
           background: var(--warning);
           color: #1f2937;
           font-size: 14px;
-          font-weight: 900;
+          font-weight: 800;
           cursor: pointer;
         }
 
@@ -732,13 +706,29 @@ export default function HorimetrosPage() {
           cursor: wait;
         }
 
+        .stats {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
+        }
+
+        .stat {
+          padding: 7px 10px;
+          border-radius: 999px;
+          background: var(--surface-soft);
+          color: #475569;
+          font-size: 12px;
+          font-weight: 700;
+        }
+
         .message {
           background: var(--surface);
+          border: 1px solid var(--line);
           border-radius: var(--radius-lg);
           box-shadow: var(--shadow);
           padding: 12px 14px;
           font-size: 14px;
-          font-weight: 800;
+          font-weight: 700;
         }
 
         .message.error {
@@ -755,32 +745,33 @@ export default function HorimetrosPage() {
 
         .table-card {
           background: var(--surface);
+          border: 1px solid var(--line);
           border-radius: var(--radius-xl);
           box-shadow: var(--shadow);
           overflow: hidden;
         }
 
         .table-head {
-          padding: 16px 18px 10px;
+          padding: 14px 16px 10px;
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 12px;
+          gap: 10px;
           flex-wrap: wrap;
         }
 
         .table-head h3 {
           margin: 0;
           font-size: 18px;
-          font-weight: 900;
-          letter-spacing: -0.03em;
+          font-weight: 800;
+          letter-spacing: -0.02em;
         }
 
         .table-head p {
-          margin: 6px 0 0;
+          margin: 5px 0 0;
           color: var(--muted);
           font-size: 13px;
-          font-weight: 600;
+          font-weight: 500;
         }
 
         .table-wrap {
@@ -791,7 +782,7 @@ export default function HorimetrosPage() {
 
         table {
           width: 100%;
-          min-width: 1220px;
+          min-width: 1080px;
           border-collapse: separate;
           border-spacing: 0;
         }
@@ -801,13 +792,13 @@ export default function HorimetrosPage() {
           top: 0;
           z-index: 5;
           background: var(--surface);
-          padding: 14px 12px;
+          padding: 12px 12px;
           text-align: left;
           font-size: 11px;
-          font-weight: 900;
-          color: #475569;
+          font-weight: 800;
+          color: #64748b;
           text-transform: uppercase;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.07em;
           border-bottom: 1px solid var(--line);
           white-space: nowrap;
         }
@@ -820,7 +811,7 @@ export default function HorimetrosPage() {
         }
 
         tbody tr:hover td {
-          background: #fbfcff;
+          background: #fcfdff;
         }
 
         tbody tr:last-child td {
@@ -841,26 +832,25 @@ export default function HorimetrosPage() {
 
         .equip-code {
           font-size: 15px;
-          font-weight: 900;
+          font-weight: 800;
           line-height: 1;
-          color: var(--text);
         }
 
         .equip-sub {
           margin-top: 4px;
           font-size: 11px;
           color: var(--muted);
-          font-weight: 700;
+          font-weight: 600;
         }
 
         .segmented {
           display: inline-flex;
           align-items: center;
+          gap: 2px;
           padding: 3px;
           border-radius: 999px;
           background: var(--surface-soft);
           border: 1px solid var(--line);
-          gap: 2px;
         }
 
         .segmented button {
@@ -871,7 +861,7 @@ export default function HorimetrosPage() {
           background: transparent;
           color: #64748b;
           font-size: 12px;
-          font-weight: 800;
+          font-weight: 700;
           cursor: pointer;
           white-space: nowrap;
         }
@@ -883,7 +873,7 @@ export default function HorimetrosPage() {
 
         .value {
           font-size: 14px;
-          font-weight: 800;
+          font-weight: 700;
           color: var(--text);
           white-space: nowrap;
         }
@@ -904,12 +894,12 @@ export default function HorimetrosPage() {
           display: inline-flex;
           align-items: center;
           gap: 8px;
-          padding: 7px 11px;
+          padding: 7px 10px;
           border-radius: 999px;
           background: var(--surface-soft);
           color: #64748b;
           font-size: 12px;
-          font-weight: 900;
+          font-weight: 800;
           white-space: nowrap;
         }
 
@@ -936,19 +926,19 @@ export default function HorimetrosPage() {
           gap: 2px;
           font-size: 11px;
           color: var(--muted);
-          font-weight: 700;
+          font-weight: 600;
         }
 
         .empty {
           padding: 20px;
           color: var(--muted);
           font-size: 14px;
-          font-weight: 800;
+          font-weight: 700;
         }
 
         @media (max-width: 920px) {
           .page {
-            padding: 12px;
+            padding: 10px;
           }
 
           .header {
@@ -964,7 +954,7 @@ export default function HorimetrosPage() {
           }
 
           table {
-            min-width: 1080px;
+            min-width: 980px;
           }
         }
       `}</style>
@@ -973,23 +963,19 @@ export default function HorimetrosPage() {
         <div className="shell">
           <section className="header">
             <div className="header-top">
-              <div className="brand-row">
+              <div className="brand">
                 <div className="logo">
                   <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
                 </div>
                 <div>
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
-                  <p className="subtitle">
-                    Uma linha por equipamento. No celular, a tabela rola para o lado.
-                  </p>
+                  <p className="subtitle">Uma linha por equipamento. Tabela simples, clean e com rolagem lateral no celular.</p>
                 </div>
               </div>
 
-              <div className="stats">
-                <div className="stat">Equipamentos: {stats.total}</div>
-                <div className="stat">Lançados: {stats.lancados}</div>
-                <div className="stat">Pendentes: {stats.pendentes}</div>
+              <div className="period">
+                Anterior: {isoToBr(periodoAnterior)} · Atual: {isoToBr(selectedDate)}
               </div>
             </div>
 
@@ -1028,13 +1014,17 @@ export default function HorimetrosPage() {
                 </button>
               </div>
             </div>
+
+            <div className="stats">
+              <div className="stat">Equipamentos: {stats.total}</div>
+              <div className="stat">Lançados: {stats.lancados}</div>
+              <div className="stat">Pendentes: {stats.pendentes}</div>
+            </div>
           </section>
 
           {!env.ok ? (
             <div className="message warn">
-              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e
-              NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou
-              NEXT_PUBLIC_SUPABASE_ANON_KEY.
+              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
             </div>
           ) : null}
 
@@ -1045,9 +1035,7 @@ export default function HorimetrosPage() {
             <div className="table-head">
               <div>
                 <h3>Lançamento diário</h3>
-                <p>
-                  Padrão automático: CB, CC, CP e KB em odômetro. Os demais em horímetro.
-                </p>
+                <p>Padrão automático: CB, CC, CP e KB em odômetro. Os demais em horímetro. O toggle da linha muda qual leitura a linha usa.</p>
               </div>
             </div>
 
@@ -1063,8 +1051,8 @@ export default function HorimetrosPage() {
                       <th className="sticky-col">Equip.</th>
                       <th>Tipo</th>
                       <th>Obra</th>
-                      <th>Anterior<br />{isoToBr(periodoAnterior)}</th>
-                      <th>Atual<br />{isoToBr(selectedDate)}</th>
+                      <th>Anterior</th>
+                      <th>Atual</th>
                       <th>Do dia</th>
                       <th>Observação</th>
                       <th>Status</th>
@@ -1072,16 +1060,16 @@ export default function HorimetrosPage() {
                   </thead>
                   <tbody>
                     {filteredRows.map((row) => {
-                      const activePrevious = getRowPrevious(row);
-                      const activeCurrent = getRowCurrent(row);
-                      const activeDay = getRowDayValue(row);
-                      const dayNegative = (activeDay ?? 0) < 0;
+                      const previous = getPreviousValue(row);
+                      const current = getCurrentValue(row);
+                      const dayValue = getDayValue(row);
+                      const dayNegative = (dayValue ?? 0) < 0;
 
                       return (
                         <tr key={row.equipamentoId}>
                           <td className="sticky-col">
                             <div className="equip-code">{row.codigo}</div>
-                            <div className="equip-sub">1 linha por equipamento</div>
+                            <div className="equip-sub">{row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro"}</div>
                           </td>
 
                           <td>
@@ -1089,18 +1077,14 @@ export default function HorimetrosPage() {
                               <button
                                 type="button"
                                 className={row.selectedMode === "horimetro" ? "active" : ""}
-                                onClick={() =>
-                                  updateRow(row.equipamentoId, { selectedMode: "horimetro" })
-                                }
+                                onClick={() => updateRow(row.equipamentoId, { selectedMode: "horimetro" })}
                               >
                                 Horímetro
                               </button>
                               <button
                                 type="button"
                                 className={row.selectedMode === "odometro" ? "active" : ""}
-                                onClick={() =>
-                                  updateRow(row.equipamentoId, { selectedMode: "odometro" })
-                                }
+                                onClick={() => updateRow(row.equipamentoId, { selectedMode: "odometro" })}
                               >
                                 Odômetro
                               </button>
@@ -1111,9 +1095,7 @@ export default function HorimetrosPage() {
                             <select
                               className="select"
                               value={row.obraId}
-                              onChange={(e) =>
-                                updateRow(row.equipamentoId, { obraId: e.target.value })
-                              }
+                              onChange={(e) => updateRow(row.equipamentoId, { obraId: e.target.value })}
                             >
                               <option value="">Selecione</option>
                               {obras.map((obra) => (
@@ -1125,8 +1107,8 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
-                            <span className={`value ${activePrevious == null ? "muted" : ""}`}>
-                              {format1(activePrevious)}
+                            <span className={`value ${previous == null ? "muted" : ""}`}>
+                              {format1(previous)}
                             </span>
                           </td>
 
@@ -1134,16 +1116,9 @@ export default function HorimetrosPage() {
                             <input
                               type="text"
                               className="number-input"
-                              value={activeCurrent}
-                              onChange={(e) =>
-                                updateCurrentValue(
-                                  row.equipamentoId,
-                                  formatDecimalWhileTyping(e.target.value)
-                                )
-                              }
-                              onBlur={(e) =>
-                                finalizeCurrentValue(row.equipamentoId, e.target.value)
-                              }
+                              value={current}
+                              onChange={(e) => updateActiveInput(row.equipamentoId, e.target.value, false)}
+                              onBlur={(e) => updateActiveInput(row.equipamentoId, e.target.value, true)}
                               inputMode="decimal"
                               placeholder="Digite"
                             />
@@ -1152,14 +1127,10 @@ export default function HorimetrosPage() {
                           <td>
                             <span
                               className={`value ${
-                                activeDay == null
-                                  ? "muted"
-                                  : dayNegative
-                                    ? "danger"
-                                    : "success"
+                                dayValue == null ? "muted" : dayNegative ? "danger" : "success"
                               }`}
                             >
-                              {format1(activeDay)}
+                              {format1(dayValue)}
                             </span>
                           </td>
 
@@ -1167,9 +1138,7 @@ export default function HorimetrosPage() {
                             <input
                               className="text-input"
                               value={row.observacao}
-                              onChange={(e) =>
-                                updateRow(row.equipamentoId, { observacao: e.target.value })
-                              }
+                              onChange={(e) => updateRow(row.equipamentoId, { observacao: e.target.value })}
                               placeholder="Observação"
                             />
                           </td>
