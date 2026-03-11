@@ -368,7 +368,8 @@ function normalizeMaterialForMsg(s: string) {
   if (/P[ÓO]\s*DE\s*BRITA/.test(u)) return "PO BRITA";
   if (/P[ÓO]\s*BRITA/.test(u)) return "PO BRITA";
   if (/PO\s*BRITA/.test(u)) return "PO BRITA";
-  if (/BRITA\s*0|BRITA\s*ZERO/.test(u)) return "BRITA ZERO";
+  // ✅ evita classificar "BRITA 01" como "BRITA 0" (ex.: "BRITA 01" não casa com \b)
+  if (/BRITA\s*0\b|BRITA\s*ZERO/.test(u)) return "BRITA ZERO";
   if (/BRITA\s*01|BRITA\s*1|BRITA\s*UM/.test(u)) return "BRITA 01";
   return (s || "").trim();
 }
@@ -620,6 +621,7 @@ async function loadEntradaPlanResumoByIds(planIds: number[]): Promise<Record<num
     return {};
   }
 }
+
 function buildWhatsappMessage(p: {
   tipo: TicketTipo;
   veiculo: string;
@@ -637,7 +639,23 @@ function buildWhatsappMessage(p: {
   entradaPlanRows?: EntradaPlanResumo[] | null;
   entradaAlloc?: EntradaAlloc[] | null;
 }) {
-  const { tipo, veiculo, origem, obra, material, oc, dataISO, horarioISO, pesoNum, savedId, savedIds, resumo, acum, entradaPlanRows, entradaAlloc } = p;
+  const {
+    tipo,
+    veiculo,
+    origem,
+    obra,
+    material,
+    oc,
+    dataISO,
+    horarioISO,
+    pesoNum,
+    savedId,
+    savedIds,
+    resumo,
+    acum,
+    entradaPlanRows,
+    entradaAlloc,
+  } = p;
 
   const dateBR = (() => {
     const [y, m, d] = dataISO.split("-");
@@ -646,7 +664,7 @@ function buildWhatsappMessage(p: {
 
   const unidadeQtd = tipo === "SAIDA" ? "CB" : "tickets";
 
-  const idsLabel = (savedIds && savedIds.length) ? savedIds.join(" / ") : (savedId ?? "-");
+  const idsLabel = savedIds && savedIds.length ? savedIds.join(" / ") : savedId ?? "-";
 
   let msg =
     `✅ Ticket de ${tipo}\n` +
@@ -686,7 +704,7 @@ function buildWhatsappMessage(p: {
     return msg;
   }
 
-    // ✅ ENTRADA: usa resumo por plano (material_entrada_resumo_por_plano_v)
+  // ✅ ENTRADA: usa resumo por plano (material_entrada_resumo_por_plano_v)
   // Ticket fica em GPA ENGENHARIA; o controle vem do(s) plano(s) (PÁTIO normal / PERMUTA)
   const rows = (entradaPlanRows || []).slice();
 
@@ -735,7 +753,6 @@ function buildWhatsappMessage(p: {
 
   // fallback: sem plano/resumo (mostra só o ticket)
   return msg;
-
 }
 
 export default function MaterialTicketNovoPage() {
@@ -1116,7 +1133,6 @@ export default function MaterialTicketNovoPage() {
           .map((r: any) => Number(r?.id))
           .filter((x: any) => Number.isFinite(Number(x)) && Number(x) > 0);
 
-
         const firstId = idsInserted[0] ?? null;
         setSavedId(firstId);
         setLastSavedIds(idsInserted);
@@ -1241,7 +1257,6 @@ export default function MaterialTicketNovoPage() {
       setSaving(false);
     }
   }
-
 
   async function handleShareWhatsApp() {
     if (!lastPayload) return;
