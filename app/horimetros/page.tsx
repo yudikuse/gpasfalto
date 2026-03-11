@@ -100,15 +100,15 @@ function formatDateBr(dateStr: string) {
   return `${d}/${m}/${y}`;
 }
 
-function normalizeNumberString(value: string) {
-  return value.replace(/[^\d,.\-]/g, "").trim();
+function sanitizeNumericInput(value: string) {
+  return value.replace(/[^\d,.\-]/g, "");
 }
 
 function parseFlexibleNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
 
-  let s = normalizeNumberString(String(value));
+  let s = sanitizeNumericInput(String(value)).trim();
   if (!s) return null;
 
   const lastComma = s.lastIndexOf(",");
@@ -150,26 +150,6 @@ function format1(value: unknown) {
   });
 }
 
-function formatEditableNumber(value: string) {
-  const normalized = normalizeNumberString(value);
-  if (!normalized) return "";
-
-  const n = parseFlexibleNumber(normalized);
-  if (n === null) return normalized;
-
-  return n.toLocaleString("pt-BR", {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  });
-}
-
-function formatUpdatedAt(iso: string | null | undefined) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleString("pt-BR");
-}
-
 function formatShortTime(iso: string | null | undefined) {
   if (!iso) return "";
   const d = new Date(iso);
@@ -178,6 +158,13 @@ function formatShortTime(iso: string | null | undefined) {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatUpdatedAt(iso: string | null | undefined) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("pt-BR");
 }
 
 function normText(value: string | null | undefined) {
@@ -315,7 +302,6 @@ export default function HorimetrosPage() {
 
       for (const eq of equipamentos) {
         const row = currentMap[eq.id];
-
         nextDrafts[eq.id] = {
           obra_id: row?.obra_id
             ? String(row.obra_id)
@@ -392,7 +378,7 @@ export default function HorimetrosPage() {
   function updateDraft(equipamentoId: number, field: keyof DraftRow, value: string) {
     const nextValue =
       field === "horimetro_final" || field === "odometro_final"
-        ? formatEditableNumber(value)
+        ? sanitizeNumericInput(value)
         : value;
 
     setDrafts((prev) => ({
@@ -412,6 +398,20 @@ export default function HorimetrosPage() {
       delete next[equipamentoId];
       return next;
     });
+  }
+
+  function handleNumericBlur(equipamentoId: number, field: "horimetro_final" | "odometro_final") {
+    const currentValue = drafts[equipamentoId]?.[field] || "";
+    const parsed = parseFlexibleNumber(currentValue);
+    if (parsed === null) return;
+
+    setDrafts((prev) => ({
+      ...prev,
+      [equipamentoId]: {
+        ...prev[equipamentoId],
+        [field]: format1(parsed),
+      },
+    }));
   }
 
   function hasAnyUserData(eq: EquipRow) {
@@ -597,20 +597,37 @@ export default function HorimetrosPage() {
     const { data, error } = await supabase
       .from("horimetro_leituras_diarias")
       .select(
-        "id, data, obra_id, equipamento_id, horimetro_inicial, horimetro_final, horas_trabalhadas, odometro_inicial, odometro_final, km_rodados, observacao, status, updated_by_user_id, updated_by_nome, updated_at, created_at"
+        "id, data, obra_id, equipamento_id, horimetro_inicial, horimetro_final, horas_traballhadas, odometro_inicial, odometro_final, km_rodados, observacao, status, updated_by_user_id, updated_by_nome, updated_at, created_at"
       )
       .eq("data", selectedDate)
       .in("equipamento_id", ids);
 
-    if (error) return;
+    if (error) {
+      const { data: fallbackData, error: fallbackError } = await supabase
+        .from("horimetro_leituras_diarias")
+        .select(
+          "id, data, obra_id, equipamento_id, horimetro_inicial, horimetro_final, horas_trabalhadas, odometro_inicial, odometro_final, km_rodados, observacao, status, updated_by_user_id, updated_by_nome, updated_at, created_at"
+        )
+        .eq("data", selectedDate)
+        .in("equipamento_id", ids);
+
+      if (fallbackError) return;
+
+      setCurrentRows((prev) => {
+        const next = { ...prev };
+        for (const id of ids) delete next[id];
+        for (const row of (fallbackData || []) as LeituraRow[]) {
+          next[row.equipamento_id] = row;
+        }
+        return next;
+      });
+      return;
+    }
 
     setCurrentRows((prev) => {
       const next = { ...prev };
 
-      for (const id of ids) {
-        delete next[id];
-      }
-
+      for (const id of ids) delete next[id];
       for (const row of (data || []) as LeituraRow[]) {
         next[row.equipamento_id] = row;
       }
@@ -753,42 +770,28 @@ export default function HorimetrosPage() {
 
   return (
     <>
-      <main className={`${inter.variable} ${manrope.variable} page-root`}>
-        <div className="page-container">
-          <header className="hero">
-            <div className="hero-left">
-              <img src="/gpasfalto-logo.png" alt="GP Asfalto" className="logo" />
-
-              <div className="hero-copy">
-                <div className="eyebrow">GP Asfalto</div>
-                <h1 className="title">Horímetros e Odômetros</h1>
-                <p className="subtitle">
-                  Lançamento diário por equipamento, com salvamento por linha e leitura anterior
-                  bloqueada.
+      <main className={`${inter.variable} ${manrope.variable} app-root`}>
+        <div className="app-shell">
+          <header className="topbar">
+            <div className="brand">
+              <img src="/gpasfalto-logo.png" alt="GP Asfalto" className="brand-logo" />
+              <div className="brand-copy">
+                <div className="brand-kicker">GP ASFALTO</div>
+                <h1 className="brand-title">Horímetros e Odômetros</h1>
+                <p className="brand-subtitle">
+                  Lançamento diário por equipamento com salvamento por linha.
                 </p>
-
-                <div className="pill-row">
-                  <div className="pill">
-                    Equipamentos <strong>{equipamentos.length}</strong>
-                  </div>
-                  <div className="pill">
-                    Lançados <strong>{totalLancados}</strong>
-                  </div>
-                  <div className="pill">
-                    Pendentes <strong>{totalPendentes}</strong>
-                  </div>
-                </div>
               </div>
             </div>
 
-            <div className="hero-actions">
+            <div className="topbar-actions">
               <label className="field compact">
                 <span className="label">Data</span>
                 <input
                   type="date"
                   value={selectedDate}
                   onChange={(e) => setSelectedDate(e.target.value)}
-                  className="input"
+                  className="ui-input"
                 />
               </label>
 
@@ -796,26 +799,38 @@ export default function HorimetrosPage() {
                 type="button"
                 onClick={handleSaveAll}
                 disabled={savingAll || loadingBase || loadingRows}
-                className="save-btn"
+                className="primary-btn"
               >
                 {savingAll ? "Salvando..." : "Salvar tudo"}
               </button>
             </div>
           </header>
 
-          <section className="section-card filterbar">
+          <section className="summary-row">
+            <div className="summary-pill">
+              Equipamentos <strong>{equipamentos.length}</strong>
+            </div>
+            <div className="summary-pill">
+              Lançados <strong>{totalLancados}</strong>
+            </div>
+            <div className="summary-pill">
+              Pendentes <strong>{totalPendentes}</strong>
+            </div>
+          </section>
+
+          <section className="toolbar">
             <label className="field search-field">
               <span className="label">Busca</span>
               <input
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                className="input"
+                className="ui-input"
                 placeholder="MN-05"
               />
             </label>
 
-            <div className="period-box">
+            <div className="period-chip">
               <span>Período</span>
               <strong>
                 {previousDateLabel} — {currentDateLabel}
@@ -823,28 +838,28 @@ export default function HorimetrosPage() {
             </div>
           </section>
 
-          {message ? <div className="message">{message}</div> : null}
+          {message ? <div className="message-box">{message}</div> : null}
 
-          <section className="section-card desktop-table desktop-only">
+          <section className="timesheet-panel desktop-only">
             {loadingBase || loadingRows ? (
-              <div className="empty">Carregando...</div>
+              <div className="empty-state">Carregando...</div>
             ) : filteredEquipamentos.length === 0 ? (
-              <div className="empty">Nenhum equipamento encontrado.</div>
+              <div className="empty-state">Nenhum equipamento encontrado.</div>
             ) : (
-              <div className="table-wrap">
-                <table className="data-table">
+              <div className="table-scroll">
+                <table className="timesheet-table">
                   <colgroup>
+                    <col style={{ width: "86px" }} />
+                    <col style={{ width: "190px" }} />
+                    <col style={{ width: "96px" }} />
+                    <col style={{ width: "104px" }} />
+                    <col style={{ width: "80px" }} />
+                    <col style={{ width: "96px" }} />
+                    <col style={{ width: "104px" }} />
+                    <col style={{ width: "80px" }} />
+                    <col style={{ width: "156px" }} />
                     <col style={{ width: "88px" }} />
-                    <col style={{ width: "200px" }} />
-                    <col style={{ width: "100px" }} />
-                    <col style={{ width: "100px" }} />
-                    <col style={{ width: "82px" }} />
-                    <col style={{ width: "100px" }} />
-                    <col style={{ width: "100px" }} />
-                    <col style={{ width: "82px" }} />
-                    <col style={{ width: "170px" }} />
-                    <col style={{ width: "90px" }} />
-                    <col style={{ width: "88px" }} />
+                    <col style={{ width: "86px" }} />
                   </colgroup>
 
                   <thead>
@@ -880,13 +895,13 @@ export default function HorimetrosPage() {
 
                       return (
                         <tr key={eq.id}>
-                          <td className="equip-col">{eq.codigo}</td>
+                          <td className="col-equip">{eq.codigo}</td>
 
                           <td>
                             <select
                               value={draft.obra_id}
                               onChange={(e) => updateDraft(eq.id, "obra_id", e.target.value)}
-                              className="input input-sm select-soft"
+                              className="ui-input ui-input-sm input-soft"
                             >
                               <option value="">Selecione</option>
                               {obras.map((obra) => (
@@ -898,7 +913,7 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
-                            <div className="readonly num">
+                            <div className="readonly-box num">
                               {eq.usa_horimetro ? format1(hIni) || "—" : "—"}
                             </div>
                           </td>
@@ -910,22 +925,23 @@ export default function HorimetrosPage() {
                                 inputMode="decimal"
                                 value={draft.horimetro_final}
                                 onChange={(e) => updateDraft(eq.id, "horimetro_final", e.target.value)}
-                                className="input input-sm editable num"
+                                onBlur={() => handleNumericBlur(eq.id, "horimetro_final")}
+                                className="ui-input ui-input-sm input-edit num"
                                 placeholder="Digite"
                               />
                             ) : (
-                              <div className="readonly center">—</div>
+                              <div className="readonly-box center">—</div>
                             )}
                           </td>
 
                           <td>
-                            <div className="readonly num">
+                            <div className="readonly-box num">
                               {eq.usa_horimetro ? format1(horas) || "—" : "—"}
                             </div>
                           </td>
 
                           <td>
-                            <div className="readonly num">
+                            <div className="readonly-box num">
                               {eq.usa_odometro ? format1(oIni) || "—" : "—"}
                             </div>
                           </td>
@@ -937,16 +953,17 @@ export default function HorimetrosPage() {
                                 inputMode="decimal"
                                 value={draft.odometro_final}
                                 onChange={(e) => updateDraft(eq.id, "odometro_final", e.target.value)}
-                                className="input input-sm editable num"
+                                onBlur={() => handleNumericBlur(eq.id, "odometro_final")}
+                                className="ui-input ui-input-sm input-edit num"
                                 placeholder="Digite"
                               />
                             ) : (
-                              <div className="readonly center">—</div>
+                              <div className="readonly-box center">—</div>
                             )}
                           </td>
 
                           <td>
-                            <div className="readonly num">
+                            <div className="readonly-box num">
                               {eq.usa_odometro ? format1(km) || "—" : "—"}
                             </div>
                           </td>
@@ -956,14 +973,14 @@ export default function HorimetrosPage() {
                               type="text"
                               value={draft.observacao}
                               onChange={(e) => updateDraft(eq.id, "observacao", e.target.value)}
-                              className="input input-sm editable"
+                              className="ui-input ui-input-sm input-edit"
                               placeholder="Observação"
                             />
                           </td>
 
                           <td>
-                            <div className="status-wrap" title={status.title}>
-                              <span className={`status-badge ${status.kind}`}>{status.label}</span>
+                            <div className="status-cell" title={status.title}>
+                              <span className={`status-pill ${status.kind}`}>{status.label}</span>
                             </div>
                           </td>
 
@@ -972,7 +989,7 @@ export default function HorimetrosPage() {
                               type="button"
                               onClick={() => handleSaveRow(eq)}
                               disabled={!canSaveRow(eq) || !!savingRows[eq.id]}
-                              className="row-save-btn"
+                              className="row-btn"
                             >
                               {savingRows[eq.id] ? "..." : "Salvar"}
                             </button>
@@ -988,9 +1005,9 @@ export default function HorimetrosPage() {
 
           <section className="mobile-list mobile-only">
             {loadingBase || loadingRows ? (
-              <div className="empty">Carregando...</div>
+              <div className="empty-state">Carregando...</div>
             ) : filteredEquipamentos.length === 0 ? (
-              <div className="empty">Nenhum equipamento encontrado.</div>
+              <div className="empty-state">Nenhum equipamento encontrado.</div>
             ) : (
               filteredEquipamentos.map((eq) => {
                 const draft = drafts[eq.id] || {
@@ -1010,7 +1027,7 @@ export default function HorimetrosPage() {
                   <article key={eq.id} className="mobile-card">
                     <div className="mobile-head">
                       <strong>{eq.codigo}</strong>
-                      <span className={`status-badge ${status.kind}`} title={status.title}>
+                      <span className={`status-pill ${status.kind}`} title={status.title}>
                         {status.label}
                       </span>
                     </div>
@@ -1021,7 +1038,7 @@ export default function HorimetrosPage() {
                         <select
                           value={draft.obra_id}
                           onChange={(e) => updateDraft(eq.id, "obra_id", e.target.value)}
-                          className="input select-soft"
+                          className="ui-input input-soft"
                         >
                           <option value="">Selecione</option>
                           {obras.map((obra) => (
@@ -1034,7 +1051,7 @@ export default function HorimetrosPage() {
 
                       <div className="field">
                         <span className="label">H anterior</span>
-                        <div className="readonly num">
+                        <div className="readonly-box num">
                           {eq.usa_horimetro ? format1(hIni) || "—" : "—"}
                         </div>
                       </div>
@@ -1047,24 +1064,25 @@ export default function HorimetrosPage() {
                             inputMode="decimal"
                             value={draft.horimetro_final}
                             onChange={(e) => updateDraft(eq.id, "horimetro_final", e.target.value)}
-                            className="input editable num"
+                            onBlur={() => handleNumericBlur(eq.id, "horimetro_final")}
+                            className="ui-input input-edit num"
                             placeholder="Digite"
                           />
                         ) : (
-                          <div className="readonly center">—</div>
+                          <div className="readonly-box center">—</div>
                         )}
                       </label>
 
                       <div className="field">
                         <span className="label">Horas</span>
-                        <div className="readonly num">
+                        <div className="readonly-box num">
                           {eq.usa_horimetro ? format1(horas) || "—" : "—"}
                         </div>
                       </div>
 
                       <div className="field">
                         <span className="label">O anterior</span>
-                        <div className="readonly num">
+                        <div className="readonly-box num">
                           {eq.usa_odometro ? format1(oIni) || "—" : "—"}
                         </div>
                       </div>
@@ -1077,17 +1095,18 @@ export default function HorimetrosPage() {
                             inputMode="decimal"
                             value={draft.odometro_final}
                             onChange={(e) => updateDraft(eq.id, "odometro_final", e.target.value)}
-                            className="input editable num"
+                            onBlur={() => handleNumericBlur(eq.id, "odometro_final")}
+                            className="ui-input input-edit num"
                             placeholder="Digite"
                           />
                         ) : (
-                          <div className="readonly center">—</div>
+                          <div className="readonly-box center">—</div>
                         )}
                       </label>
 
                       <div className="field">
                         <span className="label">Km</span>
-                        <div className="readonly num">
+                        <div className="readonly-box num">
                           {eq.usa_odometro ? format1(km) || "—" : "—"}
                         </div>
                       </div>
@@ -1098,7 +1117,7 @@ export default function HorimetrosPage() {
                           type="text"
                           value={draft.observacao}
                           onChange={(e) => updateDraft(eq.id, "observacao", e.target.value)}
-                          className="input editable"
+                          className="ui-input input-edit"
                           placeholder="Observação"
                         />
                       </label>
@@ -1109,7 +1128,7 @@ export default function HorimetrosPage() {
                         type="button"
                         onClick={() => handleSaveRow(eq)}
                         disabled={!canSaveRow(eq) || !!savingRows[eq.id]}
-                        className="row-save-btn mobile-row-save"
+                        className="row-btn mobile-row-btn"
                       >
                         {savingRows[eq.id] ? "Salvando..." : "Salvar linha"}
                       </button>
@@ -1126,7 +1145,7 @@ export default function HorimetrosPage() {
             type="button"
             onClick={handleSaveAll}
             disabled={savingAll || loadingBase || loadingRows}
-            className="save-btn mobile-save-btn"
+            className="primary-btn mobile-primary"
           >
             {savingAll ? "Salvando..." : "Salvar tudo"}
           </button>
@@ -1135,17 +1154,17 @@ export default function HorimetrosPage() {
 
       <style jsx global>{`
         :root {
-          --bg: #f6f7f9;
-          --panel: rgba(255, 255, 255, 0.92);
-          --text: #0f172a;
+          --bg: #f3f4f6;
+          --surface: #ffffff;
+          --surface-soft: #fafbfc;
+          --surface-muted: #f4f6f8;
+          --line: #e8ebef;
+          --line-soft: #eff2f5;
+          --text: #111827;
           --muted: #667085;
           --muted-2: #98a2b3;
           --navy: #0b1733;
           --navy-2: #142445;
-          --line: rgba(15, 23, 42, 0.06);
-          --line-soft: rgba(15, 23, 42, 0.045);
-          --readonly-bg: #edf1f5;
-          --editable-bg: #f8fafc;
           --ok-bg: #ecfdf3;
           --ok-text: #0f766e;
           --warn-bg: #fff7ed;
@@ -1168,100 +1187,76 @@ export default function HorimetrosPage() {
         }
 
         body {
-          background: radial-gradient(circle at top, #fcfcfd 0, #f6f7f9 45%, #eef1f5 100%);
+          margin: 0;
+          background: #f4f5f7;
           color: var(--text);
         }
 
-        .page-root {
+        .app-root {
           min-height: 100vh;
-          padding: 24px 16px 88px;
+          padding: 28px 16px 88px;
         }
 
-        .page-container {
+        .app-shell {
           width: 100%;
-          max-width: 1200px;
+          max-width: 1180px;
           margin: 0 auto;
           display: flex;
           flex-direction: column;
           gap: 14px;
         }
 
-        .hero {
+        .topbar {
           display: grid;
           grid-template-columns: 1fr auto;
-          gap: 20px;
+          gap: 18px;
           align-items: center;
-          padding: 4px 0 2px;
         }
 
-        .hero-left {
+        .brand {
           display: flex;
           align-items: center;
-          gap: 20px;
+          gap: 18px;
           min-width: 0;
         }
 
-        .logo {
-          width: 190px;
+        .brand-logo {
+          width: 132px;
           height: auto;
           object-fit: contain;
           flex-shrink: 0;
         }
 
-        .hero-copy {
+        .brand-copy {
           min-width: 0;
         }
 
-        .eyebrow {
+        .brand-kicker {
           font-size: 11px;
           font-weight: 800;
-          text-transform: uppercase;
           letter-spacing: 0.12em;
+          text-transform: uppercase;
           color: var(--muted);
           margin-bottom: 2px;
         }
 
-        .title {
+        .brand-title {
           margin: 0;
           font-family: var(--font-manrope), var(--font-inter), sans-serif;
-          font-size: 32px;
+          font-size: 26px;
           line-height: 1.05;
-          letter-spacing: -0.035em;
-          font-weight: 800;
+          letter-spacing: -0.03em;
           color: var(--navy);
+          font-weight: 800;
         }
 
-        .subtitle {
-          margin: 8px 0 0;
+        .brand-subtitle {
+          margin: 6px 0 0;
           font-size: 13px;
           color: var(--muted);
-          line-height: 1.5;
         }
 
-        .pill-row {
-          display: flex;
-          gap: 8px;
-          flex-wrap: wrap;
-          margin-top: 12px;
-        }
-
-        .pill {
-          display: inline-flex;
-          align-items: center;
-          gap: 8px;
-          padding: 8px 12px;
-          border-radius: 999px;
-          background: rgba(255, 255, 255, 0.86);
-          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.035);
-          font-size: 12px;
-          color: var(--muted);
-        }
-
-        .pill strong {
-          color: var(--text);
-        }
-
-        .hero-actions {
+        .topbar-actions {
           display: flex;
           align-items: end;
           gap: 10px;
@@ -1276,31 +1271,47 @@ export default function HorimetrosPage() {
         }
 
         .field.compact {
-          min-width: 180px;
+          min-width: 170px;
         }
 
         .label {
           font-size: 11px;
           font-weight: 800;
-          text-transform: uppercase;
           letter-spacing: 0.05em;
+          text-transform: uppercase;
           color: #475467;
         }
 
-        .section-card {
-          background: var(--panel);
-          backdrop-filter: blur(14px);
-          border-radius: 10px;
-          box-shadow:
-            0 1px 2px rgba(16, 24, 40, 0.03),
-            0 12px 30px rgba(16, 24, 40, 0.035);
+        .summary-row {
+          display: flex;
+          gap: 8px;
+          flex-wrap: wrap;
         }
 
-        .filterbar {
+        .summary-pill {
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          padding: 8px 12px;
+          background: #fff;
+          border: 1px solid var(--line);
+          border-radius: 999px;
+          color: var(--muted);
+          font-size: 12px;
+        }
+
+        .summary-pill strong {
+          color: var(--text);
+        }
+
+        .toolbar {
           display: grid;
-          grid-template-columns: minmax(260px, 1fr) 240px;
+          grid-template-columns: minmax(260px, 1fr) 220px;
           gap: 12px;
           align-items: end;
+          background: var(--surface);
+          border: 1px solid var(--line);
+          border-radius: 8px;
           padding: 12px;
         }
 
@@ -1308,57 +1319,53 @@ export default function HorimetrosPage() {
           min-width: 0;
         }
 
-        .input {
+        .ui-input {
           width: 100%;
           height: 40px;
-          border: 0;
-          border-radius: 8px;
-          background: #ffffff;
-          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.07);
+          border: 1px solid var(--line);
+          border-radius: 6px;
+          background: #fff;
           padding: 0 12px;
           font-size: 14px;
           color: var(--text);
           outline: none;
-          transition: 0.18s ease;
+          transition: 0.15s ease;
         }
 
-        .input:focus {
-          box-shadow:
-            inset 0 0 0 1px rgba(11, 23, 51, 0.16),
-            0 0 0 4px rgba(11, 23, 51, 0.05);
+        .ui-input:focus {
+          border-color: #cfd6df;
+          box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.04);
         }
 
-        .input-sm {
-          height: 36px;
-          font-size: 13px;
-          border-radius: 8px;
+        .ui-input-sm {
+          height: 34px;
           padding: 0 10px;
+          font-size: 13px;
         }
 
-        .editable {
-          background: var(--editable-bg);
-          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+        .input-soft {
+          background: var(--surface-soft);
         }
 
-        .editable::placeholder {
+        .input-edit {
+          background: #fbfcfd;
+        }
+
+        .input-edit::placeholder {
           color: var(--muted-2);
         }
 
-        .select-soft {
-          background: #f9fafb;
-        }
-
-        .readonly {
-          height: 36px;
-          border-radius: 8px;
-          background: var(--readonly-bg);
+        .readonly-box {
+          height: 34px;
           display: flex;
           align-items: center;
           justify-content: flex-end;
           padding: 0 10px;
+          border-radius: 6px;
+          background: var(--surface-muted);
+          color: var(--text);
           font-size: 13px;
           font-weight: 700;
-          color: var(--text);
           font-variant-numeric: tabular-nums;
         }
 
@@ -1371,117 +1378,115 @@ export default function HorimetrosPage() {
           justify-content: center;
         }
 
-        .period-box {
+        .period-chip {
           height: 40px;
-          border-radius: 8px;
-          background: #f2f5f8;
+          border-radius: 6px;
+          background: var(--surface-muted);
           display: flex;
           flex-direction: column;
           justify-content: center;
           padding: 0 12px;
         }
 
-        .period-box span {
+        .period-chip span {
           font-size: 11px;
-          text-transform: uppercase;
           font-weight: 800;
           letter-spacing: 0.05em;
+          text-transform: uppercase;
           color: #475467;
         }
 
-        .period-box strong {
+        .period-chip strong {
+          margin-top: 2px;
           font-size: 13px;
           color: var(--text);
-          margin-top: 2px;
         }
 
-        .save-btn {
+        .primary-btn {
           height: 40px;
           border: 0;
-          border-radius: 8px;
-          background: linear-gradient(180deg, var(--navy) 0%, var(--navy-2) 100%);
+          border-radius: 6px;
+          background: var(--navy);
           color: #fff;
-          font-weight: 800;
           font-size: 14px;
-          cursor: pointer;
+          font-weight: 800;
           padding: 0 16px;
-          box-shadow: 0 10px 22px rgba(8, 26, 68, 0.12);
+          cursor: pointer;
         }
 
-        .save-btn:hover {
-          filter: brightness(1.04);
+        .primary-btn:hover {
+          background: var(--navy-2);
         }
 
-        .save-btn:disabled {
+        .primary-btn:disabled {
           opacity: 0.55;
           cursor: not-allowed;
         }
 
-        .message {
-          background: rgba(255, 237, 213, 0.84);
+        .message-box {
+          background: #fff7ed;
           color: #9a3412;
-          border-radius: 10px;
+          border: 1px solid #fed7aa;
+          border-radius: 8px;
           padding: 12px 14px;
           font-size: 13px;
           font-weight: 700;
-          box-shadow: 0 8px 18px rgba(15, 23, 42, 0.03);
         }
 
-        .desktop-table {
+        .timesheet-panel {
+          background: var(--surface);
+          border: 1px solid var(--line);
+          border-radius: 8px;
           overflow: hidden;
-          padding: 0;
         }
 
-        .table-wrap {
+        .table-scroll {
           overflow-x: auto;
         }
 
-        .data-table {
+        .timesheet-table {
           width: 100%;
-          min-width: 1160px;
+          min-width: 1140px;
           border-collapse: collapse;
           font-size: 13px;
         }
 
-        .data-table thead th {
+        .timesheet-table thead th {
+          background: #fff;
           text-align: left;
-          color: #475467;
-          padding: 13px 8px;
-          white-space: nowrap;
-          font-weight: 800;
+          padding: 12px 8px;
           font-size: 11px;
-          text-transform: uppercase;
+          font-weight: 800;
           letter-spacing: 0.05em;
-          background: rgba(255, 255, 255, 0.76);
-          box-shadow: inset 0 -1px 0 var(--line);
+          text-transform: uppercase;
+          color: #475467;
+          border-bottom: 1px solid var(--line);
+          white-space: nowrap;
         }
 
-        .data-table tbody td {
+        .timesheet-table tbody td {
           padding: 10px 8px;
           vertical-align: middle;
+          border-bottom: 1px solid var(--line-soft);
         }
 
-        .data-table tbody tr {
-          box-shadow: inset 0 -1px 0 var(--line-soft);
+        .timesheet-table tbody tr:hover {
+          background: #fafbfc;
         }
 
-        .data-table tbody tr:hover {
-          background: rgba(255, 255, 255, 0.34);
-        }
-
-        .equip-col {
+        .col-equip {
           font-weight: 800;
           color: var(--navy);
           white-space: nowrap;
         }
 
-        .status-wrap {
+        .status-cell {
           display: flex;
           align-items: center;
           justify-content: flex-start;
         }
 
-        .status-badge {
+        .status-pill {
           display: inline-flex;
           align-items: center;
           justify-content: center;
@@ -1492,37 +1497,36 @@ export default function HorimetrosPage() {
           font-size: 11px;
           font-weight: 800;
           line-height: 1;
-          letter-spacing: 0.01em;
           white-space: nowrap;
         }
 
-        .status-badge.saved {
+        .status-pill.saved {
           background: var(--ok-bg);
           color: var(--ok-text);
         }
 
-        .status-badge.partial,
-        .status-badge.dirty {
+        .status-pill.partial,
+        .status-pill.dirty {
           background: var(--warn-bg);
           color: var(--warn-text);
         }
 
-        .status-badge.pending,
-        .status-badge.error {
+        .status-pill.pending,
+        .status-pill.error {
           background: var(--red-bg);
           color: var(--red-text);
         }
 
-        .status-badge.saving {
+        .status-pill.saving {
           background: var(--blue-bg);
           color: var(--blue-text);
         }
 
-        .row-save-btn {
+        .row-btn {
           height: 32px;
           min-width: 76px;
           border: 0;
-          border-radius: 8px;
+          border-radius: 6px;
           background: #0f172a;
           color: #fff;
           font-size: 12px;
@@ -1531,17 +1535,17 @@ export default function HorimetrosPage() {
           padding: 0 12px;
         }
 
-        .row-save-btn:hover {
+        .row-btn:hover {
           background: #1e293b;
         }
 
-        .row-save-btn:disabled {
+        .row-btn:disabled {
           background: #e5e7eb;
           color: #98a2b3;
           cursor: not-allowed;
         }
 
-        .empty {
+        .empty-state {
           padding: 28px;
           text-align: center;
           color: var(--muted);
@@ -1558,13 +1562,10 @@ export default function HorimetrosPage() {
         }
 
         .mobile-card {
-          background: rgba(255, 255, 255, 0.9);
-          backdrop-filter: blur(14px);
-          border-radius: 10px;
+          background: #fff;
+          border: 1px solid var(--line);
+          border-radius: 8px;
           padding: 12px;
-          box-shadow:
-            0 1px 2px rgba(16, 24, 40, 0.03),
-            0 10px 24px rgba(16, 24, 40, 0.04);
         }
 
         .mobile-head {
@@ -1595,7 +1596,7 @@ export default function HorimetrosPage() {
           justify-content: flex-end;
         }
 
-        .mobile-row-save {
+        .mobile-row-btn {
           min-width: 112px;
         }
 
@@ -1604,33 +1605,37 @@ export default function HorimetrosPage() {
         }
 
         @media (max-width: 980px) {
-          .hero {
+          .topbar {
             grid-template-columns: 1fr;
           }
 
-          .hero-actions {
+          .topbar-actions {
             justify-content: flex-start;
           }
 
-          .filterbar {
+          .toolbar {
             grid-template-columns: 1fr;
           }
         }
 
         @media (max-width: 760px) {
-          .page-root {
+          .app-root {
             padding: 16px 10px 92px;
           }
 
-          .logo {
-            width: 150px;
+          .brand {
+            align-items: flex-start;
           }
 
-          .title {
-            font-size: 28px;
+          .brand-logo {
+            width: 110px;
           }
 
-          .subtitle {
+          .brand-title {
+            font-size: 24px;
+          }
+
+          .brand-subtitle {
             font-size: 12px;
           }
 
@@ -1651,17 +1656,16 @@ export default function HorimetrosPage() {
             padding: 10px 12px 14px;
             background: linear-gradient(
               180deg,
-              rgba(246, 247, 249, 0) 0%,
-              rgba(246, 247, 249, 0.95) 24%,
-              rgba(246, 247, 249, 1) 100%
+              rgba(244, 245, 247, 0) 0%,
+              rgba(244, 245, 247, 0.95) 24%,
+              rgba(244, 245, 247, 1) 100%
             );
             z-index: 20;
           }
 
-          .mobile-save-btn {
+          .mobile-primary {
             width: 100%;
-            height: 46px;
-            border-radius: 10px;
+            height: 44px;
           }
         }
       `}</style>
