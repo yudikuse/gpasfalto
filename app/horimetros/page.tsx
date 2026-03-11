@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 type MeasurementMode = "horimetro" | "odometro";
@@ -54,6 +54,7 @@ type RowState = {
   odometroAtual: string;
   kmDia: number | null;
   observacao: string;
+  isTrocaMedidor: boolean;
   registroId: number | null;
   updatedAt: string | null;
   updatedByNome: string | null;
@@ -116,55 +117,10 @@ function formatInput1(value: number | null | undefined) {
 function parsePtNumber(value: string) {
   const s = String(value || "").trim();
   if (!s) return null;
-
   const normalized = s.replace(/\./g, "").replace(",", ".").replace(/[^0-9.-]/g, "");
   if (!normalized || normalized === "-" || normalized === "." || normalized === "-.") return null;
-
   const n = Number(normalized);
   return Number.isFinite(n) ? n : null;
-}
-
-function formatDecimalWhileTyping(value: string) {
-  let raw = String(value || "");
-
-  const hasTrailingComma = raw.endsWith(",") || raw.endsWith(".");
-  raw = raw.replace(/\./g, ",");
-  raw = raw.replace(/[^0-9,-]/g, "");
-
-  const negative = raw.startsWith("-");
-  raw = raw.replace(/-/g, "");
-
-  const parts = raw.split(",");
-  const intDigits = (parts[0] || "").replace(/\D/g, "");
-  const decDigits = parts.slice(1).join("").replace(/\D/g, "").slice(0, 1);
-
-  const intNormalized = intDigits.replace(/^0+(?=\d)/, "") || (intDigits ? "0" : "");
-  const intFormatted = intNormalized
-    ? intNormalized.replace(/\B(?=(\d{3})+(?!\d))/g, ".")
-    : "";
-
-  const prefix = negative ? "-" : "";
-
-  if (hasTrailingComma && parts.length === 1) {
-    return `${prefix}${intFormatted || "0"},`;
-  }
-
-  if (parts.length > 1) {
-    return `${prefix}${intFormatted || "0"},${decDigits}`;
-  }
-
-  return `${prefix}${intFormatted}`;
-}
-
-function finalizeDecimalInput(value: string) {
-  const parsed = parsePtNumber(value);
-  return parsed == null ? "" : formatInput1(parsed);
-}
-
-function safeDiff(finalValue: number | null, initialValue: number | null) {
-  if (finalValue == null || initialValue == null) return null;
-  const diff = Number((finalValue - initialValue).toFixed(1));
-  return Number.isFinite(diff) ? diff : null;
 }
 
 function modeFromPrefix(codigo: string): MeasurementMode {
@@ -185,7 +141,6 @@ function resolveInitialMode(eq: EquipamentoRow, atual?: LeituraRow | null): Meas
     atual?.horimetro_final != null ||
     atual?.horimetro_inicial != null ||
     eq.usa_horimetro === true;
-
   const hasO =
     atual?.odometro_final != null ||
     atual?.odometro_inicial != null ||
@@ -195,6 +150,28 @@ function resolveInitialMode(eq: EquipamentoRow, atual?: LeituraRow | null): Meas
   if (hasO && !hasH) return "odometro";
 
   return modeFromPrefix(eq.codigo);
+}
+
+function safeDiff(finalValue: number | null, initialValue: number | null) {
+  if (finalValue == null || initialValue == null) return null;
+  const diff = Number((finalValue - initialValue).toFixed(1));
+  return Number.isFinite(diff) ? diff : null;
+}
+
+function stripTrocaPrefix(text: string) {
+  return String(text || "").replace(/^\s*\[TROCA\]\s*/i, "").trimStart();
+}
+
+function hasTrocaPrefix(text: string) {
+  return /^\s*\[TROCA\]\s*/i.test(String(text || ""));
+}
+
+function composeObservacao(text: string, isTrocaMedidor: boolean) {
+  const clean = stripTrocaPrefix(text).trim();
+  if (isTrocaMedidor) {
+    return clean ? `[TROCA] ${clean}` : "[TROCA]";
+  }
+  return clean || null;
 }
 
 function buildRows(params: {
@@ -228,6 +205,8 @@ function buildRows(params: {
     const horasDia = atual?.horas_trabalhadas ?? safeDiff(horimetroAtualNum, horimetroAnterior);
     const kmDia = atual?.km_rodados ?? safeDiff(odometroAtualNum, odometroAnterior);
 
+    const observacaoRaw = String(atual?.observacao || "");
+
     return {
       equipamentoId: eq.id,
       codigo: eq.codigo,
@@ -239,7 +218,8 @@ function buildRows(params: {
       odometroAnterior,
       odometroAtual: formatInput1(odometroAtualNum),
       kmDia,
-      observacao: String(atual?.observacao || ""),
+      observacao: stripTrocaPrefix(observacaoRaw),
+      isTrocaMedidor: hasTrocaPrefix(observacaoRaw),
       registroId: atual?.id ?? null,
       updatedAt: atual?.updated_at ?? null,
       updatedByNome: atual?.updated_by_nome ?? null,
@@ -259,6 +239,79 @@ function getDayValue(row: RowState) {
   return row.selectedMode === "horimetro" ? row.horasDia : row.kmDia;
 }
 
+function formatIntegerThousands(intDigits: string) {
+  if (!intDigits) return "";
+  return intDigits.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+}
+
+function digitsBeforeCursor(value: string, cursor: number) {
+  return (value.slice(0, cursor).match(/\d/g) || []).length;
+}
+
+function positionFromDigitsCount(formatted: string, digitCount: number) {
+  if (digitCount <= 0) return 0;
+  let seen = 0;
+  for (let i = 0; i < formatted.length; i++) {
+    if (/\d/.test(formatted[i])) {
+      seen += 1;
+      if (seen >= digitCount) return i + 1;
+    }
+  }
+  return formatted.length;
+}
+
+function formatDecimalDraftPreserveCursor(rawValue: string, cursor: number) {
+  let raw = String(rawValue || "");
+  raw = raw.replace(/\./g, ",");
+  raw = raw.replace(/[^0-9,-]/g, "");
+
+  const negative = raw.startsWith("-");
+  raw = raw.replace(/-/g, "");
+
+  const parts = raw.split(",");
+  const hasComma = raw.includes(",");
+  const intDigitsRaw = (parts[0] || "").replace(/\D/g, "");
+  const decDigits = parts.slice(1).join("").replace(/\D/g, "").slice(0, 1);
+  const intDigits = intDigitsRaw.replace(/^0+(?=\d)/, "") || (intDigitsRaw ? "0" : "");
+  const intFormatted = formatIntegerThousands(intDigits);
+  const formatted =
+    negative
+      ? `-${intFormatted || (hasComma ? "0" : "")}${hasComma ? `,${decDigits}` : ""}`
+      : `${intFormatted || (hasComma ? "0" : "")}${hasComma ? `,${decDigits}` : ""}`;
+
+  const digitsCount = digitsBeforeCursor(rawValue, cursor);
+  const nextCursor = positionFromDigitsCount(formatted, digitsCount);
+
+  return { formatted, cursor: nextCursor };
+}
+
+function validateRow(row: RowState) {
+  const previous = getPreviousValue(row);
+  const current = parsePtNumber(getCurrentValue(row));
+
+  if (current == null) return null;
+  if (previous == null) return null;
+  if (current < previous && !row.isTrocaMedidor) {
+    return `${row.codigo}: valor atual não pode ser menor que o anterior sem marcar troca.`;
+  }
+  return null;
+}
+
+function SaveIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+      <path
+        d="M5 4h11l3 3v13H5zM8 4v5h7V4M8 20v-6h8v6"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
 export default function HorimetrosPage() {
   const env = resolveSupabaseEnv();
 
@@ -268,7 +321,8 @@ export default function HorimetrosPage() {
   }, [env.ok, env.key, env.url]);
 
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+  const [savingAll, setSavingAll] = useState(false);
+  const [savingRowId, setSavingRowId] = useState<number | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [okMsg, setOkMsg] = useState("");
 
@@ -276,6 +330,8 @@ export default function HorimetrosPage() {
   const [search, setSearch] = useState("");
   const [obras, setObras] = useState<ObraRow[]>([]);
   const [rows, setRows] = useState<RowState[]>([]);
+
+  const inputRefs = useRef<Record<number, HTMLInputElement | null>>({});
 
   const periodoAnterior = useMemo(() => previousIso(selectedDate), [selectedDate]);
 
@@ -403,13 +459,49 @@ export default function HorimetrosPage() {
     );
   }, []);
 
-  const updateActiveInput = useCallback((equipamentoId: number, rawValue: string, finalize = false) => {
+  const updateActiveInput = useCallback((equipamentoId: number, rawValue: string, cursor: number | null) => {
     setRows((current) =>
       current.map((row) => {
         if (row.equipamentoId !== equipamentoId) return row;
 
         const next = { ...row };
-        const value = finalize ? finalizeDecimalInput(rawValue) : formatDecimalWhileTyping(rawValue);
+        const { formatted, cursor: nextCursor } = formatDecimalDraftPreserveCursor(
+          rawValue,
+          cursor ?? rawValue.length
+        );
+
+        if (next.selectedMode === "horimetro") {
+          next.horimetroAtual = formatted;
+        } else {
+          next.odometroAtual = formatted;
+        }
+
+        const hAtual = parsePtNumber(next.horimetroAtual);
+        const oAtual = parsePtNumber(next.odometroAtual);
+
+        next.horasDia = safeDiff(hAtual, next.horimetroAnterior);
+        next.kmDia = safeDiff(oAtual, next.odometroAnterior);
+
+        requestAnimationFrame(() => {
+          const input = inputRefs.current[equipamentoId];
+          if (!input) return;
+          try {
+            input.setSelectionRange(nextCursor, nextCursor);
+          } catch {}
+        });
+
+        return next;
+      })
+    );
+  }, []);
+
+  const finalizeActiveInput = useCallback((equipamentoId: number, rawValue: string) => {
+    setRows((current) =>
+      current.map((row) => {
+        if (row.equipamentoId !== equipamentoId) return row;
+
+        const next = { ...row };
+        const value = finalizeDecimalInput(rawValue);
 
         if (next.selectedMode === "horimetro") {
           next.horimetroAtual = value;
@@ -428,14 +520,108 @@ export default function HorimetrosPage() {
     );
   }, []);
 
+  const saveOneRow = useCallback(
+    async (row: RowState) => {
+      if (!supabase) return;
+
+      const validationError = validateRow(row);
+      if (validationError) {
+        setErrorMsg(validationError);
+        setOkMsg("");
+        return;
+      }
+
+      setSavingRowId(row.equipamentoId);
+      setErrorMsg("");
+      setOkMsg("");
+
+      try {
+        const authRes = await supabase.auth.getUser();
+        const user = authRes.data.user;
+        const updatedByName = user?.email || user?.user_metadata?.name || "Usuário";
+        const updatedById = user?.id || null;
+
+        const horimetroFinal = parsePtNumber(row.horimetroAtual);
+        const odometroFinal = parsePtNumber(row.odometroAtual);
+        const horasDia = safeDiff(horimetroFinal, row.horimetroAnterior);
+        const kmDia = safeDiff(odometroFinal, row.odometroAnterior);
+
+        const hasSomethingToSave =
+          row.registroId != null ||
+          Boolean(String(row.observacao || "").trim()) ||
+          Boolean(String(row.obraId || "").trim()) ||
+          Boolean(row.isTrocaMedidor) ||
+          horimetroFinal != null ||
+          odometroFinal != null;
+
+        if (!hasSomethingToSave) {
+          setSavingRowId(null);
+          return;
+        }
+
+        const payload = {
+          data: selectedDate,
+          obra_id: row.obraId ? Number(row.obraId) : null,
+          equipamento_id: row.equipamentoId,
+          horimetro_inicial:
+            horimetroFinal != null || row.horimetroAnterior != null ? row.horimetroAnterior : null,
+          horimetro_final: horimetroFinal,
+          horas_trabalhadas: horasDia,
+          odometro_inicial:
+            odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
+          odometro_final: odometroFinal,
+          km_rodados: kmDia,
+          observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
+          status:
+            horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
+          updated_by_user_id: updatedById,
+          updated_by_nome: updatedByName,
+          updated_at: new Date().toISOString(),
+        };
+
+        if (row.registroId != null) {
+          const res = await supabase
+            .from("horimetro_leituras_diarias")
+            .update(payload)
+            .eq("id", row.registroId);
+
+          if (res.error) throw res.error;
+        } else {
+          const res = await supabase
+            .from("horimetro_leituras_diarias")
+            .insert(payload)
+            .select("id")
+            .single();
+
+          if (res.error) throw res.error;
+        }
+
+        setOkMsg(`${row.codigo} salvo com sucesso.`);
+        await loadData();
+      } catch (e: any) {
+        setErrorMsg(e?.message || `Erro ao salvar ${row.codigo}.`);
+      } finally {
+        setSavingRowId(null);
+      }
+    },
+    [loadData, selectedDate, supabase]
+  );
+
   const handleSaveAll = useCallback(async () => {
     if (!supabase) return;
 
-    setSaving(true);
+    setSavingAll(true);
     setErrorMsg("");
     setOkMsg("");
 
     try {
+      for (const row of rows) {
+        const validationError = validateRow(row);
+        if (validationError) {
+          throw new Error(validationError);
+        }
+      }
+
       const authRes = await supabase.auth.getUser();
       const user = authRes.data.user;
       const updatedByName = user?.email || user?.user_metadata?.name || "Usuário";
@@ -451,6 +637,7 @@ export default function HorimetrosPage() {
           row.registroId != null ||
           Boolean(String(row.observacao || "").trim()) ||
           Boolean(String(row.obraId || "").trim()) ||
+          Boolean(row.isTrocaMedidor) ||
           horimetroFinal != null ||
           odometroFinal != null;
 
@@ -468,7 +655,7 @@ export default function HorimetrosPage() {
             odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
           odometro_final: odometroFinal,
           km_rodados: kmDia,
-          observacao: String(row.observacao || "").trim() || null,
+          observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
           status:
             horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
           updated_by_user_id: updatedById,
@@ -494,12 +681,12 @@ export default function HorimetrosPage() {
         }
       }
 
-      setOkMsg("Salvo com sucesso.");
+      setOkMsg("Tudo salvo com sucesso.");
       await loadData();
     } catch (e: any) {
       setErrorMsg(e?.message || "Erro ao salvar lançamentos.");
     } finally {
-      setSaving(false);
+      setSavingAll(false);
     }
   }, [loadData, rows, selectedDate, supabase]);
 
@@ -555,7 +742,7 @@ export default function HorimetrosPage() {
         }
 
         .shell {
-          width: min(1480px, 100%);
+          width: min(1560px, 100%);
           margin: 0 auto;
           display: grid;
           gap: 14px;
@@ -684,7 +871,7 @@ export default function HorimetrosPage() {
         }
 
         .number-input {
-          min-width: 110px;
+          min-width: 116px;
           text-align: right;
           font-variant-numeric: tabular-nums;
         }
@@ -782,10 +969,22 @@ export default function HorimetrosPage() {
 
         table {
           width: 100%;
-          min-width: 1080px;
+          min-width: 1340px;
           border-collapse: separate;
           border-spacing: 0;
+          table-layout: fixed;
         }
+
+        col.eq { width: 90px; }
+        col.tipo { width: 220px; }
+        col.obra { width: 220px; }
+        col.prev { width: 120px; }
+        col.curr { width: 130px; }
+        col.day { width: 110px; }
+        col.troca { width: 86px; }
+        col.obs { width: 220px; }
+        col.status { width: 150px; }
+        col.save { width: 62px; }
 
         thead th {
           position: sticky;
@@ -801,6 +1000,7 @@ export default function HorimetrosPage() {
           letter-spacing: 0.07em;
           border-bottom: 1px solid var(--line);
           white-space: nowrap;
+          vertical-align: middle;
         }
 
         tbody td {
@@ -890,6 +1090,19 @@ export default function HorimetrosPage() {
           color: var(--danger);
         }
 
+        .checkbox-wrap {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+
+        .troca-check {
+          width: 18px;
+          height: 18px;
+          accent-color: var(--brand);
+          cursor: pointer;
+        }
+
         .status {
           display: inline-flex;
           align-items: center;
@@ -929,6 +1142,29 @@ export default function HorimetrosPage() {
           font-weight: 600;
         }
 
+        .row-save {
+          width: 34px;
+          height: 34px;
+          border: 0;
+          border-radius: 10px;
+          background: var(--surface-soft);
+          color: #4b5563;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          cursor: pointer;
+        }
+
+        .row-save:hover {
+          background: var(--brand-soft);
+          color: var(--brand);
+        }
+
+        .row-save[disabled] {
+          opacity: 0.55;
+          cursor: wait;
+        }
+
         .empty {
           padding: 20px;
           color: var(--muted);
@@ -954,7 +1190,7 @@ export default function HorimetrosPage() {
           }
 
           table {
-            min-width: 980px;
+            min-width: 1280px;
           }
         }
       `}</style>
@@ -970,7 +1206,9 @@ export default function HorimetrosPage() {
                 <div>
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
-                  <p className="subtitle">Uma linha por equipamento. Tabela simples, clean e com rolagem lateral no celular.</p>
+                  <p className="subtitle">
+                    Uma linha por equipamento. Tabela simples, clean e com rolagem lateral no celular.
+                  </p>
                 </div>
               </div>
 
@@ -1008,9 +1246,9 @@ export default function HorimetrosPage() {
                   className="save-btn"
                   type="button"
                   onClick={() => void handleSaveAll()}
-                  disabled={saving || loading || !env.ok}
+                  disabled={savingAll || loading || !env.ok}
                 >
-                  {saving ? "Salvando..." : "Salvar tudo"}
+                  {savingAll ? "Salvando..." : "Salvar tudo"}
                 </button>
               </div>
             </div>
@@ -1035,7 +1273,9 @@ export default function HorimetrosPage() {
             <div className="table-head">
               <div>
                 <h3>Lançamento diário</h3>
-                <p>Padrão automático: CB, CC, CP e KB em odômetro. Os demais em horímetro. O toggle da linha muda qual leitura a linha usa.</p>
+                <p>
+                  Toggle define a leitura usada na linha. Valor atual não pode ser menor que o anterior, exceto quando marcar troca.
+                </p>
               </div>
             </div>
 
@@ -1046,6 +1286,18 @@ export default function HorimetrosPage() {
             ) : (
               <div className="table-wrap">
                 <table>
+                  <colgroup>
+                    <col className="eq" />
+                    <col className="tipo" />
+                    <col className="obra" />
+                    <col className="prev" />
+                    <col className="curr" />
+                    <col className="day" />
+                    <col className="troca" />
+                    <col className="obs" />
+                    <col className="status" />
+                    <col className="save" />
+                  </colgroup>
                   <thead>
                     <tr>
                       <th className="sticky-col">Equip.</th>
@@ -1054,8 +1306,10 @@ export default function HorimetrosPage() {
                       <th>Anterior</th>
                       <th>Atual</th>
                       <th>Do dia</th>
+                      <th>Troca</th>
                       <th>Observação</th>
                       <th>Status</th>
+                      <th>Salvar</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1069,7 +1323,9 @@ export default function HorimetrosPage() {
                         <tr key={row.equipamentoId}>
                           <td className="sticky-col">
                             <div className="equip-code">{row.codigo}</div>
-                            <div className="equip-sub">{row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro"}</div>
+                            <div className="equip-sub">
+                              {row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro"}
+                            </div>
                           </td>
 
                           <td>
@@ -1114,11 +1370,20 @@ export default function HorimetrosPage() {
 
                           <td>
                             <input
+                              ref={(el) => {
+                                inputRefs.current[row.equipamentoId] = el;
+                              }}
                               type="text"
                               className="number-input"
                               value={current}
-                              onChange={(e) => updateActiveInput(row.equipamentoId, e.target.value, false)}
-                              onBlur={(e) => updateActiveInput(row.equipamentoId, e.target.value, true)}
+                              onChange={(e) =>
+                                updateActiveInput(
+                                  row.equipamentoId,
+                                  e.target.value,
+                                  e.target.selectionStart
+                                )
+                              }
+                              onBlur={(e) => finalizeActiveInput(row.equipamentoId, e.target.value)}
                               inputMode="decimal"
                               placeholder="Digite"
                             />
@@ -1135,10 +1400,28 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
+                            <div className="checkbox-wrap">
+                              <input
+                                className="troca-check"
+                                type="checkbox"
+                                checked={row.isTrocaMedidor}
+                                onChange={(e) =>
+                                  updateRow(row.equipamentoId, {
+                                    isTrocaMedidor: e.target.checked,
+                                  })
+                                }
+                                title="Marque quando houve troca de horímetro/odômetro"
+                              />
+                            </div>
+                          </td>
+
+                          <td>
                             <input
                               className="text-input"
                               value={row.observacao}
-                              onChange={(e) => updateRow(row.equipamentoId, { observacao: e.target.value })}
+                              onChange={(e) =>
+                                updateRow(row.equipamentoId, { observacao: e.target.value })
+                              }
                               placeholder="Observação"
                             />
                           </td>
@@ -1156,6 +1439,18 @@ export default function HorimetrosPage() {
                               </div>
                               <div>{row.updatedByNome || "—"}</div>
                             </div>
+                          </td>
+
+                          <td>
+                            <button
+                              type="button"
+                              className="row-save"
+                              title={`Salvar ${row.codigo}`}
+                              onClick={() => void saveOneRow(row)}
+                              disabled={savingRowId === row.equipamentoId || savingAll || !env.ok}
+                            >
+                              <SaveIcon />
+                            </button>
                           </td>
                         </tr>
                       );
