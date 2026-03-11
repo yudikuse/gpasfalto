@@ -1,10 +1,10 @@
 // FILE: app/oc/page.tsx
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-type OrderType = 
+type OrderType =
   | "COMPRA"
   | "ABASTECIMENTO"
   | "MANUTENCAO"
@@ -27,17 +27,17 @@ function pad(n: number, size: number) {
 
 function nowDateBr() {
   const d = new Date();
-  return ${pad(d.getDate(), 2)}/${pad(d.getMonth() + 1, 2)}/${d.getFullYear()};
+  return `${pad(d.getDate(), 2)}/${pad(d.getMonth() + 1, 2)}/${d.getFullYear()}`;
 }
 
 function nowTime() {
   const d = new Date();
-  return ${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)};
+  return `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`;
 }
 
 function mesAno() {
   const d = new Date();
-  return ${d.getFullYear()}-${pad(d.getMonth() + 1, 2)};
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}`;
 }
 
 function onlyDigits(s: string) {
@@ -111,7 +111,9 @@ function getSuggestions(
   const q = normalizeText(value);
   if (!q) return [];
 
-  const starts = options.filter((opt) => normalizeText(opt).startsWith(q));
+  const starts = options.filter((opt) =>
+    normalizeText(opt).startsWith(q)
+  );
 
   if (mode === "startsWith") {
     return starts.slice(0, limit);
@@ -138,7 +140,6 @@ export default function OCPage() {
   // cabeçalho
   const [idGerado, setIdGerado] = useState<string>("-");
   const [numeroOC, setNumeroOC] = useState<string>("");
-  const [ocInputVersion, setOcInputVersion] = useState<number>(0);
 
   // campos base
   const [equipamento, setEquipamento] = useState<string>("");
@@ -181,7 +182,6 @@ export default function OCPage() {
   const obraWrapRef = useRef<HTMLDivElement | null>(null);
   const operadorWrapRef = useRef<HTMLDivElement | null>(null);
   const localWrapRef = useRef<HTMLDivElement | null>(null);
-  const ocLoadSeqRef = useRef(0);
 
   const equipSuggestions = useMemo(
     () => getSuggestions(equipamento, equipmentOptions, "startsWith", 8),
@@ -240,15 +240,15 @@ export default function OCPage() {
 
     const header = [
       titulo,
-      *OC:* ${numeroOC || "-"},
-      *Data:* ${nowDateBr()} ${nowTime()},
+      `*OC:* ${numeroOC || "-"}`,
+      `*Data:* ${nowDateBr()} ${nowTime()}`,
       "",
       "*📍 Dados*",
-      • *Equipamento:* ${equipamento || "-"},
-      • *Obra:* ${obra || "-"},
-      • *Operador:* ${operador || "-"},
-      • *Horímetro:* ${horimetro ? ${horimetro} h : "-"},
-      • *Entrega:* ${localEntrega || "-"},
+      `• *Equipamento:* ${equipamento || "-"}`,
+      `• *Obra:* ${obra || "-"}`,
+      `• *Operador:* ${operador || "-"}`,
+      `• *Horímetro:* ${horimetro ? `${horimetro} h` : "-"}`,
+      `• *Entrega:* ${localEntrega || "-"}`,
     ];
 
     const obsBlock = observacoes?.trim()
@@ -262,8 +262,8 @@ export default function OCPage() {
         const q = it.qtd || "-";
         const d = it.descricao || "-";
         const v = it.valor || "";
-        const vTxt = v ?  — ${v} : "";
-        itLines.push(${i + 1}) ${q}x ${d}${vTxt});
+        const vTxt = v ? ` — ${v}` : "";
+        itLines.push(`${i + 1}) ${q}x ${d}${vTxt}`);
       });
     }
 
@@ -277,13 +277,13 @@ export default function OCPage() {
       const p3 = preco3.trim();
 
       fornLines.push("", "*🏷️ Cotações*");
-      fornLines.push(1) ${f1 || "-"}${p1 ?  — ${p1} : ""});
-      if (qtdFornecedores >= 2) fornLines.push(2) ${f2 || "-"}${p2 ?  — ${p2} : ""});
-      if (qtdFornecedores >= 3) fornLines.push(3) ${f3 || "-"}${p3 ?  — ${p3} : ""});
+      fornLines.push(`1) ${f1 || "-"}${p1 ? ` — ${p1}` : ""}`);
+      if (qtdFornecedores >= 2) fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
+      if (qtdFornecedores >= 3) fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
 
       if (computed.valorMenor !== null) {
-        fornLines.push("", *💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)});
-        if (computed.fornecedorVencedor) fornLines.push(*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor});
+        fornLines.push("", `*💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)}`);
+        if (computed.fornecedorVencedor) fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
       }
     }
 
@@ -309,59 +309,58 @@ export default function OCPage() {
     computed.fornecedorVencedor,
   ]);
 
-  async function loadNextIdPrevisto() {
-    if (!supabase) return;
-
-    try {
-      const { data } = await supabase
-        .from("orders_2025_raw")
-        .select("id")
-        .order("id", { ascending: false })
-        .limit(1);
-
-      const lastId = data?.[0]?.id ? Number(data[0].id) : null;
-      setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
-    } catch {
-      setIdGerado("-");
-    }
-  }
-
-  const forceNumeroOC = useCallback((nextOc: string) => {
-    setNumeroOC(nextOc);
-    setOcInputVersion((v) => v + 1);
-  }, []);
-
- const loadNextNumeroOC = useCallback(async () => {
-  if (!supabase) return;
-
-  try {
-    const { data, error } = await supabase
-      .from("orders_2025_raw")
-      .select("numero_oc")
-      .ilike("numero_oc", "OC%")
-      .order("numero_oc", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-
-    const atual = Number(onlyDigits(String(data?.numero_oc || "")));
-    const proximo = Number.isFinite(atual) && atual > 0 ? atual + 1 : 20000;
-
-    setNumeroOC(OC${proximo});
-  } catch {
-    setNumeroOC("OC20000");
-  }
-}, [supabase]);
-
   // ====== load defaults (ID, OC, listas) ======
   useEffect(() => {
     if (!supabase) return;
 
     (async () => {
-      await loadNextIdPrevisto();
-      await loadNextNumeroOC();
+      // 0) Próximo ID previsto (último id + 1)
+      try {
+        const { data } = await supabase
+          .from("orders_2025_raw")
+          .select("id")
+          .order("id", { ascending: false })
+          .limit(1);
 
+        const lastId = data?.[0]?.id ? Number(data[0].id) : null;
+        setIdGerado(lastId !== null && Number.isFinite(lastId) ? String(lastId + 1) : "-");
+      } catch {
+        setIdGerado("-");
+      }
+
+      // 1) OC sequencial (editável)
+      try {
+        const { data } = await supabase
+          .from("orders_2025_raw")
+          .select("numero_oc")
+          .not("numero_oc", "is", null)
+          .limit(10000);
+
+        let maxFound: number | null = null;
+
+        (data || []).forEach((r: any) => {
+          const raw = String(r?.numero_oc || "").trim();
+          if (!raw) return;
+
+          const up = raw.toUpperCase();
+          if (!up.includes("OC")) return;
+
+          const digits = onlyDigits(up);
+          if (!digits) return;
+
+          const n = Number(digits);
+          if (!Number.isFinite(n)) return;
+
+          if (maxFound === null || n > maxFound) maxFound = n;
+        });
+
+        const nextNum = maxFound !== null ? maxFound + 1 : 20000;
+        setNumeroOC(`OC${nextNum}`);
+      } catch {
+        setNumeroOC("OC20000");
+      }
+
+      // 2) equipamentos (VIEW equipment_costs_2025_v / coluna equipamento)
       try {
         const { data } = await supabase
           .from("equipment_costs_2025_v")
@@ -378,6 +377,7 @@ export default function OCPage() {
         setEquipmentOptions([]);
       }
 
+      // 3) fornecedores + obra + operador + local_entrega (de pedidos existentes)
       try {
         const { data } = await supabase
           .from("orders_2025_raw")
@@ -416,7 +416,7 @@ export default function OCPage() {
         setLocalEntregaOptions([]);
       }
     })();
-  }, [supabase, loadNextNumeroOC]);
+  }, [supabase]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -457,7 +457,7 @@ export default function OCPage() {
   }
 
   function openWhatsapp() {
-    const url = https://wa.me/?text=${encodeURIComponent(whatsappPreview)};
+    const url = `https://wa.me/?text=${encodeURIComponent(whatsappPreview)}`;
     window.open(url, "_blank");
   }
 
@@ -467,12 +467,6 @@ export default function OCPage() {
       setErrorMsg(
         "Configuração do Supabase ausente. Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY (ou ANON_KEY)."
       );
-      return;
-    }
-
-    const numeroOcNormalizado = (numeroOC || "").trim();
-    if (!numeroOcNormalizado) {
-      setErrorMsg("Informe a OC antes de salvar.");
       return;
     }
 
@@ -499,7 +493,7 @@ export default function OCPage() {
             ? "PEDIDO_COMPRA"
             : "OC",
 
-        numero_oc: numeroOcNormalizado,
+        numero_oc: numeroOC || null,
         codigo_equipamento: equipamento || null,
         obra: obra || null,
         operador: operador || null,
@@ -524,60 +518,15 @@ export default function OCPage() {
         fornecedor_vencedor: tipo === "MANUTENCAO" ? computed.fornecedorVencedor : null,
       };
 
-      const { data: existingRows, error: existingErr } = await supabase
+      const { data: inserted, error: err1 } = await supabase
         .from("orders_2025_raw")
+        .insert(payload)
         .select("id")
-        .eq("numero_oc", numeroOcNormalizado)
-        .order("id", { ascending: true })
-        .limit(2);
+        .single();
 
-      if (existingErr) throw existingErr;
+      if (err1) throw err1;
 
-      if ((existingRows || []).length > 1) {
-        throw new Error(
-          Já existe mais de um registro com a OC ${numeroOcNormalizado}. Não foi feita nenhuma alteração por segurança.
-        );
-      }
-
-      let orderId: number;
-
-      if ((existingRows || []).length === 1) {
-        const confirmed = window.confirm(
-          A OC ${numeroOcNormalizado} já existe. Deseja atualizar o registro existente?
-        );
-
-        if (!confirmed) {
-          setSaving(false);
-          return;
-        }
-
-        orderId = Number(existingRows[0].id);
-
-        const { error: errUpdate } = await supabase
-          .from("orders_2025_raw")
-          .update(payload)
-          .eq("id", orderId);
-
-        if (errUpdate) throw errUpdate;
-
-        const { error: errDeleteItems } = await supabase
-          .from("orders_2025_items")
-          .delete()
-          .eq("ordem_id", orderId);
-
-        if (errDeleteItems) throw errDeleteItems;
-      } else {
-        const { data: inserted, error: errInsert } = await supabase
-          .from("orders_2025_raw")
-          .insert(payload)
-          .select("id")
-          .single();
-
-        if (errInsert) throw errInsert;
-
-        orderId = Number(inserted?.id);
-      }
-
+      const orderId = inserted?.id as number;
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
@@ -591,25 +540,22 @@ export default function OCPage() {
 
           const desc =
             (it.descricao || "").trim() +
-            (it.valor ?  — ${it.valor} : "");
+            (it.valor ? ` — ${it.valor}` : "");
 
           return {
             ordem_id: orderId,
             data: d,
             hora: h,
-            numero_oc: numeroOcNormalizado,
+            numero_oc: numeroOC || null,
             descricao: desc ? desc.slice(0, 500) : null,
             quantidade_texto: qtdText,
             quantidade_num: qtdNum,
           };
         });
 
-        const { error: errItems } = await supabase.from("orders_2025_items").insert(rows);
-        if (errItems) throw errItems;
+        const { error: err2 } = await supabase.from("orders_2025_items").insert(rows);
+        if (err2) throw err2;
       }
-
-      await loadNextIdPrevisto();
-      await loadNextNumeroOC();
 
       setSaved(true);
     } catch (e: any) {
@@ -634,7 +580,7 @@ export default function OCPage() {
 
   return (
     <>
-      <style jsx global>{
+      <style jsx global>{`
         @import url("https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,300,0,0");
 
         .msi {
@@ -1011,7 +957,7 @@ export default function OCPage() {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
         }
-      }</style>
+      `}</style>
 
       <main className="oc-root">
         <div className="oc-container">
@@ -1040,7 +986,7 @@ export default function OCPage() {
               {typeButtons.map((b) => (
                 <button
                   key={b.key}
-                  className={type-btn ${tipo === b.key ? "active" : ""}}
+                  className={`type-btn ${tipo === b.key ? "active" : ""}`}
                   onClick={() => {
                     setTipo(b.key);
                     resetSaved();
@@ -1070,9 +1016,6 @@ export default function OCPage() {
               <div className="field">
                 <div className="label">OC</div>
                 <input
-                  key={oc-input-${ocInputVersion}}
-                  id={numero_oc_${ocInputVersion}}
-                  name={numero_oc_${ocInputVersion}}
                   className="input"
                   value={numeroOC}
                   onChange={(e) => {
@@ -1080,8 +1023,6 @@ export default function OCPage() {
                     resetSaved();
                   }}
                   placeholder="OC20337"
-                  autoComplete="new-password"
-                  spellCheck={false}
                 />
               </div>
             </div>
