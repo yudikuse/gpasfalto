@@ -100,41 +100,63 @@ function formatDateBr(dateStr: string) {
   return `${d}/${m}/${y}`;
 }
 
+function normalizeNumberString(value: string) {
+  return value.replace(/[^\d,.\-]/g, "").trim();
+}
+
 function parseFlexibleNumber(value: unknown): number | null {
   if (value === null || value === undefined || value === "") return null;
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
 
-  let s = String(value).trim();
+  let s = normalizeNumberString(String(value));
   if (!s) return null;
 
-  s = s.replace(/\s/g, "");
+  const lastComma = s.lastIndexOf(",");
+  const lastDot = s.lastIndexOf(".");
 
-  const hasComma = s.includes(",");
-  const hasDot = s.includes(".");
+  let decimalSeparator = "";
 
-  if (hasComma && hasDot) {
-    const lastComma = s.lastIndexOf(",");
-    const lastDot = s.lastIndexOf(".");
-    if (lastComma > lastDot) {
-      s = s.replace(/\./g, "").replace(",", ".");
-    } else {
-      s = s.replace(/,/g, "");
-    }
-  } else if (hasComma) {
-    s = s.replace(",", ".");
+  if (lastComma !== -1 && lastDot !== -1) {
+    decimalSeparator = lastComma > lastDot ? "," : ".";
+  } else if (lastComma !== -1) {
+    decimalSeparator = ",";
+  } else if (lastDot !== -1) {
+    const parts = s.split(".");
+    const lastGroup = parts[parts.length - 1] || "";
+    decimalSeparator = lastGroup.length <= 2 ? "." : "";
   }
 
-  const n = Number(s);
+  let normalized = "";
+
+  if (decimalSeparator) {
+    const index = decimalSeparator === "," ? lastComma : lastDot;
+    const intPart = s.slice(0, index).replace(/[.,]/g, "");
+    const decPart = s.slice(index + 1).replace(/[.,]/g, "");
+    normalized = `${intPart || "0"}.${decPart || "0"}`;
+  } else {
+    normalized = s.replace(/[.,]/g, "");
+  }
+
+  const n = Number(normalized);
   return Number.isFinite(n) ? n : null;
 }
 
-function parseDecimalInput(text: string): number | null {
-  return parseFlexibleNumber(text);
+function format1(value: unknown) {
+  const n = parseFlexibleNumber(value);
+  if (n === null) return "";
+  return n.toLocaleString("pt-BR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
 }
 
-function format1(v: unknown) {
-  const n = parseFlexibleNumber(v);
-  if (n === null) return "";
+function formatEditableNumber(value: string) {
+  const normalized = normalizeNumberString(value);
+  if (!normalized) return "";
+
+  const n = parseFlexibleNumber(normalized);
+  if (n === null) return normalized;
+
   return n.toLocaleString("pt-BR", {
     minimumFractionDigits: 1,
     maximumFractionDigits: 1,
@@ -156,10 +178,6 @@ function formatShortTime(iso: string | null | undefined) {
     hour: "2-digit",
     minute: "2-digit",
   });
-}
-
-function onlyDecimalChars(value: string) {
-  return value.replace(/[^\d,.\-]/g, "");
 }
 
 function normText(value: string | null | undefined) {
@@ -297,6 +315,7 @@ export default function HorimetrosPage() {
 
       for (const eq of equipamentos) {
         const row = currentMap[eq.id];
+
         nextDrafts[eq.id] = {
           obra_id: row?.obra_id
             ? String(row.obra_id)
@@ -357,7 +376,7 @@ export default function HorimetrosPage() {
   function getHorasDoDia(eq: EquipRow) {
     if (!eq.usa_horimetro) return null;
     const ini = getInitialHorimetro(eq);
-    const fim = parseDecimalInput(drafts[eq.id]?.horimetro_final || "");
+    const fim = parseFlexibleNumber(drafts[eq.id]?.horimetro_final || "");
     if (ini === null || fim === null) return null;
     return Number((fim - ini).toFixed(1));
   }
@@ -365,12 +384,17 @@ export default function HorimetrosPage() {
   function getKmDoDia(eq: EquipRow) {
     if (!eq.usa_odometro) return null;
     const ini = getInitialOdometro(eq);
-    const fim = parseDecimalInput(drafts[eq.id]?.odometro_final || "");
+    const fim = parseFlexibleNumber(drafts[eq.id]?.odometro_final || "");
     if (ini === null || fim === null) return null;
     return Number((fim - ini).toFixed(1));
   }
 
   function updateDraft(equipamentoId: number, field: keyof DraftRow, value: string) {
+    const nextValue =
+      field === "horimetro_final" || field === "odometro_final"
+        ? formatEditableNumber(value)
+        : value;
+
     setDrafts((prev) => ({
       ...prev,
       [equipamentoId]: {
@@ -378,7 +402,7 @@ export default function HorimetrosPage() {
         horimetro_final: prev[equipamentoId]?.horimetro_final || "",
         odometro_final: prev[equipamentoId]?.odometro_final || "",
         observacao: prev[equipamentoId]?.observacao || "",
-        [field]: value,
+        [field]: nextValue,
       },
     }));
 
@@ -398,8 +422,8 @@ export default function HorimetrosPage() {
       observacao: "",
     };
 
-    const hasHorimetro = eq.usa_horimetro && parseDecimalInput(draft.horimetro_final) !== null;
-    const hasOdometro = eq.usa_odometro && parseDecimalInput(draft.odometro_final) !== null;
+    const hasHorimetro = eq.usa_horimetro && parseFlexibleNumber(draft.horimetro_final) !== null;
+    const hasOdometro = eq.usa_odometro && parseFlexibleNumber(draft.odometro_final) !== null;
     const hasObs = normText(draft.observacao).length > 0;
 
     return Boolean(hasHorimetro || hasOdometro || hasObs);
@@ -420,9 +444,9 @@ export default function HorimetrosPage() {
 
     const sameObra = String(current.obra_id || "") === String(draft.obra_id || "");
     const sameHorimetro =
-      parseDecimalInput(draft.horimetro_final) === parseFlexibleNumber(current.horimetro_final);
+      parseFlexibleNumber(draft.horimetro_final) === parseFlexibleNumber(current.horimetro_final);
     const sameOdometro =
-      parseDecimalInput(draft.odometro_final) === parseFlexibleNumber(current.odometro_final);
+      parseFlexibleNumber(draft.odometro_final) === parseFlexibleNumber(current.odometro_final);
     const sameObs = normText(draft.observacao) === normText(current.observacao);
 
     return !(sameObra && sameHorimetro && sameOdometro && sameObs);
@@ -499,8 +523,8 @@ export default function HorimetrosPage() {
     const horimetroInicial = eq.usa_horimetro ? getInitialHorimetro(eq) : null;
     const odometroInicial = eq.usa_odometro ? getInitialOdometro(eq) : null;
 
-    const horimetroFinal = eq.usa_horimetro ? parseDecimalInput(draft.horimetro_final) : null;
-    const odometroFinal = eq.usa_odometro ? parseDecimalInput(draft.odometro_final) : null;
+    const horimetroFinal = eq.usa_horimetro ? parseFlexibleNumber(draft.horimetro_final) : null;
+    const odometroFinal = eq.usa_odometro ? parseFlexibleNumber(draft.odometro_final) : null;
 
     const current = currentRows[eq.id];
     const hasCurrent = !!current;
@@ -739,8 +763,8 @@ export default function HorimetrosPage() {
                 <div className="eyebrow">GP Asfalto</div>
                 <h1 className="title">Horímetros e Odômetros</h1>
                 <p className="subtitle">
-                  Lançamento diário por equipamento. Salve cada linha conforme os operadores forem
-                  passando os dados.
+                  Lançamento diário por equipamento, com salvamento por linha e leitura anterior
+                  bloqueada.
                 </p>
 
                 <div className="pill-row">
@@ -810,17 +834,17 @@ export default function HorimetrosPage() {
               <div className="table-wrap">
                 <table className="data-table">
                   <colgroup>
-                    <col style={{ width: "86px" }} />
-                    <col style={{ width: "190px" }} />
-                    <col style={{ width: "98px" }} />
-                    <col style={{ width: "98px" }} />
-                    <col style={{ width: "78px" }} />
-                    <col style={{ width: "98px" }} />
-                    <col style={{ width: "98px" }} />
-                    <col style={{ width: "78px" }} />
-                    <col style={{ width: "150px" }} />
-                    <col style={{ width: "92px" }} />
-                    <col style={{ width: "86px" }} />
+                    <col style={{ width: "88px" }} />
+                    <col style={{ width: "200px" }} />
+                    <col style={{ width: "100px" }} />
+                    <col style={{ width: "100px" }} />
+                    <col style={{ width: "82px" }} />
+                    <col style={{ width: "100px" }} />
+                    <col style={{ width: "100px" }} />
+                    <col style={{ width: "82px" }} />
+                    <col style={{ width: "170px" }} />
+                    <col style={{ width: "90px" }} />
+                    <col style={{ width: "88px" }} />
                   </colgroup>
 
                   <thead>
@@ -885,9 +909,7 @@ export default function HorimetrosPage() {
                                 type="text"
                                 inputMode="decimal"
                                 value={draft.horimetro_final}
-                                onChange={(e) =>
-                                  updateDraft(eq.id, "horimetro_final", onlyDecimalChars(e.target.value))
-                                }
+                                onChange={(e) => updateDraft(eq.id, "horimetro_final", e.target.value)}
                                 className="input input-sm editable num"
                                 placeholder="Digite"
                               />
@@ -914,9 +936,7 @@ export default function HorimetrosPage() {
                                 type="text"
                                 inputMode="decimal"
                                 value={draft.odometro_final}
-                                onChange={(e) =>
-                                  updateDraft(eq.id, "odometro_final", onlyDecimalChars(e.target.value))
-                                }
+                                onChange={(e) => updateDraft(eq.id, "odometro_final", e.target.value)}
                                 className="input input-sm editable num"
                                 placeholder="Digite"
                               />
@@ -1026,9 +1046,7 @@ export default function HorimetrosPage() {
                             type="text"
                             inputMode="decimal"
                             value={draft.horimetro_final}
-                            onChange={(e) =>
-                              updateDraft(eq.id, "horimetro_final", onlyDecimalChars(e.target.value))
-                            }
+                            onChange={(e) => updateDraft(eq.id, "horimetro_final", e.target.value)}
                             className="input editable num"
                             placeholder="Digite"
                           />
@@ -1058,9 +1076,7 @@ export default function HorimetrosPage() {
                             type="text"
                             inputMode="decimal"
                             value={draft.odometro_final}
-                            onChange={(e) =>
-                              updateDraft(eq.id, "odometro_final", onlyDecimalChars(e.target.value))
-                            }
+                            onChange={(e) => updateDraft(eq.id, "odometro_final", e.target.value)}
                             className="input editable num"
                             placeholder="Digite"
                           />
@@ -1120,22 +1136,24 @@ export default function HorimetrosPage() {
       <style jsx global>{`
         :root {
           --bg: #f6f7f9;
-          --panel: rgba(255, 255, 255, 0.9);
+          --panel: rgba(255, 255, 255, 0.92);
           --text: #0f172a;
           --muted: #667085;
           --muted-2: #98a2b3;
           --navy: #0b1733;
           --navy-2: #142445;
           --line: rgba(15, 23, 42, 0.06);
-          --line-soft: rgba(15, 23, 42, 0.04);
+          --line-soft: rgba(15, 23, 42, 0.045);
           --readonly-bg: #edf1f5;
-          --editable-bg: #f9fafb;
+          --editable-bg: #f8fafc;
           --ok-bg: #ecfdf3;
           --ok-text: #0f766e;
           --warn-bg: #fff7ed;
           --warn-text: #b45309;
           --red-bg: #fff1f2;
           --red-text: #c81e1e;
+          --blue-bg: #eef2ff;
+          --blue-text: #3730a3;
         }
 
         * {
@@ -1156,12 +1174,12 @@ export default function HorimetrosPage() {
 
         .page-root {
           min-height: 100vh;
-          padding: 26px 16px 88px;
+          padding: 24px 16px 88px;
         }
 
         .page-container {
           width: 100%;
-          max-width: 1180px;
+          max-width: 1200px;
           margin: 0 auto;
           display: flex;
           flex-direction: column;
@@ -1171,23 +1189,22 @@ export default function HorimetrosPage() {
         .hero {
           display: grid;
           grid-template-columns: 1fr auto;
-          gap: 18px;
+          gap: 20px;
           align-items: center;
-          padding: 10px 0 4px;
+          padding: 4px 0 2px;
         }
 
         .hero-left {
           display: flex;
           align-items: center;
-          gap: 18px;
+          gap: 20px;
           min-width: 0;
         }
 
         .logo {
-          width: 240px;
+          width: 190px;
           height: auto;
           object-fit: contain;
-          filter: drop-shadow(0 10px 24px rgba(15, 23, 42, 0.08));
           flex-shrink: 0;
         }
 
@@ -1199,7 +1216,7 @@ export default function HorimetrosPage() {
           font-size: 11px;
           font-weight: 800;
           text-transform: uppercase;
-          letter-spacing: 0.1em;
+          letter-spacing: 0.12em;
           color: var(--muted);
           margin-bottom: 2px;
         }
@@ -1207,7 +1224,7 @@ export default function HorimetrosPage() {
         .title {
           margin: 0;
           font-family: var(--font-manrope), var(--font-inter), sans-serif;
-          font-size: 34px;
+          font-size: 32px;
           line-height: 1.05;
           letter-spacing: -0.035em;
           font-weight: 800;
@@ -1234,8 +1251,8 @@ export default function HorimetrosPage() {
           gap: 8px;
           padding: 8px 12px;
           border-radius: 999px;
-          background: rgba(255, 255, 255, 0.82);
-          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.04);
+          background: rgba(255, 255, 255, 0.86);
+          box-shadow: 0 8px 20px rgba(15, 23, 42, 0.035);
           font-size: 12px;
           color: var(--muted);
         }
@@ -1273,10 +1290,10 @@ export default function HorimetrosPage() {
         .section-card {
           background: var(--panel);
           backdrop-filter: blur(14px);
-          border-radius: 12px;
+          border-radius: 10px;
           box-shadow:
             0 1px 2px rgba(16, 24, 40, 0.03),
-            0 14px 34px rgba(16, 24, 40, 0.04);
+            0 12px 30px rgba(16, 24, 40, 0.035);
         }
 
         .filterbar {
@@ -1284,7 +1301,7 @@ export default function HorimetrosPage() {
           grid-template-columns: minmax(260px, 1fr) 240px;
           gap: 12px;
           align-items: end;
-          padding: 14px;
+          padding: 12px;
         }
 
         .search-field {
@@ -1293,11 +1310,11 @@ export default function HorimetrosPage() {
 
         .input {
           width: 100%;
-          height: 42px;
+          height: 40px;
           border: 0;
           border-radius: 8px;
           background: #ffffff;
-          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.07);
           padding: 0 12px;
           font-size: 14px;
           color: var(--text);
@@ -1308,7 +1325,7 @@ export default function HorimetrosPage() {
         .input:focus {
           box-shadow:
             inset 0 0 0 1px rgba(11, 23, 51, 0.16),
-            0 0 0 4px rgba(11, 23, 51, 0.06);
+            0 0 0 4px rgba(11, 23, 51, 0.05);
         }
 
         .input-sm {
@@ -1320,7 +1337,7 @@ export default function HorimetrosPage() {
 
         .editable {
           background: var(--editable-bg);
-          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.07);
+          box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
         }
 
         .editable::placeholder {
@@ -1355,7 +1372,7 @@ export default function HorimetrosPage() {
         }
 
         .period-box {
-          height: 42px;
+          height: 40px;
           border-radius: 8px;
           background: #f2f5f8;
           display: flex;
@@ -1379,7 +1396,7 @@ export default function HorimetrosPage() {
         }
 
         .save-btn {
-          height: 42px;
+          height: 40px;
           border: 0;
           border-radius: 8px;
           background: linear-gradient(180deg, var(--navy) 0%, var(--navy-2) 100%);
@@ -1388,7 +1405,7 @@ export default function HorimetrosPage() {
           font-size: 14px;
           cursor: pointer;
           padding: 0 16px;
-          box-shadow: 0 10px 22px rgba(8, 26, 68, 0.14);
+          box-shadow: 0 10px 22px rgba(8, 26, 68, 0.12);
         }
 
         .save-btn:hover {
@@ -1421,7 +1438,7 @@ export default function HorimetrosPage() {
 
         .data-table {
           width: 100%;
-          min-width: 1140px;
+          min-width: 1160px;
           border-collapse: collapse;
           font-size: 13px;
         }
@@ -1429,13 +1446,13 @@ export default function HorimetrosPage() {
         .data-table thead th {
           text-align: left;
           color: #475467;
-          padding: 14px 8px;
+          padding: 13px 8px;
           white-space: nowrap;
           font-weight: 800;
           font-size: 11px;
           text-transform: uppercase;
           letter-spacing: 0.05em;
-          background: rgba(255, 255, 255, 0.74);
+          background: rgba(255, 255, 255, 0.76);
           box-shadow: inset 0 -1px 0 var(--line);
         }
 
@@ -1449,7 +1466,7 @@ export default function HorimetrosPage() {
         }
 
         .data-table tbody tr:hover {
-          background: rgba(255, 255, 255, 0.36);
+          background: rgba(255, 255, 255, 0.34);
         }
 
         .equip-col {
@@ -1468,7 +1485,7 @@ export default function HorimetrosPage() {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          min-width: 72px;
+          min-width: 70px;
           height: 24px;
           padding: 0 10px;
           border-radius: 999px;
@@ -1497,13 +1514,13 @@ export default function HorimetrosPage() {
         }
 
         .status-badge.saving {
-          background: #eef2ff;
-          color: #3730a3;
+          background: var(--blue-bg);
+          color: var(--blue-text);
         }
 
         .row-save-btn {
           height: 32px;
-          min-width: 74px;
+          min-width: 76px;
           border: 0;
           border-radius: 8px;
           background: #0f172a;
@@ -1541,9 +1558,9 @@ export default function HorimetrosPage() {
         }
 
         .mobile-card {
-          background: rgba(255, 255, 255, 0.88);
+          background: rgba(255, 255, 255, 0.9);
           backdrop-filter: blur(14px);
-          border-radius: 12px;
+          border-radius: 10px;
           padding: 12px;
           box-shadow:
             0 1px 2px rgba(16, 24, 40, 0.03),
@@ -1606,7 +1623,7 @@ export default function HorimetrosPage() {
           }
 
           .logo {
-            width: 180px;
+            width: 150px;
           }
 
           .title {
