@@ -107,30 +107,65 @@ function format1(value: number | null | undefined) {
 
 function formatInput1(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "";
-  return value.toFixed(1).replace(".", ",");
+  return value.toLocaleString("pt-BR", {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 1,
+  });
 }
 
 function parsePtNumber(value: string) {
   const s = String(value || "").trim();
   if (!s) return null;
   const cleaned = s.replace(/\./g, "").replace(/,/g, ".").replace(/[^0-9.-]/g, "");
-  if (!cleaned || cleaned === "-" || cleaned === ".") return null;
+  if (!cleaned || cleaned === "-" || cleaned === "." || cleaned === "-.") return null;
   const n = Number(cleaned);
   return Number.isFinite(n) ? n : null;
 }
 
-function sanitizeDecimalInput(value: string) {
-  let s = String(value || "").replace(/\s+/g, "");
-  s = s.replace(/\./g, ",");
+function stripToDecimalDraft(value: string) {
+  let s = String(value || "").replace(/\s+/g, "").replace(/\./g, ",");
   s = s.replace(/[^0-9,\-]/g, "");
 
   const isNegative = s.startsWith("-");
   s = s.replace(/-/g, "");
 
-  const parts = s.split(",");
-  if (parts.length > 2) s = parts[0] + "," + parts.slice(1).join("");
+  const firstComma = s.indexOf(",");
+  if (firstComma >= 0) {
+    const intPart = s.slice(0, firstComma).replace(/,/g, "");
+    const decPart = s.slice(firstComma + 1).replace(/,/g, "").slice(0, 1);
+    s = `${intPart},${decPart}`;
+  } else {
+    s = s.replace(/,/g, "");
+  }
 
-  return (isNegative ? "-" : "") + s;
+  return `${isNegative ? "-" : ""}${s}`;
+}
+
+function formatDecimalWhileTyping(value: string) {
+  const draft = stripToDecimalDraft(value);
+  if (!draft || draft === "-") return draft;
+
+  const isNegative = draft.startsWith("-");
+  const unsigned = draft.replace(/^-/, "");
+  const hasComma = unsigned.includes(",");
+  const [intRaw = "", decRaw = ""] = unsigned.split(",");
+  const intDigits = intRaw.replace(/^0+(?=\d)/, "");
+  const intFormatted = intDigits
+    ? Number(intDigits).toLocaleString("pt-BR")
+    : hasComma
+      ? "0"
+      : "";
+
+  if (!hasComma) {
+    return `${isNegative ? "-" : ""}${intFormatted}`;
+  }
+
+  return `${isNegative ? "-" : ""}${intFormatted},${decRaw}`;
+}
+
+function finalizeDecimalInput(value: string) {
+  const n = parsePtNumber(value);
+  return n == null ? "" : formatInput1(n);
 }
 
 function safeDiff(finalValue: number | null, initialValue: number | null) {
@@ -141,7 +176,6 @@ function safeDiff(finalValue: number | null, initialValue: number | null) {
 
 function buildRows(params: {
   equipamentos: EquipamentoRow[];
-  obras: ObraRow[];
   atuais: LeituraRow[];
   anteriores: LeituraRow[];
 }): RowState[] {
@@ -191,6 +225,10 @@ function buildRows(params: {
   });
 }
 
+function statusLabel(row: RowState) {
+  return row.registroId ? "Salvo no dia" : "Pendente";
+}
+
 export default function HorimetrosPage() {
   const env = resolveSupabaseEnv();
 
@@ -207,7 +245,6 @@ export default function HorimetrosPage() {
   const [selectedDate, setSelectedDate] = useState(todayIso());
   const [search, setSearch] = useState("");
   const [obras, setObras] = useState<ObraRow[]>([]);
-  const [equipamentos, setEquipamentos] = useState<EquipamentoRow[]>([]);
   const [rows, setRows] = useState<RowState[]>([]);
 
   const periodoAnterior = useMemo(() => previousIso(selectedDate), [selectedDate]);
@@ -231,7 +268,9 @@ export default function HorimetrosPage() {
     const total = rows.length;
     const lancados = rows.filter((row) => row.registroId != null).length;
     const pendentes = Math.max(total - lancados, 0);
-    return { total, lancados, pendentes };
+    const comHorimetro = rows.filter((row) => row.usaHorimetro).length;
+    const comOdometro = rows.filter((row) => row.usaOdometro).length;
+    return { total, lancados, pendentes, comHorimetro, comOdometro };
   }, [rows]);
 
   const loadData = useCallback(async () => {
@@ -243,22 +282,33 @@ export default function HorimetrosPage() {
 
     try {
       const [obrasRes, equipamentosRes, atuaisRes, anterioresRes] = await Promise.all([
-        supabase.from("obras").select("id,obra,ativo").eq("ativo", true).order("obra", { ascending: true }).limit(500),
+        supabase
+          .from("obras")
+          .select("id,obra,ativo")
+          .eq("ativo", true)
+          .order("obra", { ascending: true })
+          .limit(500),
         supabase
           .from("horimetro_equipamentos")
-          .select("id,codigo,obra_padrao_id,usa_horimetro,usa_odometro,ativo,observacao,horimetro_base,odometro_base")
+          .select(
+            "id,codigo,obra_padrao_id,usa_horimetro,usa_odometro,ativo,observacao,horimetro_base,odometro_base"
+          )
           .eq("ativo", true)
           .order("codigo", { ascending: true })
           .limit(500),
         supabase
           .from("horimetro_leituras_diarias")
-          .select("id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,status,updated_by_user_id,updated_by_nome,updated_at,created_at")
+          .select(
+            "id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,status,updated_by_user_id,updated_by_nome,updated_at,created_at"
+          )
           .eq("data", selectedDate)
           .order("equipamento_id", { ascending: true })
           .limit(1000),
         supabase
           .from("horimetro_leituras_diarias")
-          .select("id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,status,updated_by_user_id,updated_by_nome,updated_at,created_at")
+          .select(
+            "id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,status,updated_by_user_id,updated_by_nome,updated_at,created_at"
+          )
           .lt("data", selectedDate)
           .order("data", { ascending: false })
           .order("updated_at", { ascending: false })
@@ -277,7 +327,7 @@ export default function HorimetrosPage() {
 
       const anterioresDedup: LeituraRow[] = [];
       const seen = new Set<number>();
-      for (const row of ((anterioresRes.data || []) as LeituraRow[])) {
+      for (const row of (anterioresRes.data || []) as LeituraRow[]) {
         const eqId = Number(row.equipamento_id);
         if (seen.has(eqId)) continue;
         seen.add(eqId);
@@ -285,11 +335,9 @@ export default function HorimetrosPage() {
       }
 
       setObras(obrasData);
-      setEquipamentos(equipamentosData);
       setRows(
         buildRows({
           equipamentos: equipamentosData,
-          obras: obrasData,
           atuais: (atuaisRes.data || []) as LeituraRow[],
           anteriores: anterioresDedup,
         })
@@ -369,7 +417,10 @@ export default function HorimetrosPage() {
         };
 
         if (row.registroId != null) {
-          const res = await supabase.from("horimetro_leituras_diarias").update(payload).eq("id", row.registroId);
+          const res = await supabase
+            .from("horimetro_leituras_diarias")
+            .update(payload)
+            .eq("id", row.registroId);
           if (res.error) throw res.error;
         } else {
           const res = await supabase
@@ -394,429 +445,684 @@ export default function HorimetrosPage() {
     <>
       <style jsx global>{`
         :root {
-          --bg: #f3f5f8;
-          --panel: #ffffff;
-          --line: #d7dee8;
-          --line-soft: #e6ebf2;
-          --text: #09152f;
-          --muted: #60708c;
-          --navy-1: #071126;
-          --navy-2: #152742;
-          --orange: #f5a300;
-          --orange-2: #ffbb33;
-          --green: #12b76a;
-          --danger: #d92d20;
+          --bg: #f4f6f8;
+          --surface: #ffffff;
+          --surface-soft: #f9fafb;
+          --line: #d9e0e7;
+          --line-strong: #c7d0da;
+          --text: #152232;
+          --muted: #6a7786;
+          --navy: #1f344a;
+          --navy-soft: #edf3f9;
+          --yellow: #f4b400;
+          --green: #17a672;
+          --green-soft: #e9fbf4;
+          --red: #c83d36;
+          --red-soft: #fff2f1;
+          --shadow: 0 12px 30px rgba(24, 39, 58, 0.06);
         }
-        * { box-sizing: border-box; }
-        html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
-        body { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-        .app-root {
+
+        * {
+          box-sizing: border-box;
+        }
+
+        html,
+        body {
+          margin: 0;
+          padding: 0;
+          background: var(--bg);
+          color: var(--text);
+        }
+
+        body {
+          font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        .page {
           min-height: 100vh;
-          background: linear-gradient(180deg, #eef2f7 0%, #f5f7fb 100%);
+          background: var(--bg);
         }
-        .app-shell {
-          width: 100%;
-          max-width: 1560px;
+
+        .shell {
+          width: min(1680px, 100%);
           margin: 0 auto;
-          padding: 14px;
+          padding: 24px;
         }
-        .topbar {
-          border-radius: 24px 24px 0 0;
-          padding: 18px 18px 22px;
-          background: linear-gradient(90deg, var(--navy-1) 0%, #0a1731 32%, var(--navy-2) 100%);
-          color: #fff;
-          border: 1px solid rgba(255,255,255,0.08);
-          box-shadow: 0 18px 40px rgba(6, 18, 42, 0.18);
+
+        .hero {
+          background: var(--surface);
+          border: 1px solid var(--line);
+          border-radius: 24px;
+          box-shadow: var(--shadow);
+          padding: 24px;
         }
-        .topbar-grid {
-          display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 18px;
-          align-items: start;
-        }
-        .brand {
+
+        .hero-top {
           display: flex;
-          gap: 14px;
-          align-items: center;
+          justify-content: space-between;
+          gap: 18px;
+          align-items: flex-start;
         }
-        .brand-logo {
-          width: 54px;
-          height: 54px;
-          border-radius: 14px;
-          background: linear-gradient(180deg, var(--orange-2), var(--orange));
+
+        .hero-brand {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+        }
+
+        .hero-logo {
+          width: 52px;
+          height: 52px;
+          border-radius: 16px;
+          background: #fff8e1;
+          border: 1px solid #f6df8f;
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          font-weight: 900;
-          color: #09152f;
-          box-shadow: inset 0 1px 0 rgba(255,255,255,0.45), 0 10px 24px rgba(245, 163, 0, 0.25);
           overflow: hidden;
+          flex: 0 0 auto;
         }
-        .brand-logo img {
+
+        .hero-logo img {
           width: 100%;
           height: 100%;
           object-fit: cover;
         }
+
         .eyebrow {
-          margin: 0 0 4px;
-          font-size: 12px;
+          margin: 0 0 6px;
+          font-size: 11px;
           font-weight: 800;
           letter-spacing: 0.12em;
           text-transform: uppercase;
-          color: rgba(255,255,255,0.75);
+          color: var(--muted);
         }
+
         .title {
           margin: 0;
-          font-size: 28px;
-          line-height: 1.05;
+          font-size: 34px;
+          line-height: 1.02;
           font-weight: 900;
-          letter-spacing: -0.03em;
+          letter-spacing: -0.04em;
+          color: var(--navy);
         }
+
         .subtitle {
           margin-top: 8px;
-          max-width: 820px;
-          color: rgba(255,255,255,0.82);
+          max-width: 760px;
+          color: var(--muted);
           font-size: 14px;
+          line-height: 1.45;
+          font-weight: 600;
         }
-        .actions {
+
+        .hero-actions {
+          min-width: 320px;
+          display: grid;
+          gap: 12px;
+        }
+
+        .hero-actions-grid {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 10px;
+          align-items: end;
+        }
+
+        .field-block {
           display: grid;
           gap: 8px;
-          min-width: 260px;
         }
-        .actions label {
+
+        .field-label {
+          font-size: 11px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--muted);
+        }
+
+        .stats-grid {
+          margin-top: 22px;
+          display: grid;
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+          gap: 14px;
+        }
+
+        .stat-card {
+          border: 1px solid var(--line);
+          border-radius: 20px;
+          background: var(--surface-soft);
+          padding: 16px;
+          min-height: 110px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+        }
+
+        .stat-label {
           font-size: 12px;
           font-weight: 800;
-          letter-spacing: 0.06em;
           text-transform: uppercase;
-          color: rgba(255,255,255,0.9);
+          letter-spacing: 0.06em;
+          color: var(--muted);
         }
-        .actions-row {
+
+        .stat-value {
+          margin-top: 6px;
+          font-size: 34px;
+          line-height: 1;
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          color: var(--navy);
+        }
+
+        .stat-note {
+          margin-top: 10px;
+          font-size: 13px;
+          color: var(--muted);
+          font-weight: 700;
+        }
+
+        .toolbar {
+          margin-top: 18px;
+          background: var(--surface);
+          border: 1px solid var(--line);
+          border-radius: 24px;
+          box-shadow: var(--shadow);
+          padding: 18px;
+          display: grid;
+          grid-template-columns: minmax(280px, 1.4fr) minmax(180px, 220px) minmax(240px, 1fr) auto;
+          gap: 14px;
+          align-items: end;
+        }
+
+        .helper-box {
+          height: 48px;
+          border-radius: 14px;
+          border: 1px dashed var(--line-strong);
+          background: #fbfcfd;
+          color: var(--muted);
+          padding: 0 14px;
           display: flex;
-          gap: 10px;
           align-items: center;
-          justify-content: flex-end;
+          font-size: 13px;
+          font-weight: 700;
         }
-        .date-input,
+
         .search-input,
+        .date-input,
         .select,
         .number-input,
         .text-input {
           width: 100%;
-          height: 42px;
-          border-radius: 12px;
-          border: 1px solid #c9d3e1;
+          height: 48px;
+          border-radius: 14px;
+          border: 1px solid var(--line-strong);
           background: #fff;
           color: var(--text);
           outline: none;
-          padding: 0 12px;
+          padding: 0 14px;
           font-size: 14px;
-        }
-        .date-input {
-          min-width: 148px;
-          background: rgba(255,255,255,0.98);
           font-weight: 700;
+          transition: border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
         }
-        .number-input[disabled],
-        .text-input[disabled] {
-          background: #eef2f7;
-          color: #7b8799;
-          cursor: not-allowed;
+
+        .text-input {
+          padding-right: 16px;
         }
+
         .search-input:focus,
+        .date-input:focus,
         .select:focus,
         .number-input:focus,
-        .text-input:focus,
-        .date-input:focus {
-          border-color: #9fb2cc;
-          box-shadow: 0 0 0 4px rgba(91, 120, 160, 0.12);
+        .text-input:focus {
+          border-color: #7ea0c4;
+          box-shadow: 0 0 0 4px rgba(78, 114, 152, 0.12);
         }
+
+        .number-input[disabled],
+        .text-input[disabled] {
+          background: #f1f4f7;
+          color: #8b98a7;
+          cursor: not-allowed;
+        }
+
         .save-btn {
-          height: 42px;
+          height: 48px;
           border: 0;
           border-radius: 14px;
-          padding: 0 18px;
-          font-size: 15px;
+          padding: 0 20px;
+          font-size: 14px;
           font-weight: 900;
-          color: #09152f;
-          background: linear-gradient(180deg, var(--orange-2), var(--orange));
+          background: var(--yellow);
+          color: #1b2430;
           cursor: pointer;
-          box-shadow: 0 10px 24px rgba(245, 163, 0, 0.3);
+          box-shadow: 0 10px 24px rgba(244, 180, 0, 0.18);
+          white-space: nowrap;
         }
-        .save-btn[disabled] { opacity: 0.65; cursor: wait; }
-        .stats {
-          display: flex;
-          flex-wrap: wrap;
-          gap: 10px;
-          margin-top: 16px;
+
+        .save-btn[disabled] {
+          opacity: 0.65;
+          cursor: wait;
         }
-        .chip {
-          min-height: 38px;
-          display: inline-flex;
-          align-items: center;
-          gap: 10px;
-          padding: 0 14px;
-          border-radius: 14px;
-          background: rgba(255,255,255,0.98);
-          color: #09152f;
-          border: 1px solid rgba(255,255,255,0.15);
-          font-size: 13px;
-          font-weight: 800;
-        }
-        .chip strong { font-size: 22px; line-height: 1; }
-        .legend {
-          margin-top: 12px;
-          display: flex;
-          flex-wrap: wrap;
-          gap: 14px;
-          color: rgba(255,255,255,0.92);
-          font-size: 13px;
-          font-weight: 700;
-        }
-        .legend-item { display: inline-flex; align-items: center; gap: 8px; }
-        .dot {
-          width: 14px;
-          height: 14px;
-          border-radius: 4px;
-          border: 1px solid rgba(255,255,255,0.7);
-          background: rgba(255,255,255,0.18);
-        }
-        .dot.green { background: rgba(18,183,106,0.2); border-color: #9ae6b4; }
-        .toolbar {
-          display: grid;
-          grid-template-columns: minmax(260px, 540px) 1fr;
-          gap: 14px;
+
+        .alerts {
           margin-top: 14px;
-          padding: 14px;
-          border: 1px solid var(--line-soft);
-          border-radius: 0 0 22px 22px;
-          background: #fff;
-          box-shadow: 0 10px 28px rgba(10, 21, 47, 0.05);
+          display: grid;
+          gap: 12px;
         }
-        .toolbar-block label {
-          display: block;
-          margin-bottom: 8px;
-          font-size: 12px;
-          font-weight: 900;
-          letter-spacing: 0.06em;
-          text-transform: uppercase;
-          color: #09152f;
-        }
-        .toolbar-help {
-          align-self: end;
-          color: var(--muted);
-          font-size: 13px;
-          font-weight: 700;
-        }
-        .message {
-          margin-top: 12px;
-          border-radius: 14px;
-          padding: 12px 14px;
+
+        .alert {
+          border-radius: 16px;
+          padding: 13px 15px;
           font-size: 14px;
           font-weight: 800;
+          border: 1px solid transparent;
+          background: var(--surface);
         }
-        .message.error {
-          background: #fff0ef;
-          border: 1px solid #f3beb8;
-          color: #8f1f14;
+
+        .alert.error {
+          background: #fff3f2;
+          border-color: #f0c1bc;
+          color: #9a2920;
         }
-        .message.ok {
-          background: #ecfdf3;
-          border: 1px solid #a6f4c5;
-          color: #087443;
+
+        .alert.ok {
+          background: #edfdf5;
+          border-color: #b7efcf;
+          color: #0d7c4f;
         }
+
+        .alert.warn {
+          background: #fff8ea;
+          border-color: #f3d596;
+          color: #8a5b00;
+        }
+
         .table-card {
-          margin-top: 14px;
+          margin-top: 18px;
+          background: var(--surface);
+          border: 1px solid var(--line);
+          border-radius: 24px;
+          box-shadow: var(--shadow);
           overflow: hidden;
-          border-radius: 22px;
-          border: 1px solid var(--line-soft);
-          background: #fff;
-          box-shadow: 0 14px 34px rgba(10, 21, 47, 0.06);
         }
-        .table-wrap { overflow: auto; max-height: calc(100vh - 290px); }
+
+        .table-head {
+          padding: 18px 20px;
+          border-bottom: 1px solid var(--line);
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 14px;
+          background: linear-gradient(180deg, #ffffff 0%, #fbfcfd 100%);
+        }
+
+        .table-title {
+          display: grid;
+          gap: 5px;
+        }
+
+        .table-title strong {
+          font-size: 17px;
+          color: var(--navy);
+        }
+
+        .table-title span {
+          font-size: 13px;
+          color: var(--muted);
+          font-weight: 700;
+        }
+
+        .table-chip-row {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+        }
+
+        .table-chip {
+          height: 34px;
+          border-radius: 999px;
+          padding: 0 12px;
+          display: inline-flex;
+          align-items: center;
+          gap: 8px;
+          border: 1px solid var(--line);
+          background: #fff;
+          color: var(--text);
+          font-size: 12px;
+          font-weight: 800;
+        }
+
+        .table-wrap {
+          overflow: auto;
+          max-height: calc(100vh - 330px);
+        }
+
         table {
           width: 100%;
-          min-width: 1460px;
+          min-width: 1540px;
           border-collapse: separate;
           border-spacing: 0;
         }
+
         thead th {
           position: sticky;
           top: 0;
           z-index: 5;
-          padding: 12px 10px;
-          background: #09152f;
-          color: #fff;
-          font-size: 12px;
+          padding: 14px 10px;
+          background: #f5f8fb;
+          color: var(--navy);
+          border-bottom: 1px solid var(--line);
+          border-right: 1px solid #edf1f5;
+          font-size: 11px;
           font-weight: 900;
-          line-height: 1.15;
+          letter-spacing: 0.06em;
           text-transform: uppercase;
-          border-right: 1px solid rgba(255,255,255,0.18);
+          line-height: 1.25;
           white-space: nowrap;
         }
-        thead th:last-child { border-right: 0; }
+
+        thead th:last-child {
+          border-right: 0;
+        }
+
         tbody td {
           padding: 10px 8px;
-          border-top: 1px solid var(--line-soft);
+          border-top: 1px solid #eef2f6;
           background: #fff;
           vertical-align: middle;
         }
-        tbody tr:hover td { background: #f8fbff; }
-        .td-equip {
-          width: 90px;
+
+        tbody tr:hover td {
+          background: #fcfdff;
+        }
+
+        .equip-cell {
+          min-width: 92px;
+        }
+
+        .equip-code {
           font-size: 15px;
           font-weight: 900;
-          color: #09152f;
-          white-space: nowrap;
+          color: var(--navy);
+          line-height: 1.1;
         }
-        .muted-cell {
+
+        .equip-mode {
+          margin-top: 5px;
+          font-size: 11px;
           color: var(--muted);
-          font-size: 13px;
-          font-weight: 700;
+          font-weight: 800;
+          text-transform: uppercase;
+          letter-spacing: 0.04em;
         }
+
         .readonly-box {
-          height: 42px;
+          min-width: 132px;
+          height: 48px;
+          border-radius: 14px;
+          border: 1px solid var(--line);
+          background: #f9fbfc;
+          color: var(--text);
+          padding: 0 14px;
           display: flex;
           align-items: center;
           justify-content: flex-end;
-          padding: 0 12px;
-          border-radius: 12px;
-          border: 1px solid #d5deea;
-          background: #fff;
           font-weight: 900;
-          color: #09152f;
-          min-width: 120px;
+          font-size: 15px;
         }
+
         .readonly-box.disabled {
+          background: #f1f4f7;
+          color: #8b98a7;
           justify-content: center;
-          background: #eef2f7;
-          color: #7a8699;
         }
-        .right-input { text-align: right; font-weight: 800; }
-        .updated {
-          min-width: 190px;
-          color: var(--muted);
-          font-size: 12px;
-          font-weight: 800;
-          line-height: 1.35;
+
+        .right-input {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
         }
-        .row-status {
+
+        .delta-positive {
+          color: #0e8a5d;
+        }
+
+        .delta-negative {
+          color: var(--red);
+        }
+
+        .status-cell {
+          min-width: 215px;
+        }
+
+        .status-badge {
           display: inline-flex;
           align-items: center;
           gap: 8px;
-          font-size: 12px;
-          font-weight: 800;
-        }
-        .status-dot {
-          width: 10px;
-          height: 10px;
+          padding: 0 10px;
+          height: 32px;
           border-radius: 999px;
-          background: #c4ccd8;
+          font-size: 12px;
+          font-weight: 900;
+          border: 1px solid var(--line);
+          background: #f7f9fb;
+          color: var(--muted);
         }
-        .status-dot.green { background: var(--green); }
+
+        .status-badge.saved {
+          background: var(--green-soft);
+          color: #0d7c4f;
+          border-color: #b7efcf;
+        }
+
+        .status-dot {
+          width: 9px;
+          height: 9px;
+          border-radius: 999px;
+          background: #b6c0cb;
+        }
+
+        .status-badge.saved .status-dot {
+          background: var(--green);
+        }
+
+        .status-meta {
+          margin-top: 8px;
+          display: grid;
+          gap: 4px;
+          font-size: 12px;
+          color: var(--muted);
+          font-weight: 700;
+        }
+
         .empty {
-          padding: 24px;
+          padding: 28px 24px;
           color: var(--muted);
           font-size: 14px;
           font-weight: 700;
         }
-        .env-warning {
-          margin-top: 12px;
-          border-radius: 14px;
-          padding: 12px 14px;
-          background: #fff5e8;
-          border: 1px solid #f8d49a;
-          color: #8c5a00;
-          font-size: 14px;
-          font-weight: 800;
+
+        @media (max-width: 1280px) {
+          .stats-grid {
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+          }
+
+          .toolbar {
+            grid-template-columns: 1fr 220px;
+          }
         }
+
         @media (max-width: 980px) {
-          .topbar-grid, .toolbar {
+          .shell {
+            padding: 16px;
+          }
+
+          .hero-top {
+            flex-direction: column;
+          }
+
+          .hero-actions {
+            min-width: 0;
+            width: 100%;
+          }
+
+          .hero-actions-grid,
+          .toolbar {
             grid-template-columns: 1fr;
           }
-          .actions-row {
-            justify-content: flex-start;
+
+          .stats-grid {
+            grid-template-columns: 1fr;
           }
-          .table-wrap { max-height: none; }
+
+          .table-wrap {
+            max-height: none;
+          }
         }
       `}</style>
 
-      <main className="app-root">
-        <div className="app-shell">
-          <section className="topbar">
-            <div className="topbar-grid">
+      <main className="page">
+        <div className="shell">
+          <section className="hero">
+            <div className="hero-top">
               <div>
-                <div className="brand">
-                  <div className="brand-logo">
+                <div className="hero-brand">
+                  <div className="hero-logo">
                     <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
                   </div>
                   <div>
                     <p className="eyebrow">GP Asfalto</p>
                     <h1 className="title">Horímetros e Odômetros</h1>
-                    <div className="subtitle">
-                      Lançamento diário por equipamento, com obra na própria linha e leitura anterior bloqueada.
-                    </div>
                   </div>
                 </div>
-
-                <div className="stats">
-                  <div className="chip">Equipamentos <strong>{stats.total}</strong></div>
-                  <div className="chip">Lançados <strong>{stats.lancados}</strong></div>
-                  <div className="chip">Pendentes <strong>{stats.pendentes}</strong></div>
-                  <div className="chip">Período visível <span>{isoToBr(periodoAnterior)} — {isoToBr(selectedDate)}</span></div>
-                </div>
-
-                <div className="legend">
-                  <span className="legend-item"><span className="dot" /> Somente leitura</span>
-                  <span className="legend-item"><span className="dot" /> Editável</span>
-                  <span className="legend-item"><span className="dot green" /> Já salvo no dia</span>
+                <div className="subtitle">
+                  Lançamento diário por equipamento, com visual mais clean, leitura anterior bloqueada e número formatado automaticamente durante a digitação.
                 </div>
               </div>
 
-              <div className="actions">
-                <label htmlFor="data-lancamento">Data do lançamento</label>
-                <div className="actions-row">
-                  <input
-                    id="data-lancamento"
-                    className="date-input"
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                  />
-                  <button className="save-btn" type="button" onClick={() => void handleSaveAll()} disabled={saving || loading || !env.ok}>
+              <div className="hero-actions">
+                <div className="hero-actions-grid">
+                  <div className="field-block">
+                    <label className="field-label" htmlFor="data-lancamento">
+                      Data do lançamento
+                    </label>
+                    <input
+                      id="data-lancamento"
+                      className="date-input"
+                      type="date"
+                      value={selectedDate}
+                      onChange={(e) => setSelectedDate(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    className="save-btn"
+                    type="button"
+                    onClick={() => void handleSaveAll()}
+                    disabled={saving || loading || !env.ok}
+                  >
                     {saving ? "Salvando..." : "Salvar tudo"}
                   </button>
                 </div>
               </div>
             </div>
+
+            <div className="stats-grid">
+              <div className="stat-card">
+                <div>
+                  <div className="stat-label">Equipamentos</div>
+                  <div className="stat-value">{stats.total}</div>
+                </div>
+                <div className="stat-note">Linhas carregadas para o dia atual.</div>
+              </div>
+
+              <div className="stat-card">
+                <div>
+                  <div className="stat-label">Lançados</div>
+                  <div className="stat-value">{stats.lancados}</div>
+                </div>
+                <div className="stat-note">Já possuem registro salvo em {isoToBr(selectedDate)}.</div>
+              </div>
+
+              <div className="stat-card">
+                <div>
+                  <div className="stat-label">Pendentes</div>
+                  <div className="stat-value">{stats.pendentes}</div>
+                </div>
+                <div className="stat-note">Sem lançamento salvo no dia selecionado.</div>
+              </div>
+
+              <div className="stat-card">
+                <div>
+                  <div className="stat-label">Período visível</div>
+                  <div className="stat-value" style={{ fontSize: 22 }}>
+                    {isoToBr(periodoAnterior)}
+                  </div>
+                </div>
+                <div className="stat-note">Base anterior: {isoToBr(periodoAnterior)} · Atual: {isoToBr(selectedDate)}</div>
+              </div>
+            </div>
           </section>
 
           <section className="toolbar">
-            <div className="toolbar-block">
-              <label htmlFor="busca-equip">Buscar equipamento</label>
+            <div className="field-block">
+              <label className="field-label" htmlFor="busca-equip">
+                Buscar equipamento
+              </label>
               <input
                 id="busca-equip"
                 className="search-input"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder="Ex.: MN-05"
+                placeholder="Ex.: MN-05, obra, código..."
               />
             </div>
-            <div className="toolbar-help">
-              Anterior = leitura final do dia anterior. Se não existir, usa a base do cadastro.
+
+            <div className="field-block">
+              <label className="field-label">Leituras</label>
+              <div className="helper-box">
+                {stats.comHorimetro} com horímetro · {stats.comOdometro} com odômetro
+              </div>
+            </div>
+
+            <div className="field-block">
+              <label className="field-label">Regra</label>
+              <div className="helper-box">
+                Anterior = final do dia anterior. Sem histórico, usa base do cadastro.
+              </div>
+            </div>
+
+            <div className="field-block">
+              <label className="field-label">Atualização</label>
+              <div className="helper-box">Máscara automática em pt-BR nos campos numéricos.</div>
             </div>
           </section>
 
-          {!env.ok ? (
-            <div className="env-warning">
-              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY
-              ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
-            </div>
-          ) : null}
-
-          {errorMsg ? <div className="message error">{errorMsg}</div> : null}
-          {okMsg ? <div className="message ok">{okMsg}</div> : null}
+          <div className="alerts">
+            {!env.ok ? (
+              <div className="alert warn">
+                Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
+              </div>
+            ) : null}
+            {errorMsg ? <div className="alert error">{errorMsg}</div> : null}
+            {okMsg ? <div className="alert ok">{okMsg}</div> : null}
+          </div>
 
           <section className="table-card">
+            <div className="table-head">
+              <div className="table-title">
+                <strong>Lançamento diário</strong>
+                <span>Horímetro e odômetro por equipamento, obra, status e observação.</span>
+              </div>
+
+              <div className="table-chip-row">
+                <div className="table-chip">Anterior: {isoToBr(periodoAnterior)}</div>
+                <div className="table-chip">Atual: {isoToBr(selectedDate)}</div>
+                <div className="table-chip">Busca: {search.trim() ? search.trim() : "todas"}</div>
+              </div>
+            </div>
+
             {loading ? (
               <div className="empty">Carregando...</div>
             ) : filteredRows.length === 0 ? (
@@ -826,24 +1132,33 @@ export default function HorimetrosPage() {
                 <table>
                   <thead>
                     <tr>
-                      <th>EQUIP.</th>
-                      <th>OBRA</th>
-                      <th>HORÍMETRO ANTERIOR<br />{isoToBr(periodoAnterior)}</th>
-                      <th>HORÍMETRO ATUAL<br />{isoToBr(selectedDate)}</th>
-                      <th>HORAS DO DIA</th>
-                      <th>ODÔMETRO ANTERIOR<br />{isoToBr(periodoAnterior)}</th>
-                      <th>ODÔMETRO ATUAL<br />{isoToBr(selectedDate)}</th>
-                      <th>KM DO DIA</th>
-                      <th>ÚLTIMA ATUALIZAÇÃO</th>
-                      <th>OBSERVAÇÃO</th>
+                      <th>Equip.</th>
+                      <th>Obra</th>
+                      <th>Horímetro anterior<br />{isoToBr(periodoAnterior)}</th>
+                      <th>Horímetro atual<br />{isoToBr(selectedDate)}</th>
+                      <th>Horas do dia</th>
+                      <th>Odômetro anterior<br />{isoToBr(periodoAnterior)}</th>
+                      <th>Odômetro atual<br />{isoToBr(selectedDate)}</th>
+                      <th>KM do dia</th>
+                      <th>Última atualização</th>
+                      <th>Observação</th>
                     </tr>
                   </thead>
                   <tbody>
                     {filteredRows.map((row) => {
                       const obraSelecionada = row.obraId ? Number(row.obraId) : 0;
+                      const horasNegative = (row.horasDia ?? 0) < 0;
+                      const kmNegative = (row.kmDia ?? 0) < 0;
+
                       return (
                         <tr key={row.equipamentoId}>
-                          <td className="td-equip">{row.codigo}</td>
+                          <td className="equip-cell">
+                            <div className="equip-code">{row.codigo}</div>
+                            <div className="equip-mode">
+                              {row.usaHorimetro ? "Horímetro" : "—"} · {row.usaOdometro ? "Odômetro" : "—"}
+                            </div>
+                          </td>
+
                           <td>
                             <select
                               className="select"
@@ -858,11 +1173,13 @@ export default function HorimetrosPage() {
                               ))}
                             </select>
                           </td>
+
                           <td>
                             <div className={`readonly-box ${!row.usaHorimetro ? "disabled" : ""}`}>
                               {row.usaHorimetro ? format1(row.horimetroAnterior) : "—"}
                             </div>
                           </td>
+
                           <td>
                             <input
                               type="text"
@@ -870,25 +1187,36 @@ export default function HorimetrosPage() {
                               value={row.horimetroAtual}
                               onChange={(e) =>
                                 updateRow(row.equipamentoId, {
-                                  horimetroAtual: sanitizeDecimalInput(e.target.value),
+                                  horimetroAtual: formatDecimalWhileTyping(e.target.value),
+                                })
+                              }
+                              onBlur={(e) =>
+                                updateRow(row.equipamentoId, {
+                                  horimetroAtual: finalizeDecimalInput(e.target.value),
                                 })
                               }
                               inputMode="decimal"
-                              pattern="[0-9]*[.,]?[0-9]*"
                               placeholder="Digite"
                               disabled={!row.usaHorimetro}
                             />
                           </td>
+
                           <td>
-                            <div className={`readonly-box ${!row.usaHorimetro ? "disabled" : ""}`}>
+                            <div
+                              className={`readonly-box ${!row.usaHorimetro ? "disabled" : ""} ${
+                                horasNegative ? "delta-negative" : "delta-positive"
+                              }`}
+                            >
                               {row.usaHorimetro ? format1(row.horasDia) : "—"}
                             </div>
                           </td>
+
                           <td>
                             <div className={`readonly-box ${!row.usaOdometro ? "disabled" : ""}`}>
                               {row.usaOdometro ? format1(row.odometroAnterior) : "—"}
                             </div>
                           </td>
+
                           <td>
                             <input
                               type="text"
@@ -896,40 +1224,41 @@ export default function HorimetrosPage() {
                               value={row.odometroAtual}
                               onChange={(e) =>
                                 updateRow(row.equipamentoId, {
-                                  odometroAtual: sanitizeDecimalInput(e.target.value),
+                                  odometroAtual: formatDecimalWhileTyping(e.target.value),
+                                })
+                              }
+                              onBlur={(e) =>
+                                updateRow(row.equipamentoId, {
+                                  odometroAtual: finalizeDecimalInput(e.target.value),
                                 })
                               }
                               inputMode="decimal"
-                              pattern="[0-9]*[.,]?[0-9]*"
                               placeholder="Digite"
                               disabled={!row.usaOdometro}
                             />
                           </td>
+
                           <td>
-                            <div className={`readonly-box ${!row.usaOdometro ? "disabled" : ""}`}>
+                            <div
+                              className={`readonly-box ${!row.usaOdometro ? "disabled" : ""} ${
+                                kmNegative ? "delta-negative" : "delta-positive"
+                              }`}
+                            >
                               {row.usaOdometro ? format1(row.kmDia) : "—"}
                             </div>
                           </td>
-                          <td className="updated">
-                            {row.registroId ? (
-                              <>
-                                <div className="row-status">
-                                  <span className="status-dot green" />
-                                  Salvo no dia
-                                </div>
-                                <div>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("pt-BR") : "—"}</div>
-                                <div>{row.updatedByNome || "—"}</div>
-                              </>
-                            ) : (
-                              <>
-                                <div className="row-status">
-                                  <span className="status-dot" />
-                                  Ainda não salvo neste dia
-                                </div>
-                                <div>{obraSelecionada ? obraNameById.get(obraSelecionada) || "" : ""}</div>
-                              </>
-                            )}
+
+                          <td className="status-cell">
+                            <div className={`status-badge ${row.registroId ? "saved" : ""}`}>
+                              <span className="status-dot" />
+                              {statusLabel(row)}
+                            </div>
+                            <div className="status-meta">
+                              <div>{row.updatedAt ? new Date(row.updatedAt).toLocaleString("pt-BR") : "Ainda não salvo neste dia"}</div>
+                              <div>{row.updatedByNome || (obraSelecionada ? obraNameById.get(obraSelecionada) || "" : "")}</div>
+                            </div>
                           </td>
+
                           <td>
                             <input
                               className="text-input"
