@@ -591,38 +591,30 @@ export default function HorimetrosPage() {
     return { userId, userName };
   }
 
-  async function reloadCurrentRows(ids: number[]) {
-    if (!ids.length) return;
+ async function reloadCurrentRows(ids: number[]) {
+  if (!ids.length) return;
 
-    const { data, error } = await supabase
-      .from("horimetro_leituras_diarias")
-      .select(
-        "id, data, obra_id, equipamento_id, horimetro_inicial, horimetro_final, horas_traballhadas, odometro_inicial, odometro_final, km_rodados, observacao, status, updated_by_user_id, updated_by_nome, updated_at, created_at"
-      )
-      .eq("data", selectedDate)
-      .in("equipamento_id", ids);
+  const { data, error } = await supabase
+    .from("horimetro_leituras_diarias")
+    .select(
+      "id, data, obra_id, equipamento_id, horimetro_inicial, horimetro_final, horas_trabalhadas, odometro_inicial, odometro_final, km_rodados, observacao, status, updated_by_user_id, updated_by_nome, updated_at, created_at"
+    )
+    .eq("data", selectedDate)
+    .in("equipamento_id", ids);
 
-    if (error) {
-      const { data: fallbackData, error: fallbackError } = await supabase
-        .from("horimetro_leituras_diarias")
-        .select(
-          "id, data, obra_id, equipamento_id, horimetro_inicial, horimetro_final, horas_trabalhadas, odometro_inicial, odometro_final, km_rodados, observacao, status, updated_by_user_id, updated_by_nome, updated_at, created_at"
-        )
-        .eq("data", selectedDate)
-        .in("equipamento_id", ids);
+  if (error) return;
 
-      if (fallbackError) return;
+  setCurrentRows((prev) => {
+    const next = { ...prev };
 
-      setCurrentRows((prev) => {
-        const next = { ...prev };
-        for (const id of ids) delete next[id];
-        for (const row of (fallbackData || []) as LeituraRow[]) {
-          next[row.equipamento_id] = row;
-        }
-        return next;
-      });
-      return;
+    for (const id of ids) delete next[id];
+    for (const row of (data || []) as LeituraRow[]) {
+      next[row.equipamento_id] = row;
     }
+
+    return next;
+  });
+}
 
     setCurrentRows((prev) => {
       const next = { ...prev };
