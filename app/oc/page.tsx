@@ -125,22 +125,129 @@ function getSuggestions(
   return [...starts, ...contains].slice(0, limit);
 }
 
+function buildWhatsappText(params: {
+  tipo: OrderType;
+  numeroOC: string;
+  equipamento: string;
+  obra: string;
+  operador: string;
+  horimetro: string;
+  localEntrega: string;
+  observacoes: string;
+  items: ItemRow[];
+  qtdFornecedores: number;
+  forn1: string;
+  forn2: string;
+  forn3: string;
+  preco1: string;
+  preco2: string;
+  preco3: string;
+  valorMenor: number | null;
+  fornecedorVencedor: string | null;
+  dataBr?: string;
+  timeStr?: string;
+}) {
+  const {
+    tipo,
+    numeroOC,
+    equipamento,
+    obra,
+    operador,
+    horimetro,
+    localEntrega,
+    observacoes,
+    items,
+    qtdFornecedores,
+    forn1,
+    forn2,
+    forn3,
+    preco1,
+    preco2,
+    preco3,
+    valorMenor,
+    fornecedorVencedor,
+    dataBr,
+    timeStr,
+  } = params;
+
+  const titulo =
+    tipo === "ABASTECIMENTO"
+      ? "*🛢️ PEDIDO DE ABASTECIMENTO*"
+      : tipo === "MANUTENCAO"
+      ? "*🛠️ PEDIDO DE MANUTENÇÃO*"
+      : tipo === "PECAS"
+      ? "*🔧 PEDIDO DE PEÇAS*"
+      : tipo === "SERVICOS"
+      ? "*🧾 PEDIDO DE SERVIÇOS*"
+      : tipo === "COMPRA"
+      ? "*🛒 PEDIDO DE COMPRA*"
+      : "*📌 PEDIDO*";
+
+  const header = [
+    titulo,
+    `*OC:* ${numeroOC || "-"}`,
+    `*Data:* ${dataBr || nowDateBr()} ${timeStr || nowTime()}`,
+    "",
+    "*📍 Dados*",
+    `• *Equipamento:* ${equipamento || "-"}`,
+    `• *Obra:* ${obra || "-"}`,
+    `• *Operador:* ${operador || "-"}`,
+    `• *Horímetro:* ${horimetro ? `${horimetro} h` : "-"}`,
+    `• *Entrega:* ${localEntrega || "-"}`,
+  ];
+
+  const obsBlock = observacoes?.trim()
+    ? ["", "*📝 Observações*", observacoes.trim()]
+    : [];
+
+  const itLines: string[] = [];
+  if (items.length) {
+    itLines.push("", "*📦 Itens*");
+    items.forEach((it, i) => {
+      const q = it.qtd || "-";
+      const d = it.descricao || "-";
+      const v = it.valor || "";
+      const vTxt = v ? ` — ${v}` : "";
+      itLines.push(`${i + 1}) ${q}x ${d}${vTxt}`);
+    });
+  }
+
+  const fornLines: string[] = [];
+  if (tipo === "MANUTENCAO") {
+    const f1 = forn1.trim();
+    const f2 = forn2.trim();
+    const f3 = forn3.trim();
+    const p1 = preco1.trim();
+    const p2 = preco2.trim();
+    const p3 = preco3.trim();
+
+    fornLines.push("", "*🏷️ Cotações*");
+    fornLines.push(`1) ${f1 || "-"}${p1 ? ` — ${p1}` : ""}`);
+    if (qtdFornecedores >= 2) fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
+    if (qtdFornecedores >= 3) fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
+
+    if (valorMenor !== null) {
+      fornLines.push("", `*💰 Menor preço considerado:* ${formatBRLFromNumber(valorMenor)}`);
+      if (fornecedorVencedor) fornLines.push(`*🏆 Fornecedor vencedor:* ${fornecedorVencedor}`);
+    }
+  }
+
+  return toWhatsappText([...header, ...obsBlock, ...itLines, ...fornLines]).trim();
+}
+
 export default function OCPage() {
   const [tipo, setTipo] = useState<OrderType>("MANUTENCAO");
 
-  // Supabase (NUNCA no escopo global)
   const supabase: SupabaseClient | null = useMemo(() => {
     const { url, key, ok } = resolvePublicSupabase();
     if (!ok) return null;
     return createClient(url, key);
   }, []);
 
-  // cabeçalho
   const [idGerado, setIdGerado] = useState<string>("-");
   const [numeroOC, setNumeroOC] = useState<string>("");
   const [ocInputVersion, setOcInputVersion] = useState<number>(0);
 
-  // campos base
   const [equipamento, setEquipamento] = useState<string>("");
   const [obra, setObra] = useState<string>("");
   const [operador, setOperador] = useState<string>("");
@@ -148,7 +255,6 @@ export default function OCPage() {
   const [localEntrega, setLocalEntrega] = useState<string>("");
   const [observacoes, setObservacoes] = useState<string>("");
 
-  // fornecedores (até 3)
   const [qtdFornecedores, setQtdFornecedores] = useState<number>(1);
   const [forn1, setForn1] = useState<string>("");
   const [forn2, setForn2] = useState<string>("");
@@ -169,9 +275,9 @@ export default function OCPage() {
   const [saving, setSaving] = useState<boolean>(false);
   const [saved, setSaved] = useState<boolean>(false);
   const [savedOrderId, setSavedOrderId] = useState<number | null>(null);
+  const [savedWhatsappText, setSavedWhatsappText] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
 
-  // autocomplete
   const [showEquipSug, setShowEquipSug] = useState<boolean>(false);
   const [showObraSug, setShowObraSug] = useState<boolean>(false);
   const [showOperadorSug, setShowOperadorSug] = useState<boolean>(false);
@@ -181,7 +287,6 @@ export default function OCPage() {
   const obraWrapRef = useRef<HTMLDivElement | null>(null);
   const operadorWrapRef = useRef<HTMLDivElement | null>(null);
   const localWrapRef = useRef<HTMLDivElement | null>(null);
-  const ocLoadSeqRef = useRef(0);
 
   const equipSuggestions = useMemo(
     () => getSuggestions(equipamento, equipmentOptions, "startsWith", 8),
@@ -225,69 +330,26 @@ export default function OCPage() {
   }, [preco1, preco2, preco3, forn1, forn2, forn3, qtdFornecedores]);
 
   const whatsappPreview = useMemo(() => {
-    const titulo =
-      tipo === "ABASTECIMENTO"
-        ? "*🛢️ PEDIDO DE ABASTECIMENTO*"
-        : tipo === "MANUTENCAO"
-        ? "*🛠️ PEDIDO DE MANUTENÇÃO*"
-        : tipo === "PECAS"
-        ? "*🔧 PEDIDO DE PEÇAS*"
-        : tipo === "SERVICOS"
-        ? "*🧾 PEDIDO DE SERVIÇOS*"
-        : tipo === "COMPRA"
-        ? "*🛒 PEDIDO DE COMPRA*"
-        : "*📌 PEDIDO*";
-
-    const header = [
-      titulo,
-      `*OC:* ${numeroOC || "-"}`,
-      `*Data:* ${nowDateBr()} ${nowTime()}`,
-      "",
-      "*📍 Dados*",
-      `• *Equipamento:* ${equipamento || "-"}`,
-      `• *Obra:* ${obra || "-"}`,
-      `• *Operador:* ${operador || "-"}`,
-      `• *Horímetro:* ${horimetro ? `${horimetro} h` : "-"}`,
-      `• *Entrega:* ${localEntrega || "-"}`,
-    ];
-
-    const obsBlock = observacoes?.trim()
-      ? ["", "*📝 Observações*", observacoes.trim()]
-      : [];
-
-    const itLines: string[] = [];
-    if (items.length) {
-      itLines.push("", "*📦 Itens*");
-      items.forEach((it, i) => {
-        const q = it.qtd || "-";
-        const d = it.descricao || "-";
-        const v = it.valor || "";
-        const vTxt = v ? ` — ${v}` : "";
-        itLines.push(`${i + 1}) ${q}x ${d}${vTxt}`);
-      });
-    }
-
-    const fornLines: string[] = [];
-    if (tipo === "MANUTENCAO") {
-      const f1 = forn1.trim();
-      const f2 = forn2.trim();
-      const f3 = forn3.trim();
-      const p1 = preco1.trim();
-      const p2 = preco2.trim();
-      const p3 = preco3.trim();
-
-      fornLines.push("", "*🏷️ Cotações*");
-      fornLines.push(`1) ${f1 || "-"}${p1 ? ` — ${p1}` : ""}`);
-      if (qtdFornecedores >= 2) fornLines.push(`2) ${f2 || "-"}${p2 ? ` — ${p2}` : ""}`);
-      if (qtdFornecedores >= 3) fornLines.push(`3) ${f3 || "-"}${p3 ? ` — ${p3}` : ""}`);
-
-      if (computed.valorMenor !== null) {
-        fornLines.push("", `*💰 Menor preço considerado:* ${formatBRLFromNumber(computed.valorMenor)}`);
-        if (computed.fornecedorVencedor) fornLines.push(`*🏆 Fornecedor vencedor:* ${computed.fornecedorVencedor}`);
-      }
-    }
-
-    return toWhatsappText([...header, ...obsBlock, ...itLines, ...fornLines]).trim();
+    return buildWhatsappText({
+      tipo,
+      numeroOC,
+      equipamento,
+      obra,
+      operador,
+      horimetro,
+      localEntrega,
+      observacoes,
+      items,
+      qtdFornecedores,
+      forn1,
+      forn2,
+      forn3,
+      preco1,
+      preco2,
+      preco3,
+      valorMenor: computed.valorMenor,
+      fornecedorVencedor: computed.fornecedorVencedor,
+    });
   }, [
     tipo,
     numeroOC,
@@ -332,29 +394,28 @@ export default function OCPage() {
   }, []);
 
   const loadNextNumeroOC = useCallback(async () => {
-  if (!supabase) return;
+    if (!supabase) return;
 
-  try {
-    const { data, error } = await supabase
-      .from("orders_2025_raw")
-      .select("numero_oc")
-      .ilike("numero_oc", "OC%")
-      .order("numero_oc", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+    try {
+      const { data, error } = await supabase
+        .from("orders_2025_raw")
+        .select("numero_oc")
+        .ilike("numero_oc", "OC%")
+        .order("numero_oc", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (error) throw error;
+      if (error) throw error;
 
-    const atual = Number(onlyDigits(String(data?.numero_oc || "")));
-    const proximo = Number.isFinite(atual) && atual > 0 ? atual + 1 : 20000;
+      const atual = Number(onlyDigits(String(data?.numero_oc || "")));
+      const proximo = Number.isFinite(atual) && atual > 0 ? atual + 1 : 20000;
 
-    forceNumeroOC(`OC${proximo}`);
-  } catch {
-    forceNumeroOC("OC20000");
-  }
-}, [supabase, forceNumeroOC]);
+      forceNumeroOC(`OC${proximo}`);
+    } catch {
+      forceNumeroOC("OC20000");
+    }
+  }, [supabase, forceNumeroOC]);
 
-  // ====== load defaults (ID, OC, listas) ======
   useEffect(() => {
     if (!supabase) return;
 
@@ -435,6 +496,7 @@ export default function OCPage() {
   function resetSaved() {
     setSaved(false);
     setSavedOrderId(null);
+    setSavedWhatsappText("");
   }
 
   function addItem() {
@@ -453,11 +515,13 @@ export default function OCPage() {
   }
 
   async function copyText() {
-    await navigator.clipboard.writeText(whatsappPreview);
+    const text = savedWhatsappText || whatsappPreview;
+    await navigator.clipboard.writeText(text);
   }
 
   function openWhatsapp() {
-    const url = `https://wa.me/?text=${encodeURIComponent(whatsappPreview)}`;
+    const text = savedWhatsappText || whatsappPreview;
+    const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
     window.open(url, "_blank");
   }
 
@@ -480,10 +544,35 @@ export default function OCPage() {
 
     try {
       const firstItem = items[0] || null;
+      const d = nowDateBr();
+      const h = nowTime();
+
+      const whatsappTextToSave = buildWhatsappText({
+        tipo,
+        numeroOC: numeroOcNormalizado,
+        equipamento,
+        obra,
+        operador,
+        horimetro,
+        localEntrega,
+        observacoes,
+        items,
+        qtdFornecedores,
+        forn1,
+        forn2,
+        forn3,
+        preco1,
+        preco2,
+        preco3,
+        valorMenor: computed.valorMenor,
+        fornecedorVencedor: computed.fornecedorVencedor,
+        dataBr: d,
+        timeStr: h,
+      });
 
       const payload: any = {
-        date: nowDateBr(),
-        time: nowTime(),
+        date: d,
+        time: h,
         mes_ano: mesAno(),
 
         tipo_registro:
@@ -510,7 +599,7 @@ export default function OCPage() {
         quantidade_texto: firstItem?.qtd ? String(firstItem.qtd).slice(0, 50) : null,
         placa: null,
 
-        texto_original: whatsappPreview,
+        texto_original: whatsappTextToSave,
 
         fornecedor_1: tipo === "MANUTENCAO" ? (forn1 || null) : null,
         fornecedor_2: tipo === "MANUTENCAO" && qtdFornecedores >= 2 ? (forn2 || null) : null,
@@ -582,9 +671,6 @@ export default function OCPage() {
       setIdGerado(String(orderId));
 
       if (items.length) {
-        const d = nowDateBr();
-        const h = nowTime();
-
         const rows = items.map((it) => {
           const qtdNum = it.qtd ? Number(onlyDigits(it.qtd)) : null;
           const qtdText = it.qtd ? String(onlyDigits(it.qtd)) : null;
@@ -608,6 +694,8 @@ export default function OCPage() {
         if (errItems) throw errItems;
       }
 
+      setSavedWhatsappText(whatsappTextToSave);
+
       await loadNextIdPrevisto();
       await loadNextNumeroOC();
 
@@ -615,6 +703,7 @@ export default function OCPage() {
     } catch (e: any) {
       setSaved(false);
       setSavedOrderId(null);
+      setSavedWhatsappText("");
       setErrorMsg(e?.message || "Erro ao salvar no Supabase.");
     } finally {
       setSaving(false);
@@ -1436,76 +1525,6 @@ export default function OCPage() {
                 )}
               </div>
             )}
-          </section>
-
-          <section className="section-card">
-            <div className="section-head">
-              <span className="msi msi-sm">inventory_2</span>
-              <h2 className="section-title">Itens da ordem</h2>
-            </div>
-
-            <div style={{ marginTop: 12 }}>
-              <button className="btn-add" type="button" onClick={addItem}>
-                + Adicionar item
-              </button>
-
-              {!items.length ? (
-                <div className="muted" style={{ marginTop: 10 }}>
-                  Nenhum item adicionado ainda.
-                </div>
-              ) : (
-                items.map((it, idx) => (
-                  <div key={idx} className="item-card">
-                    <div className="item-grid">
-                      <div className="field">
-                        <div className="label">Quantidade</div>
-                        <input
-                          className="input"
-                          inputMode="numeric"
-                          value={it.qtd}
-                          onChange={(e) => {
-                            const v = onlyDigits(e.target.value).slice(0, 6);
-                            updateItem(idx, { qtd: v });
-                          }}
-                          placeholder="Ex: 2"
-                        />
-                      </div>
-
-                      <div className="field">
-                        <div className="label">Descrição</div>
-                        <input
-                          className="input"
-                          value={it.descricao}
-                          onChange={(e) => updateItem(idx, { descricao: e.target.value })}
-                          placeholder="Ex: mangueira hidráulica"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="item-grid-2">
-                      <div className="field">
-                        <div className="label">Valor (opcional)</div>
-                        <input
-                          className="input"
-                          inputMode="numeric"
-                          value={it.valor}
-                          onChange={(e) => {
-                            const brl = formatBRLFromDigits(onlyDigits(e.target.value));
-                            updateItem(idx, { valor: brl });
-                          }}
-                          placeholder="R$ 0,00"
-                        />
-                        <div className="muted">Valor é guardado no texto do item (não existe coluna de valor em items).</div>
-                      </div>
-
-                      <button className="btn-remove" type="button" onClick={() => removeItem(idx)}>
-                        Remover
-                      </button>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
           </section>
 
           <section className="section-card">
