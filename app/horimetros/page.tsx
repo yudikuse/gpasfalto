@@ -1,25 +1,17 @@
+Você acabou colando **todo o meu texto de explicação** dentro do arquivo, por isso o erro começa com:
+
+```text
 ### Por que ainda está dando erro
-
-No GitHub, o arquivo `app/horimetros/page.tsx` **começa com esta linha**:
-
-```text
-```1:1452:c:\Users\marce\Downloads\gpasfalto-main\gpasfalto-main\app\horimetros\page.tsx
 ```
 
-e termina com:
+Esse arquivo **tem que conter só código TypeScript/React**, começando em `"use client";`.
 
-```text
-```
-```
+### O que fazer agora (bem direto)
 
-Essas linhas com **crases (` ``` `)** vieram quando você copiou o código da conversa. Elas **não podem existir dentro do arquivo TypeScript**, e é isso que está quebrando o build (o compilador enlouquece perto da linha 71).
-
-### O que fazer no GitHub (passo a passo)
-
-1. Abra `app/horimetros/page.tsx` no GitHub.
-2. Clique em **Edit** (ícone de lápis).
-3. **Apague todo o conteúdo** do arquivo.
-4. Cole **apenas** o código abaixo (do `use client` até o final), sem nenhuma linha com ```.
+1. No GitHub, abra `app/horimetros/page.tsx`.
+2. Clique no lápis (**Edit**).
+3. Selecione **tudo** (Ctrl+A) e aperte **Delete**.
+4. Cole **apenas** o código abaixo, começando em `"use client";` e terminando em `}`. **Nada de texto antes ou depois.**
 
 ```typescript
 "use client";
