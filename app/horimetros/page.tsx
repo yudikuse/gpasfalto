@@ -1,4 +1,27 @@
+### Por que ainda está dando erro
+
+No GitHub, o arquivo `app/horimetros/page.tsx` **começa com esta linha**:
+
+```text
 ```1:1452:c:\Users\marce\Downloads\gpasfalto-main\gpasfalto-main\app\horimetros\page.tsx
+```
+
+e termina com:
+
+```text
+```
+```
+
+Essas linhas com **crases (` ``` `)** vieram quando você copiou o código da conversa. Elas **não podem existir dentro do arquivo TypeScript**, e é isso que está quebrando o build (o compilador enlouquece perto da linha 71).
+
+### O que fazer no GitHub (passo a passo)
+
+1. Abra `app/horimetros/page.tsx` no GitHub.
+2. Clique em **Edit** (ícone de lápis).
+3. **Apague todo o conteúdo** do arquivo.
+4. Cole **apenas** o código abaixo (do `use client` até o final), sem nenhuma linha com ```.
+
+```typescript
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -492,38 +515,41 @@ export default function HorimetrosPage() {
     );
   }, []);
 
-  const updateActiveInput = useCallback((equipamentoId: number, rawValue: string, caret: number | null) => {
-    setRows((current) =>
-      current.map((row) => {
-        if (row.equipamentoId !== equipamentoId) return row;
+  const updateActiveInput = useCallback(
+    (equipamentoId: number, rawValue: string, caret: number | null) => {
+      setRows((current) =>
+        current.map((row) => {
+          if (row.equipamentoId !== equipamentoId) return row;
 
-        const next = { ...row };
-        const { formatted, nextCaret } = formatDecimalInputWithCaret(rawValue, caret);
+          const next = { ...row };
+          const { formatted, nextCaret } = formatDecimalInputWithCaret(rawValue, caret);
 
-        if (next.selectedMode === "horimetro") {
-          next.horimetroAtual = formatted;
-        } else {
-          next.odometroAtual = formatted;
-        }
+          if (next.selectedMode === "horimetro") {
+            next.horimetroAtual = formatted;
+          } else {
+            next.odometroAtual = formatted;
+          }
 
-        const hAtual = parsePtNumber(next.horimetroAtual);
-        const oAtual = parsePtNumber(next.odometroAtual);
+          const hAtual = parsePtNumber(next.horimetroAtual);
+          const oAtual = parsePtNumber(next.odometroAtual);
 
-        next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior, next.isTrocaMedidor);
-        next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior, next.isTrocaMedidor);
+          next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior, next.isTrocaMedidor);
+          next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior, next.isTrocaMedidor);
 
-        requestAnimationFrame(() => {
-          const input = inputRefs.current[equipamentoId];
-          if (!input) return;
-          try {
-            input.setSelectionRange(nextCaret, nextCaret);
-          } catch {}
-        });
+          requestAnimationFrame(() => {
+            const input = inputRefs.current[equipamentoId];
+            if (!input) return;
+            try {
+              input.setSelectionRange(nextCaret, nextCaret);
+            } catch {}
+          });
 
-        return next;
-      })
-    );
-  }, []);
+          return next;
+        })
+      );
+    },
+    []
+  );
 
   const finalizeActiveInput = useCallback((equipamentoId: number, rawValue: string) => {
     setRows((current) =>
@@ -739,9 +765,12 @@ export default function HorimetrosPage() {
           --shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
         }
 
-        * { box-sizing: border-box; }
+        * {
+          box-sizing: border-box;
+        }
 
-        html, body {
+        html,
+        body {
           margin: 0;
           padding: 0;
           background: var(--bg);
@@ -749,10 +778,13 @@ export default function HorimetrosPage() {
         }
 
         body {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial,
+            sans-serif;
         }
 
-        input, select, button {
+        input,
+        select,
+        button {
           font: inherit;
         }
 
@@ -938,9 +970,15 @@ export default function HorimetrosPage() {
           font-weight: 700;
         }
 
-        .message.error { color: #a12d2d; }
-        .message.ok { color: #0b7b52; }
-        .message.warn { color: #8a6200; }
+        .message.error {
+          color: #a12d2d;
+        }
+        .message.ok {
+          color: #0b7b52;
+        }
+        .message.warn {
+          color: #8a6200;
+        }
 
         .table-card {
           background: var(--surface);
@@ -987,16 +1025,36 @@ export default function HorimetrosPage() {
           table-layout: fixed;
         }
 
-        col.eq { width: 90px; }
-        col.tipo { width: 220px; }
-        col.obra { width: 220px; }
-        col.prev { width: 120px; }
-        col.curr { width: 130px; }
-        col.day { width: 110px; }
-        col.troca { width: 86px; }
-        col.obs { width: 220px; }
-        col.status { width: 150px; }
-        col.save { width: 62px; }
+        col.eq {
+          width: 90px;
+        }
+        col.tipo {
+          width: 220px;
+        }
+        col.obra {
+          width: 220px;
+        }
+        col.prev {
+          width: 120px;
+        }
+        col.curr {
+          width: 130px;
+        }
+        col.day {
+          width: 110px;
+        }
+        col.troca {
+          width: 86px;
+        }
+        col.obs {
+          width: 220px;
+        }
+        col.status {
+          width: 150px;
+        }
+        col.save {
+          width: 62px;
+        }
 
         thead th {
           position: sticky;
@@ -1090,9 +1148,15 @@ export default function HorimetrosPage() {
           white-space: nowrap;
         }
 
-        .value.muted { color: #9aa4b2; }
-        .value.success { color: var(--success); }
-        .value.danger { color: var(--danger); }
+        .value.muted {
+          color: #9aa4b2;
+        }
+        .value.success {
+          color: var(--success);
+        }
+        .value.danger {
+          color: var(--danger);
+        }
 
         .checkbox-wrap {
           display: inline-flex;
@@ -1177,11 +1241,21 @@ export default function HorimetrosPage() {
         }
 
         @media (max-width: 920px) {
-          .page { padding: 10px; }
-          .header { padding: 14px; }
-          .controls { grid-template-columns: 1fr; }
-          .title { font-size: 18px; }
-          table { min-width: 1280px; }
+          .page {
+            padding: 10px;
+          }
+          .header {
+            padding: 14px;
+          }
+          .controls {
+            grid-template-columns: 1fr;
+          }
+          .title {
+            font-size: 18px;
+          }
+          table {
+            min-width: 1280px;
+          }
         }
       `}</style>
 
@@ -1197,7 +1271,8 @@ export default function HorimetrosPage() {
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
                   <p className="subtitle">
-                    Uma linha por equipamento. Tabela simples, clean e com rolagem lateral no celular.
+                    Uma linha por equipamento. Tabela simples, clean e com rolagem lateral no
+                    celular.
                   </p>
                 </div>
               </div>
@@ -1252,7 +1327,8 @@ export default function HorimetrosPage() {
 
           {!env.ok ? (
             <div className="message warn">
-              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
+              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou
+              NEXT_PUBLIC_SUPABASE_ANON_KEY.
             </div>
           ) : null}
 
@@ -1264,7 +1340,8 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  Toggle define a leitura usada na linha. Valor atual menor que o anterior só salva quando marcar troca. Nunca mostra valor negativo no dia.
+                  Toggle define a leitura usada na linha. Valor atual menor que o anterior só salva
+                  quando marcar troca. Nunca mostra valor negativo no dia.
                 </p>
               </div>
             </div>
@@ -1322,14 +1399,18 @@ export default function HorimetrosPage() {
                               <button
                                 type="button"
                                 className={row.selectedMode === "horimetro" ? "active" : ""}
-                                onClick={() => updateRow(row.equipamentoId, { selectedMode: "horimetro" })}
+                                onClick={() =>
+                                  updateRow(row.equipamentoId, { selectedMode: "horimetro" })
+                                }
                               >
                                 Horímetro
                               </button>
                               <button
                                 type="button"
                                 className={row.selectedMode === "odometro" ? "active" : ""}
-                                onClick={() => updateRow(row.equipamentoId, { selectedMode: "odometro" })}
+                                onClick={() =>
+                                  updateRow(row.equipamentoId, { selectedMode: "odometro" })
+                                }
                               >
                                 Odômetro
                               </button>
@@ -1340,7 +1421,9 @@ export default function HorimetrosPage() {
                             <select
                               className="select"
                               value={row.obraId}
-                              onChange={(e) => updateRow(row.equipamentoId, { obraId: e.target.value })}
+                              onChange={(e) =>
+                                updateRow(row.equipamentoId, { obraId: e.target.value })
+                              }
                             >
                               <option value="">Selecione</option>
                               {obras.map((obra) => (
