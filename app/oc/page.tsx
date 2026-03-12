@@ -20,36 +20,36 @@ type ItemRow = {
 
 type SuggestMode = "startsWith" | "includes";
 
-function pad(n: number, size: number) {
+function pad(n: number, size: number): string {
   const s = String(n);
   return s.length >= size ? s : "0".repeat(size - s.length) + s;
 }
 
-function nowDateBr() {
+function nowDateBr(): string {
   const d = new Date();
   return `${pad(d.getDate(), 2)}/${pad(d.getMonth() + 1, 2)}/${d.getFullYear()}`;
 }
 
-function nowTime() {
+function nowTime(): string {
   const d = new Date();
   return `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}`;
 }
 
-function mesAno() {
+function mesAno(): string {
   const d = new Date();
   return `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}`;
 }
 
-function onlyDigits(s: string) {
+function onlyDigits(s: string): string {
   return (s || "").replace(/[^\d]/g, "");
 }
 
-function formatBRLFromNumber(n: number | null) {
+function formatBRLFromNumber(n: number | null): string {
   if (n === null || !Number.isFinite(n)) return "";
   return n.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function parseBRLToNumber(value: string) {
+function parseBRLToNumber(value: string): number | null {
   if (!value) return null;
   const s = value
     .replace(/\s/g, "")
@@ -61,7 +61,7 @@ function parseBRLToNumber(value: string) {
 }
 
 // digits "434234" => "R$ 4.342,34"
-function formatBRLFromDigits(digits: string) {
+function formatBRLFromDigits(digits: string): string {
   const d = digits.replace(/[^\d]/g, "");
   if (!d) return "";
   const cents = Number(d);
@@ -70,7 +70,7 @@ function formatBRLFromDigits(digits: string) {
 }
 
 // Horímetro (máscara): digita "123450" => "1.234,50"
-function formatHoursFromDigits(digits: string) {
+function formatHoursFromDigits(digits: string): string {
   const d = digits.replace(/[^\d]/g, "");
   if (!d) return "";
   const n = Number(d) / 100;
@@ -81,7 +81,7 @@ function formatHoursFromDigits(digits: string) {
   });
 }
 
-function toWhatsappText(lines: string[]) {
+function toWhatsappText(lines: string[]): string {
   return lines.filter(Boolean).join("\n");
 }
 
@@ -94,7 +94,7 @@ function resolvePublicSupabase(): { url: string; key: string; ok: boolean } {
   return { url, key, ok: Boolean(url && key) };
 }
 
-function normalizeText(s: string) {
+function normalizeText(s: string): string {
   return String(s || "")
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "")
@@ -107,7 +107,7 @@ function getSuggestions(
   options: string[],
   mode: SuggestMode = "startsWith",
   limit = 8
-) {
+): string[] {
   const q = normalizeText(value);
   if (!q) return [];
 
@@ -131,6 +131,7 @@ function buildWhatsappText(params: {
   equipamento: string;
   obra: string;
   operador: string;
+  material: string;
   horimetro: string;
   localEntrega: string;
   observacoes: string;
@@ -146,13 +147,14 @@ function buildWhatsappText(params: {
   fornecedorVencedor: string | null;
   dataBr?: string;
   timeStr?: string;
-}) {
+}): string {
   const {
     tipo,
     numeroOC,
     equipamento,
     obra,
     operador,
+    material,
     horimetro,
     localEntrega,
     observacoes,
@@ -192,6 +194,7 @@ function buildWhatsappText(params: {
     `• *Equipamento:* ${equipamento || "-"}`,
     `• *Obra:* ${obra || "-"}`,
     `• *Operador:* ${operador || "-"}`,
+    `• *Material:* ${material || "-"}`,
     `• *Horímetro:* ${horimetro ? `${horimetro} h` : "-"}`,
     `• *Entrega:* ${localEntrega || "-"}`,
   ];
@@ -251,6 +254,7 @@ export default function OCPage() {
   const [equipamento, setEquipamento] = useState<string>("");
   const [obra, setObra] = useState<string>("");
   const [operador, setOperador] = useState<string>("");
+  const [material, setMaterial] = useState<string>("");
   const [horimetro, setHorimetro] = useState<string>("");
   const [localEntrega, setLocalEntrega] = useState<string>("");
   const [observacoes, setObservacoes] = useState<string>("");
@@ -315,10 +319,12 @@ export default function OCPage() {
 
     const candidates: { idx: 1 | 2 | 3; price: number; supplier: string }[] = [];
     if (p1 !== null && forn1.trim()) candidates.push({ idx: 1, price: p1, supplier: forn1.trim() });
-    if (qtdFornecedores >= 2 && p2 !== null && forn2.trim())
+    if (qtdFornecedores >= 2 && p2 !== null && forn2.trim()) {
       candidates.push({ idx: 2, price: p2, supplier: forn2.trim() });
-    if (qtdFornecedores >= 3 && p3 !== null && forn3.trim())
+    }
+    if (qtdFornecedores >= 3 && p3 !== null && forn3.trim()) {
       candidates.push({ idx: 3, price: p3, supplier: forn3.trim() });
+    }
 
     candidates.sort((a, b) => a.price - b.price);
     const winner = candidates[0] || null;
@@ -336,6 +342,7 @@ export default function OCPage() {
       equipamento,
       obra,
       operador,
+      material,
       horimetro,
       localEntrega,
       observacoes,
@@ -356,6 +363,7 @@ export default function OCPage() {
     equipamento,
     obra,
     operador,
+    material,
     horimetro,
     localEntrega,
     observacoes,
@@ -371,7 +379,7 @@ export default function OCPage() {
     computed.fornecedorVencedor,
   ]);
 
-  async function loadNextIdPrevisto() {
+  async function loadNextIdPrevisto(): Promise<void> {
     if (!supabase) return;
 
     try {
@@ -388,12 +396,12 @@ export default function OCPage() {
     }
   }
 
-  const forceNumeroOC = useCallback((nextOc: string) => {
+  const forceNumeroOC = useCallback((nextOc: string): void => {
     setNumeroOC(nextOc);
     setOcInputVersion((v) => v + 1);
   }, []);
 
-  const loadNextNumeroOC = useCallback(async () => {
+  const loadNextNumeroOC = useCallback(async (): Promise<void> => {
     if (!supabase) return;
 
     try {
@@ -431,7 +439,7 @@ export default function OCPage() {
           .limit(5000);
 
         const opts = Array.from(
-          new Set((data || []).map((r: any) => String(r.equipamento || "").trim()).filter(Boolean))
+          new Set((data || []).map((r: { equipamento: string | null }) => String(r.equipamento || "").trim()).filter(Boolean))
         ).sort((a, b) => a.localeCompare(b));
 
         setEquipmentOptions(opts);
@@ -446,7 +454,19 @@ export default function OCPage() {
           .order("id", { ascending: false })
           .limit(1200);
 
-        const allSup = (data || []).flatMap((r: any) => [r.fornecedor_1, r.fornecedor_2, r.fornecedor_3]);
+        type RawOrderOptionRow = {
+          fornecedor_1: string | null;
+          fornecedor_2: string | null;
+          fornecedor_3: string | null;
+          obra: string | null;
+          operador: string | null;
+          local_entrega: string | null;
+        };
+
+        const rows = (data || []) as RawOrderOptionRow[];
+
+        const allSup = rows.flatMap((r) => [r.fornecedor_1, r.fornecedor_2, r.fornecedor_3]);
+
         setSupplierOptions(
           Array.from(new Set(allSup.map((x) => String(x || "").trim()).filter(Boolean))).sort((a, b) =>
             a.localeCompare(b)
@@ -454,21 +474,21 @@ export default function OCPage() {
         );
 
         setObraOptions(
-          Array.from(new Set((data || []).map((r: any) => String(r.obra || "").trim()).filter(Boolean))).sort((a, b) =>
+          Array.from(new Set(rows.map((r) => String(r.obra || "").trim()).filter(Boolean))).sort((a, b) =>
             a.localeCompare(b)
           )
         );
 
         setOperadorOptions(
-          Array.from(new Set((data || []).map((r: any) => String(r.operador || "").trim()).filter(Boolean))).sort(
-            (a, b) => a.localeCompare(b)
+          Array.from(new Set(rows.map((r) => String(r.operador || "").trim()).filter(Boolean))).sort((a, b) =>
+            a.localeCompare(b)
           )
         );
 
         setLocalEntregaOptions(
-          Array.from(
-            new Set((data || []).map((r: any) => String(r.local_entrega || "").trim()).filter(Boolean))
-          ).sort((a, b) => a.localeCompare(b))
+          Array.from(new Set(rows.map((r) => String(r.local_entrega || "").trim()).filter(Boolean))).sort((a, b) =>
+            a.localeCompare(b)
+          )
         );
       } catch {
         setSupplierOptions([]);
@@ -480,7 +500,7 @@ export default function OCPage() {
   }, [supabase, loadNextNumeroOC]);
 
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
+    function handleClickOutside(e: MouseEvent): void {
       const target = e.target as Node;
 
       if (equipWrapRef.current && !equipWrapRef.current.contains(target)) setShowEquipSug(false);
@@ -493,40 +513,41 @@ export default function OCPage() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  function resetSaved() {
+  function resetSaved(): void {
     setSaved(false);
     setSavedOrderId(null);
     setSavedWhatsappText("");
   }
 
-  function addItem() {
+  function addItem(): void {
     setItems((prev) => [...prev, { qtd: "", descricao: "", valor: "" }]);
     resetSaved();
   }
 
-  function updateItem(i: number, patch: Partial<ItemRow>) {
+  function updateItem(i: number, patch: Partial<ItemRow>): void {
     setItems((prev) => prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
     resetSaved();
   }
 
-  function removeItem(i: number) {
+  function removeItem(i: number): void {
     setItems((prev) => prev.filter((_, idx) => idx !== i));
     resetSaved();
   }
 
-  async function copyText() {
+  async function copyText(): Promise<void> {
     const text = savedWhatsappText || whatsappPreview;
     await navigator.clipboard.writeText(text);
   }
 
-  function openWhatsapp() {
+  function openWhatsapp(): void {
     const text = savedWhatsappText || whatsappPreview;
     const url = `https://wa.me/?text=${encodeURIComponent(text)}`;
     window.open(url, "_blank");
   }
 
-  async function saveOrder() {
+  async function saveOrder(): Promise<void> {
     setErrorMsg("");
+
     if (!supabase) {
       setErrorMsg(
         "Configuração do Supabase ausente. Defina NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY (ou ANON_KEY)."
@@ -553,6 +574,7 @@ export default function OCPage() {
         equipamento,
         obra,
         operador,
+        material,
         horimetro,
         localEntrega,
         observacoes,
@@ -570,7 +592,30 @@ export default function OCPage() {
         timeStr: h,
       });
 
-      const payload: any = {
+      const payload: {
+        date: string;
+        time: string;
+        mes_ano: string;
+        tipo_registro: string;
+        numero_oc: string;
+        codigo_equipamento: string | null;
+        obra: string | null;
+        operador: string | null;
+        material: string | null;
+        horimetro: string | null;
+        local_entrega: string | null;
+        quantidade_texto: string | null;
+        placa: null;
+        texto_original: string;
+        fornecedor_1: string | null;
+        fornecedor_2: string | null;
+        fornecedor_3: string | null;
+        preco_1: number | null;
+        preco_2: number | null;
+        preco_3: number | null;
+        valor_menor: number | null;
+        fornecedor_vencedor: string | null;
+      } = {
         date: d,
         time: h,
         mes_ano: mesAno(),
@@ -592,10 +637,10 @@ export default function OCPage() {
         codigo_equipamento: equipamento || null,
         obra: obra || null,
         operador: operador || null,
+        material: material || null,
         horimetro: horimetro || null,
         local_entrega: localEntrega || null,
 
-        material: firstItem?.descricao ? String(firstItem.descricao).slice(0, 255) : null,
         quantidade_texto: firstItem?.qtd ? String(firstItem.qtd).slice(0, 50) : null,
         placa: null,
 
@@ -622,7 +667,9 @@ export default function OCPage() {
 
       if (existingErr) throw existingErr;
 
-      if ((existingRows || []).length > 1) {
+      const rows = (existingRows || []) as Array<{ id: number }>;
+
+      if (rows.length > 1) {
         throw new Error(
           `Já existe mais de um registro com a OC ${numeroOcNormalizado}. Não foi feita nenhuma alteração por segurança.`
         );
@@ -630,7 +677,7 @@ export default function OCPage() {
 
       let orderId: number;
 
-      if ((existingRows || []).length === 1) {
+      if (rows.length === 1) {
         const confirmed = window.confirm(
           `A OC ${numeroOcNormalizado} já existe. Deseja atualizar o registro existente?`
         );
@@ -640,7 +687,7 @@ export default function OCPage() {
           return;
         }
 
-        orderId = Number(existingRows[0].id);
+        orderId = Number(rows[0].id);
 
         const { error: errUpdate } = await supabase
           .from("orders_2025_raw")
@@ -664,14 +711,22 @@ export default function OCPage() {
 
         if (errInsert) throw errInsert;
 
-        orderId = Number(inserted?.id);
+        orderId = Number((inserted as { id: number } | null)?.id);
       }
 
       setSavedOrderId(orderId);
       setIdGerado(String(orderId));
 
       if (items.length) {
-        const rows = items.map((it) => {
+        const rowsToInsert: Array<{
+          ordem_id: number;
+          data: string;
+          hora: string;
+          numero_oc: string;
+          descricao: string | null;
+          quantidade_texto: string | null;
+          quantidade_num: number | null;
+        }> = items.map((it) => {
           const qtdNum = it.qtd ? Number(onlyDigits(it.qtd)) : null;
           const qtdText = it.qtd ? String(onlyDigits(it.qtd)) : null;
 
@@ -690,7 +745,7 @@ export default function OCPage() {
           };
         });
 
-        const { error: errItems } = await supabase.from("orders_2025_items").insert(rows);
+        const { error: errItems } = await supabase.from("orders_2025_items").insert(rowsToInsert);
         if (errItems) throw errItems;
       }
 
@@ -700,23 +755,24 @@ export default function OCPage() {
       await loadNextNumeroOC();
 
       setSaved(true);
-    } catch (e: any) {
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Erro ao salvar no Supabase.";
       setSaved(false);
       setSavedOrderId(null);
       setSavedWhatsappText("");
-      setErrorMsg(e?.message || "Erro ao salvar no Supabase.");
+      setErrorMsg(msg);
     } finally {
       setSaving(false);
     }
   }
 
-  const typeButtons = [
-    { key: "COMPRA" as const, label: "Compra", icon: "shopping_cart" },
-    { key: "ABASTECIMENTO" as const, label: "Abastecimento", icon: "local_gas_station" },
-    { key: "MANUTENCAO" as const, label: "Manutenção", icon: "build" },
-    { key: "SERVICOS" as const, label: "Serviços", icon: "receipt_long" },
-    { key: "PECAS" as const, label: "Peças", icon: "settings" },
-    { key: "OUTRO" as const, label: "Outro", icon: "add" },
+  const typeButtons: Array<{ key: OrderType; label: string; icon: string }> = [
+    { key: "COMPRA", label: "Compra", icon: "shopping_cart" },
+    { key: "ABASTECIMENTO", label: "Abastecimento", icon: "local_gas_station" },
+    { key: "MANUTENCAO", label: "Manutenção", icon: "build" },
+    { key: "SERVICOS", label: "Serviços", icon: "receipt_long" },
+    { key: "PECAS", label: "Peças", icon: "settings" },
+    { key: "OUTRO", label: "Outro", icon: "add" },
   ];
 
   const env = resolvePublicSupabase();
@@ -1058,7 +1114,7 @@ export default function OCPage() {
           border: 1px solid #e5e7eb;
           border-radius: 12px;
           background: #fff;
-          box-shadow: 0 14px 34px rgba(15, 23, 42, 0.10);
+          box-shadow: 0 14px 34px rgba(15, 23, 42, 0.1);
           max-height: 240px;
           overflow-y: auto;
         }
@@ -1083,19 +1139,24 @@ export default function OCPage() {
           .oc-title {
             font-size: 28px;
           }
+
           .row,
           .grid-2 {
             grid-template-columns: 1fr;
           }
+
           .item-grid {
             grid-template-columns: 1fr;
           }
+
           .item-grid-2 {
             grid-template-columns: 1fr;
           }
+
           .oc-logo img {
             height: 76px;
           }
+
           .type-grid {
             grid-template-columns: repeat(2, minmax(0, 1fr));
           }
@@ -1228,11 +1289,13 @@ export default function OCPage() {
                 <option key={x} value={x} />
               ))}
             </datalist>
+
             <datalist id="operadorList">
               {operadorOptions.map((x) => (
                 <option key={x} value={x} />
               ))}
             </datalist>
+
             <datalist id="localEntregaList">
               {localEntregaOptions.map((x) => (
                 <option key={x} value={x} />
@@ -1315,6 +1378,19 @@ export default function OCPage() {
                   )}
                 </div>
               </div>
+            </div>
+
+            <div className="field" style={{ marginTop: 12 }}>
+              <div className="label">Material</div>
+              <input
+                className="input"
+                value={material}
+                onChange={(e) => {
+                  setMaterial(e.target.value);
+                  resetSaved();
+                }}
+                placeholder="Nome do material"
+              />
             </div>
 
             <div className="grid-2">
@@ -1433,6 +1509,7 @@ export default function OCPage() {
                       placeholder="Digite ou selecione"
                     />
                   </div>
+
                   <div className="field">
                     <div className="label">Preço 1</div>
                     <input
@@ -1462,6 +1539,7 @@ export default function OCPage() {
                           placeholder="Digite ou selecione"
                         />
                       </div>
+
                       <div className="field">
                         <div className="label">Preço 2</div>
                         <input
@@ -1493,6 +1571,7 @@ export default function OCPage() {
                           placeholder="Digite ou selecione"
                         />
                       </div>
+
                       <div className="field">
                         <div className="label">Preço 3</div>
                         <input
