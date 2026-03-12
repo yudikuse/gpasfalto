@@ -135,14 +135,6 @@ function format1(value: number | null | undefined) {
   });
 }
 
-function formatInput1(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value)) return "";
-  return value.toLocaleString("pt-BR", {
-    minimumFractionDigits: 1,
-    maximumFractionDigits: 1,
-  });
-}
-
 function parsePtNumber(value: string) {
   const s = String(value || "").trim();
   if (!s) return null;
@@ -160,15 +152,13 @@ function parsePtNumber(value: string) {
   return Number.isFinite(n) ? n : null;
 }
 
- function sanitizeDecimalDraft(value: string): string {
+function sanitizeDecimalDraft(value: string) {
   const digits = String(value || "").replace(/\D/g, "");
-
   if (!digits) return "";
 
   const padded = digits.padStart(2, "0");
   const intPart = padded.slice(0, -1).replace(/^0+(?=\d)/, "") || "0";
   const decPart = padded.slice(-1);
-
   const intFormatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 
   return `${intFormatted},${decPart}`;
@@ -179,6 +169,11 @@ function safePositiveDiff(finalValue: number | null, initialValue: number | null
   if (finalValue < initialValue) return null;
   const diff = Number((finalValue - initialValue).toFixed(1));
   return Number.isFinite(diff) ? diff : null;
+}
+
+function isBelowPrevious(finalValue: number | null, initialValue: number | null) {
+  if (finalValue == null || initialValue == null) return false;
+  return finalValue < initialValue;
 }
 
 function stripTrocaPrefix(text: string) {
@@ -207,15 +202,11 @@ function buildRows(params: {
   const atualMap = new Map<number, LeituraRow>();
   const anteriorMap = new Map<number, LeituraRow>();
 
-  for (const row of atuais) {
-    atualMap.set(Number(row.equipamento_id), row);
-  }
+  for (const row of atuais) atualMap.set(Number(row.equipamento_id), row);
 
   for (const row of anteriores) {
     const key = Number(row.equipamento_id);
-    if (!anteriorMap.has(key)) {
-      anteriorMap.set(key, row);
-    }
+    if (!anteriorMap.has(key)) anteriorMap.set(key, row);
   }
 
   return equipamentos.map((eq) => {
@@ -240,10 +231,10 @@ function buildRows(params: {
       obraId: String(atual?.obra_id ?? eq.obra_padrao_id ?? ""),
       selectedMode: resolveInitialMode(eq, atual),
       horimetroAnterior,
-      horimetroAtual: formatInput1(horimetroAtualNum),
+      horimetroAtual: horimetroAtualNum == null ? "" : format1(horimetroAtualNum),
       horasDia: safePositiveDiff(horimetroAtualNum, horimetroAnterior),
       odometroAnterior,
-      odometroAtual: formatInput1(odometroAtualNum),
+      odometroAtual: odometroAtualNum == null ? "" : format1(odometroAtualNum),
       kmDia: safePositiveDiff(odometroAtualNum, odometroAnterior),
       observacao: stripTrocaPrefix(observacaoRaw),
       isTrocaMedidor,
@@ -266,16 +257,29 @@ function getDayValue(row: RowState) {
   return row.selectedMode === "horimetro" ? row.horasDia : row.kmDia;
 }
 
+function getCurrentNumericValue(row: RowState) {
+  return row.selectedMode === "horimetro"
+    ? parsePtNumber(row.horimetroAtual)
+    : parsePtNumber(row.odometroAtual);
+}
+
+function getAlertText(row: RowState) {
+  const previous = getPreviousValue(row);
+  const current = getCurrentNumericValue(row);
+
+  if (previous == null || current == null) return null;
+  if (current < previous) return "Abaixo de ontem";
+  return null;
+}
+
 function validateRow(row: RowState) {
   const previous = getPreviousValue(row);
-  const current = parsePtNumber(getCurrentValue(row));
+  const current = getCurrentNumericValue(row);
 
   if (current == null || previous == null) return null;
-
   if (current < previous && !row.isTrocaMedidor) {
-    return `${row.codigo}: valor atual não pode ser menor que o anterior sem marcar troca.`;
+    return `${row.codigo}: valor atual não pode ser menor que o anterior sem marcar trocar (${row.selectedMode === "horimetro" ? "hor" : "odo"}).`;
   }
-
   return null;
 }
 
@@ -438,55 +442,86 @@ export default function HorimetrosPage() {
     );
   }, []);
 
-const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) => {
-  setRows((current) =>
-    current.map((row) => {
-      if (row.equipamentoId !== equipamentoId) return row;
+  const updateActiveInput = useCallback((equipamentoId: number, value: string) => {
+    const sanitized = sanitizeDecimalDraft(value);
 
-      const next = { ...row };
-      const masked = sanitizeDecimalDraft(rawValue);
+    setRows((current) =>
+      current.map((row) => {
+        if (row.equipamentoId !== equipamentoId) return row;
 
-      if (next.selectedMode === "horimetro") {
-        next.horimetroAtual = masked;
-      } else {
-        next.odometroAtual = masked;
-      }
+        const next = { ...row };
 
-      const hAtual = parsePtNumber(next.horimetroAtual);
-      const oAtual = parsePtNumber(next.odometroAtual);
+        if (next.selectedMode === "horimetro") {
+          next.horimetroAtual = sanitized;
+        } else {
+          next.odometroAtual = sanitized;
+        }
 
-      next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
-      next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
+        const hAtual = parsePtNumber(next.horimetroAtual);
+        const oAtual = parsePtNumber(next.odometroAtual);
 
-      return next;
-    })
-  );
-}, []);
+        next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
+        next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
 
-  const finalizeActiveInput = useCallback((equipamentoId: number, rawValue: string) => {
-  setRows((current) =>
-    current.map((row) => {
-      if (row.equipamentoId !== equipamentoId) return row;
+        return next;
+      })
+    );
+  }, []);
 
-      const next = { ...row };
-      const masked = sanitizeDecimalDraft(rawValue);
+  const finalizeActiveInput = useCallback((equipamentoId: number, value: string) => {
+    const finalValue = sanitizeDecimalDraft(value);
 
-      if (next.selectedMode === "horimetro") {
-        next.horimetroAtual = masked;
-      } else {
-        next.odometroAtual = masked;
-      }
+    setRows((current) =>
+      current.map((row) => {
+        if (row.equipamentoId !== equipamentoId) return row;
 
-      const hAtual = parsePtNumber(next.horimetroAtual);
-      const oAtual = parsePtNumber(next.odometroAtual);
+        const next = { ...row };
 
-      next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
-      next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
+        if (next.selectedMode === "horimetro") {
+          next.horimetroAtual = finalValue;
+        } else {
+          next.odometroAtual = finalValue;
+        }
 
-      return next;
-    })
-  );
-}, []);
+        const hAtual = parsePtNumber(next.horimetroAtual);
+        const oAtual = parsePtNumber(next.odometroAtual);
+
+        next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
+        next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
+
+        return next;
+      })
+    );
+  }, []);
+
+  const manterAnterior = useCallback((row: RowState) => {
+    const previous = getPreviousValue(row);
+    if (previous == null) return;
+
+    const formatted = format1(previous);
+
+    setRows((current) =>
+      current.map((item) => {
+        if (item.equipamentoId !== row.equipamentoId) return item;
+
+        const next = { ...item };
+
+        if (next.selectedMode === "horimetro") {
+          next.horimetroAtual = formatted;
+        } else {
+          next.odometroAtual = formatted;
+        }
+
+        const hAtual = parsePtNumber(next.horimetroAtual);
+        const oAtual = parsePtNumber(next.odometroAtual);
+
+        next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
+        next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
+
+        return next;
+      })
+    );
+  }, []);
 
   const saveOneRow = useCallback(
     async (row: RowState) => {
@@ -807,7 +842,8 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
         .date,
         .select,
         .number-input,
-        .text-input {
+        .text-input,
+        .keep-btn {
           width: 100%;
           height: 36px;
           border: 1px solid transparent;
@@ -835,6 +871,21 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
           min-width: 100px;
           text-align: right;
           font-variant-numeric: tabular-nums;
+        }
+
+        .keep-btn {
+          width: auto;
+          min-width: 34px;
+          padding: 0 10px;
+          cursor: pointer;
+          font-size: 11px;
+          font-weight: 800;
+          color: #475569;
+        }
+
+        .keep-btn:hover {
+          background: var(--brand-soft);
+          color: var(--brand);
         }
 
         .save-btn {
@@ -930,7 +981,7 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
 
         table {
           width: 100%;
-          min-width: 1220px;
+          min-width: 1280px;
           border-collapse: separate;
           border-spacing: 0;
           table-layout: fixed;
@@ -938,13 +989,13 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
 
         col.eq { width: 88px; }
         col.tipo { width: 190px; }
-        col.obra { width: 190px; }
+        col.obra { width: 180px; }
         col.prev { width: 100px; }
-        col.curr { width: 110px; }
-        col.day { width: 90px; }
-        col.troca { width: 72px; }
+        col.curr { width: 160px; }
+        col.day { width: 120px; }
+        col.troca { width: 115px; }
         col.obs { width: 180px; }
-        col.status { width: 100px; }
+        col.status { width: 120px; }
         col.save { width: 52px; }
 
         thead th {
@@ -965,7 +1016,7 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
         }
 
         tbody td {
-          padding: 8px 10px;
+          padding: 7px 10px;
           border-bottom: 1px solid var(--line);
           vertical-align: middle;
           background: #fff;
@@ -1032,6 +1083,12 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
           color: var(--brand);
         }
 
+        .current-cell {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
         .value {
           font-size: 13px;
           font-weight: 700;
@@ -1047,10 +1104,25 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
           color: var(--success);
         }
 
+        .alert-chip {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-height: 24px;
+          padding: 0 8px;
+          border-radius: 999px;
+          background: #fff1f2;
+          color: #b42318;
+          font-size: 11px;
+          font-weight: 800;
+          white-space: nowrap;
+        }
+
         .checkbox-wrap {
           display: inline-flex;
           align-items: center;
           justify-content: center;
+          gap: 6px;
         }
 
         .troca-check {
@@ -1060,11 +1132,18 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
           cursor: pointer;
         }
 
+        .troca-label {
+          font-size: 11px;
+          color: var(--muted);
+          font-weight: 700;
+          white-space: nowrap;
+        }
+
         .status {
           display: inline-flex;
           align-items: center;
           gap: 6px;
-          padding: 6px 9px;
+          padding: 6px 10px;
           border-radius: 999px;
           font-size: 11px;
           font-weight: 800;
@@ -1145,7 +1224,7 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
           }
 
           table {
-            min-width: 1180px;
+            min-width: 1260px;
           }
         }
       `}</style>
@@ -1229,7 +1308,7 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  Máscara automática com 1 casa decimal fixa. Ex.: 71890 vira 7.189,0.
+                  Botão “=” copia o valor de ontem para hoje. Se o atual ficar menor que ontem, aparece alerta em vez de subtração.
                 </p>
               </div>
             </div>
@@ -1261,7 +1340,7 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
                       <th>Anterior</th>
                       <th>Atual</th>
                       <th>Do dia</th>
-                      <th>Troca</th>
+                      <th>Trocar (hor/odo)</th>
                       <th>Observação</th>
                       <th>Status</th>
                       <th>Salvar</th>
@@ -1272,6 +1351,7 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
                       const previous = getPreviousValue(row);
                       const current = getCurrentValue(row);
                       const dayValue = getDayValue(row);
+                      const alertText = getAlertText(row);
 
                       return (
                         <tr key={row.equipamentoId}>
@@ -1329,26 +1409,39 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
                           </td>
 
                           <td>
-                        <input
-  type="text"
-  className="number-input"
-  value={current}
-  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-    updateActiveInput(row.equipamentoId, e.target.value)
-  }
-  onBlur={(e: React.FocusEvent<HTMLInputElement>) =>
-    finalizeActiveInput(row.equipamentoId, e.target.value)
-  }
-  inputMode="numeric"
-  autoComplete="off"
-  placeholder="Digite"
-/>
+                            <div className="current-cell">
+                              <input
+                                type="text"
+                                className="number-input"
+                                value={current}
+                                onChange={(e) =>
+                                  updateActiveInput(row.equipamentoId, e.target.value)
+                                }
+                                onBlur={(e) =>
+                                  finalizeActiveInput(row.equipamentoId, e.target.value)
+                                }
+                                inputMode="numeric"
+                                placeholder="Digite"
+                              />
+                              <button
+                                type="button"
+                                className="keep-btn"
+                                onClick={() => manterAnterior(row)}
+                                title="Manter valor de ontem"
+                              >
+                                =
+                              </button>
+                            </div>
                           </td>
 
                           <td>
-                            <span className={`value ${dayValue == null ? "muted" : "success"}`}>
-                              {format1(dayValue)}
-                            </span>
+                            {alertText ? (
+                              <span className="alert-chip">{alertText}</span>
+                            ) : (
+                              <span className={`value ${dayValue == null ? "muted" : "success"}`}>
+                                {format1(dayValue)}
+                              </span>
+                            )}
                           </td>
 
                           <td>
@@ -1364,6 +1457,7 @@ const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) 
                                 }
                                 title="Marque quando houve troca de horímetro/odômetro"
                               />
+                              <span className="troca-label">Trocar</span>
                             </div>
                           </td>
 
