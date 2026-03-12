@@ -55,6 +55,7 @@ type RowState = {
   kmDia: number | null;
   observacao: string;
   isTrocaMedidor: boolean;
+  keepPreviousApplied: boolean;
   registroId: number | null;
   updatedAt: string | null;
   updatedByNome: string | null;
@@ -227,6 +228,7 @@ function buildRows(params: {
       kmDia: safePositiveDiff(odometroAtualNum, odometroAnterior),
       observacao: stripTrocaPrefix(observacaoRaw),
       isTrocaMedidor,
+      keepPreviousApplied: false,
       registroId: atual?.id ?? null,
       updatedAt: atual?.updated_at ?? null,
       updatedByNome: atual?.updated_by_nome ?? null,
@@ -253,6 +255,8 @@ function getCurrentNumericValue(row: RowState) {
 }
 
 function getAlertText(row: RowState) {
+  if (row.isTrocaMedidor) return null;
+
   const previous = getPreviousValue(row);
   const current = getCurrentNumericValue(row);
 
@@ -320,6 +324,11 @@ export default function HorimetrosPage() {
     const pendentes = Math.max(total - lancados, 0);
     return { total, lancados, pendentes };
   }, [rows]);
+
+  const allKeepApplied = useMemo(
+    () => rows.length > 0 && rows.every((row) => row.keepPreviousApplied),
+    [rows]
+  );
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -444,7 +453,7 @@ export default function HorimetrosPage() {
       current.map((row) => {
         if (row.equipamentoId !== equipamentoId) return row;
 
-        const next = { ...row };
+        const next = { ...row, keepPreviousApplied: false };
 
         if (next.selectedMode === "horimetro") {
           next.horimetroAtual = sanitized;
@@ -489,22 +498,24 @@ export default function HorimetrosPage() {
     );
   }, []);
 
-  const manterUltimo = useCallback((row: RowState) => {
+  const toggleKeepPreviousForRow = useCallback((row: RowState) => {
     const previous = getPreviousValue(row);
-    if (previous == null) return;
-
-    const formatted = format1(previous);
 
     setRows((current) =>
       current.map((item) => {
         if (item.equipamentoId !== row.equipamentoId) return item;
 
         const next = { ...item };
+        const nextApplied = !item.keepPreviousApplied;
+        next.keepPreviousApplied = nextApplied;
 
-        if (next.selectedMode === "horimetro") {
-          next.horimetroAtual = formatted;
-        } else {
-          next.odometroAtual = formatted;
+        if (nextApplied && previous != null) {
+          const formatted = format1(previous);
+          if (next.selectedMode === "horimetro") next.horimetroAtual = formatted;
+          else next.odometroAtual = formatted;
+        } else if (!nextApplied) {
+          if (next.selectedMode === "horimetro") next.horimetroAtual = "";
+          else next.odometroAtual = "";
         }
 
         const hAtual = parsePtNumber(next.horimetroAtual);
@@ -517,6 +528,34 @@ export default function HorimetrosPage() {
       })
     );
   }, []);
+
+  const toggleKeepPreviousForAll = useCallback(() => {
+    setRows((current) =>
+      current.map((row) => {
+        const next = { ...row };
+        const previous = getPreviousValue(row);
+        const nextApplied = !allKeepApplied;
+        next.keepPreviousApplied = nextApplied;
+
+        if (nextApplied && previous != null) {
+          const formatted = format1(previous);
+          if (next.selectedMode === "horimetro") next.horimetroAtual = formatted;
+          else next.odometroAtual = formatted;
+        } else if (!nextApplied) {
+          if (next.selectedMode === "horimetro") next.horimetroAtual = "";
+          else next.odometroAtual = "";
+        }
+
+        const hAtual = parsePtNumber(next.horimetroAtual);
+        const oAtual = parsePtNumber(next.odometroAtual);
+
+        next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
+        next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
+
+        return next;
+      })
+    );
+  }, [allKeepApplied]);
 
   const saveOneRow = useCallback(
     async (row: RowState) => {
@@ -828,7 +867,8 @@ export default function HorimetrosPage() {
         .select,
         .number-input,
         .text-input,
-        .keep-btn {
+        .keep-btn,
+        .keep-all-btn {
           width: 100%;
           height: 36px;
           border: 1px solid transparent;
@@ -858,19 +898,43 @@ export default function HorimetrosPage() {
           font-variant-numeric: tabular-nums;
         }
 
-        .keep-btn {
+        .keep-btn,
+        .keep-all-btn {
           width: auto;
-          min-width: 42px;
-          padding: 0 10px;
           cursor: pointer;
+          color: #475569;
           font-size: 11px;
           font-weight: 800;
-          color: #475569;
+          border: 1px solid var(--line);
         }
 
-        .keep-btn:hover {
+        .keep-btn {
+          min-width: 42px;
+          padding: 0 10px;
+        }
+
+        .keep-all-btn {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 6px;
+          min-width: 132px;
+          padding: 0 12px;
+        }
+
+        .keep-btn:hover,
+        .keep-all-btn:hover {
           background: var(--brand-soft);
           color: var(--brand);
+          border-color: #cfd8ff;
+        }
+
+        .keep-btn.active,
+        .keep-all-btn.active {
+          background: var(--brand);
+          color: #ffffff;
+          border-color: var(--brand);
+          box-shadow: 0 6px 18px rgba(91, 109, 246, 0.2);
         }
 
         .save-btn {
@@ -894,6 +958,7 @@ export default function HorimetrosPage() {
           display: flex;
           gap: 6px;
           flex-wrap: wrap;
+          align-items: center;
         }
 
         .stat {
@@ -966,19 +1031,19 @@ export default function HorimetrosPage() {
 
         table {
           width: 100%;
-          min-width: 1280px;
+          min-width: 1240px;
           border-collapse: separate;
           border-spacing: 0;
           table-layout: fixed;
         }
 
         col.eq { width: 88px; }
-        col.tipo { width: 190px; }
+        col.tipo { width: 130px; }
         col.obra { width: 180px; }
         col.prev { width: 100px; }
-        col.curr { width: 160px; }
+        col.curr { width: 170px; }
         col.day { width: 120px; }
-        col.troca { width: 130px; }
+        col.troca { width: 120px; }
         col.obs { width: 180px; }
         col.status { width: 70px; }
         col.save { width: 52px; }
@@ -989,7 +1054,7 @@ export default function HorimetrosPage() {
           z-index: 5;
           background: var(--surface);
           padding: 10px;
-          text-align: left;
+          text-align: center;
           font-size: 10px;
           font-weight: 800;
           color: #64748b;
@@ -998,6 +1063,17 @@ export default function HorimetrosPage() {
           border-bottom: 1px solid var(--line);
           white-space: nowrap;
           vertical-align: middle;
+        }
+
+        .th-two-lines {
+          line-height: 1.05;
+        }
+
+        .th-two-lines small {
+          display: block;
+          margin-top: 2px;
+          font-size: 9px;
+          letter-spacing: 0.05em;
         }
 
         tbody td {
@@ -1052,9 +1128,10 @@ export default function HorimetrosPage() {
 
         .segmented button {
           height: 24px;
+          min-width: 46px;
           border: 0;
           border-radius: 999px;
-          padding: 0 9px;
+          padding: 0 8px;
           background: transparent;
           color: #64748b;
           font-size: 11px;
@@ -1079,6 +1156,9 @@ export default function HorimetrosPage() {
           font-weight: 700;
           color: var(--text);
           white-space: nowrap;
+          text-align: center;
+          display: inline-block;
+          width: 100%;
         }
 
         .value.muted {
@@ -1132,8 +1212,8 @@ export default function HorimetrosPage() {
 
         .status-dot {
           display: inline-block;
-          width: 12px;
-          height: 12px;
+          width: 14px;
+          height: 14px;
           border-radius: 999px;
         }
 
@@ -1168,6 +1248,10 @@ export default function HorimetrosPage() {
           cursor: wait;
         }
 
+        .center {
+          text-align: center;
+        }
+
         .empty {
           padding: 16px;
           color: var(--muted);
@@ -1193,7 +1277,7 @@ export default function HorimetrosPage() {
           }
 
           table {
-            min-width: 1260px;
+            min-width: 1220px;
           }
         }
       `}</style>
@@ -1260,6 +1344,15 @@ export default function HorimetrosPage() {
               <div className="stat">Equipamentos: {stats.total}</div>
               <div className="stat">Lançados: {stats.lancados}</div>
               <div className="stat">Pendentes: {stats.pendentes}</div>
+
+              <button
+                type="button"
+                className={`keep-all-btn ${allKeepApplied ? "active" : ""}`}
+                onClick={toggleKeepPreviousForAll}
+                title={allKeepApplied ? "Remover Últ. de todos" : "Aplicar Últ. em todos"}
+              >
+                {allKeepApplied ? "Remover Últ. todos" : "Aplicar Últ. todos"}
+              </button>
             </div>
           </section>
 
@@ -1277,7 +1370,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  “Últ.” copia o valor de ontem para hoje. Se o atual ficar menor que ontem, aparece alerta em vez de subtração.
+                  “Últ.” copia o valor de ontem para hoje. Se marcar trocar, o alerta “Abaixo de ontem” some.
                 </p>
               </div>
             </div>
@@ -1309,7 +1402,10 @@ export default function HorimetrosPage() {
                       <th>Anterior</th>
                       <th>Atual</th>
                       <th>Do dia</th>
-                      <th>Trocar (hor/odo)</th>
+                      <th className="th-two-lines">
+                        Trocar
+                        <small>hor/odo</small>
+                      </th>
                       <th>Observação</th>
                       <th>Status</th>
                       <th>Salvar</th>
@@ -1331,7 +1427,7 @@ export default function HorimetrosPage() {
                             </div>
                           </td>
 
-                          <td>
+                          <td className="center">
                             <div className="segmented">
                               <button
                                 type="button"
@@ -1340,7 +1436,7 @@ export default function HorimetrosPage() {
                                   updateRow(row.equipamentoId, { selectedMode: "horimetro" })
                                 }
                               >
-                                Horímetro
+                                HOR
                               </button>
                               <button
                                 type="button"
@@ -1349,7 +1445,7 @@ export default function HorimetrosPage() {
                                   updateRow(row.equipamentoId, { selectedMode: "odometro" })
                                 }
                               >
-                                Odômetro
+                                ODO
                               </button>
                             </div>
                           </td>
@@ -1371,7 +1467,7 @@ export default function HorimetrosPage() {
                             </select>
                           </td>
 
-                          <td>
+                          <td className="center">
                             <span className={`value ${previous == null ? "muted" : ""}`}>
                               {format1(previous)}
                             </span>
@@ -1394,8 +1490,8 @@ export default function HorimetrosPage() {
                               />
                               <button
                                 type="button"
-                                className="keep-btn"
-                                onClick={() => manterUltimo(row)}
+                                className={`keep-btn ${row.keepPreviousApplied ? "active" : ""}`}
+                                onClick={() => toggleKeepPreviousForRow(row)}
                                 title="Manter o último"
                               >
                                 Últ.
@@ -1403,7 +1499,7 @@ export default function HorimetrosPage() {
                             </div>
                           </td>
 
-                          <td>
+                          <td className="center">
                             {alertText ? (
                               <span className="alert-chip">{alertText}</span>
                             ) : (
@@ -1413,7 +1509,7 @@ export default function HorimetrosPage() {
                             )}
                           </td>
 
-                          <td>
+                          <td className="center">
                             <div className="checkbox-wrap">
                               <input
                                 className="troca-check"
@@ -1447,7 +1543,7 @@ export default function HorimetrosPage() {
                             </div>
                           </td>
 
-                          <td>
+                          <td className="center">
                             <button
                               type="button"
                               className="row-save"
