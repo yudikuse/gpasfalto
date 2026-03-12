@@ -1,3 +1,4 @@
+```1:1452:c:\Users\marce\Downloads\gpasfalto-main\gpasfalto-main\app\horimetros\page.tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -1449,3 +1450,4 @@ export default function HorimetrosPage() {
     </>
   );
 }
+```
