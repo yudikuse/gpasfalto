@@ -46,6 +46,7 @@ type RowState = {
   equipamentoId: number;
   codigo: string;
   obraId: string;
+  novaObra: string;
   selectedMode: MeasurementMode;
   horimetroAnterior: number | null;
   horimetroAtual: string;
@@ -186,23 +187,12 @@ function composeObservacao(text: string, isTrocaMedidor: boolean) {
   return clean || null;
 }
 
-function findPatioObraId(obras: ObraRow[]) {
-  const exact = obras.find((o) => normalizeText(o.obra) === "PATIO");
-  if (exact) return exact.id;
-
-  const contains = obras.find((o) => normalizeText(o.obra).includes("PATIO"));
-  if (contains) return contains.id;
-
-  return null;
-}
-
 function buildRows(params: {
   equipamentos: EquipamentoRow[];
   atuais: LeituraRow[];
   anteriores: LeituraRow[];
-  patioId: number | null;
 }): RowState[] {
-  const { equipamentos, atuais, anteriores, patioId } = params;
+  const { equipamentos, atuais, anteriores } = params;
 
   const atualMap = new Map<number, LeituraRow>();
   const anteriorMap = new Map<number, LeituraRow>();
@@ -232,7 +222,8 @@ function buildRows(params: {
     return {
       equipamentoId: eq.id,
       codigo: eq.codigo,
-      obraId: String(atual?.obra_id ?? eq.obra_padrao_id ?? patioId ?? ""),
+      obraId: String(atual?.obra_id ?? ""),
+      novaObra: "",
       selectedMode: resolveInitialMode(eq, atual),
       horimetroAnterior,
       horimetroAtual: horimetroAtualNum == null ? "" : format1(horimetroAtualNum),
@@ -279,23 +270,29 @@ function getAlertText(row: RowState) {
   return null;
 }
 
-function canSaveRow(row: RowState) {
+function getEffectiveObraId(row: RowState, lastSavedObraId: string) {
+  return row.obraId || lastSavedObraId || "";
+}
+
+function canSaveRow(row: RowState, lastSavedObraId: string) {
   const previous = getPreviousValue(row);
   const current = getCurrentNumericValue(row);
+  const obraId = getEffectiveObraId(row, lastSavedObraId);
 
-  if (!row.obraId) return false;
+  if (!obraId && !row.novaObra.trim()) return false;
   if (current == null) return false;
   if (previous == null) return true;
   if (current < previous && !row.isTrocaMedidor) return false;
   return true;
 }
 
-function validateRow(row: RowState) {
+function validateRow(row: RowState, lastSavedObraId: string) {
   const previous = getPreviousValue(row);
   const current = getCurrentNumericValue(row);
+  const obraId = getEffectiveObraId(row, lastSavedObraId);
 
-  if (!row.obraId) {
-    return `${row.codigo}: selecione a obra.`;
+  if (!obraId && !row.novaObra.trim()) {
+    return `${row.codigo}: selecione a obra ou digite uma nova obra.`;
   }
 
   if (current == null) {
@@ -346,6 +343,7 @@ export default function HorimetrosPage() {
   const [search, setSearch] = useState("");
   const [obras, setObras] = useState<ObraRow[]>([]);
   const [rows, setRows] = useState<RowState[]>([]);
+  const [lastSavedObraId, setLastSavedObraId] = useState("");
 
   const periodoAnterior = useMemo(() => previousIso(selectedDate), [selectedDate]);
 
@@ -361,21 +359,20 @@ export default function HorimetrosPage() {
     [rows]
   );
 
-  const patioId = useMemo(() => findPatioObraId(obras), [obras]);
-
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
 
     return rows.filter((row) => {
-      const obra = obras.find((o) => String(o.id) === row.obraId)?.obra || "";
+      const obraId = getEffectiveObraId(row, lastSavedObraId);
+      const obra = obras.find((o) => String(o.id) === obraId)?.obra || row.novaObra || "";
       return (
         row.codigo.toLowerCase().includes(q) ||
         obra.toLowerCase().includes(q) ||
         row.selectedMode.toLowerCase().includes(q)
       );
     });
-  }, [rows, search, obras]);
+  }, [rows, search, obras, lastSavedObraId]);
 
   const loadData = useCallback(async () => {
     if (!supabase) return;
@@ -428,8 +425,6 @@ export default function HorimetrosPage() {
       if (anterioresRes.error) throw anterioresRes.error;
 
       const obrasData = (obrasRes.data || []) as ObraRow[];
-      const patioDefaultId = findPatioObraId(obrasData);
-
       const equipamentosData = ((equipamentosRes.data || []) as EquipamentoRow[]).sort((a, b) =>
         normCode(a.codigo).localeCompare(normCode(b.codigo), "pt-BR")
       );
@@ -444,15 +439,19 @@ export default function HorimetrosPage() {
         anterioresDedup.push(row);
       }
 
+      const built = buildRows({
+        equipamentos: equipamentosData,
+        atuais: (atuaisRes.data || []) as LeituraRow[],
+        anteriores: anterioresDedup,
+      });
+
       setObras(obrasData);
-      setRows(
-        buildRows({
-          equipamentos: equipamentosData,
-          atuais: (atuaisRes.data || []) as LeituraRow[],
-          anteriores: anterioresDedup,
-          patioId: patioDefaultId,
-        })
-      );
+      setRows(built);
+
+      const lastWithObra = ((atuaisRes.data || []) as LeituraRow[]).find((r) => r.obra_id != null);
+      if (lastWithObra?.obra_id != null) {
+        setLastSavedObraId(String(lastWithObra.obra_id));
+      }
     } catch (e: any) {
       setRows([]);
       setErrorMsg(e?.message || "Erro ao carregar horímetros.");
@@ -587,11 +586,42 @@ export default function HorimetrosPage() {
     );
   }, [allKeepApplied]);
 
+  const ensureObraForSave = useCallback(
+    async (row: RowState) => {
+      const effectiveObraId = getEffectiveObraId(row, lastSavedObraId);
+      if (effectiveObraId) return effectiveObraId;
+
+      const nova = row.novaObra.trim();
+      if (!nova) return "";
+
+      const existing = obras.find((o) => normalizeText(o.obra) === normalizeText(nova));
+      if (existing) return String(existing.id);
+
+      if (!supabase) return "";
+
+      const insertRes = await supabase
+        .from("obras")
+        .insert({ obra: nova, ativo: true })
+        .select("id,obra")
+        .single();
+
+      if (insertRes.error) throw insertRes.error;
+
+      const created = insertRes.data as ObraRow;
+      setObras((current) =>
+        [...current, created].sort((a, b) => a.obra.localeCompare(b.obra, "pt-BR"))
+      );
+
+      return String(created.id);
+    },
+    [lastSavedObraId, obras, supabase]
+  );
+
   const saveOneRow = useCallback(
     async (row: RowState) => {
       if (!supabase) return;
 
-      const validationError = validateRow(row);
+      const validationError = validateRow(row, lastSavedObraId);
       if (validationError) {
         setErrorMsg(validationError);
         setOkMsg("");
@@ -603,6 +633,9 @@ export default function HorimetrosPage() {
       setOkMsg("");
 
       try {
+        const obraIdToSave = await ensureObraForSave(row);
+        if (!obraIdToSave) throw new Error(`${row.codigo}: obra inválida.`);
+
         const authRes = await supabase.auth.getUser();
         const user = authRes.data.user;
         const updatedByName = user?.email || user?.user_metadata?.name || "Usuário";
@@ -613,7 +646,7 @@ export default function HorimetrosPage() {
 
         const payload = {
           data: selectedDate,
-          obra_id: Number(row.obraId),
+          obra_id: Number(obraIdToSave),
           equipamento_id: row.equipamentoId,
           horimetro_inicial:
             horimetroFinal != null || row.horimetroAnterior != null ? row.horimetroAnterior : null,
@@ -622,7 +655,6 @@ export default function HorimetrosPage() {
             odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
           odometro_final: odometroFinal,
           observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
-          status: "LANCADO",
           updated_by_user_id: updatedById,
           updated_by_nome: updatedByName,
           updated_at: new Date().toISOString(),
@@ -645,14 +677,7 @@ export default function HorimetrosPage() {
           if (res.error) throw res.error;
         }
 
-        setRows((current) =>
-          current.map((item) =>
-            item.equipamentoId === row.equipamentoId
-              ? { ...item, registroId: item.registroId ?? -1 }
-              : item
-          )
-        );
-
+        setLastSavedObraId(obraIdToSave);
         setOkMsg(`${row.codigo} salvo com sucesso.`);
         await loadData();
       } catch (e: any) {
@@ -661,7 +686,7 @@ export default function HorimetrosPage() {
         setSavingRowId(null);
       }
     },
-    [loadData, selectedDate, supabase]
+    [ensureObraForSave, lastSavedObraId, loadData, selectedDate, supabase]
   );
 
   const handleSaveAll = useCallback(async () => {
@@ -674,9 +699,15 @@ export default function HorimetrosPage() {
     try {
       for (const row of rows) {
         const current = getCurrentNumericValue(row);
-        if (current == null && !row.obraId && !row.observacao && !row.isTrocaMedidor) continue;
+        const hasAnyWork =
+          current != null ||
+          Boolean(row.observacao.trim()) ||
+          Boolean(row.novaObra.trim()) ||
+          Boolean(getEffectiveObraId(row, lastSavedObraId));
 
-        const validationError = validateRow(row);
+        if (!hasAnyWork) continue;
+
+        const validationError = validateRow(row, lastSavedObraId);
         if (validationError) throw new Error(validationError);
       }
 
@@ -685,19 +716,31 @@ export default function HorimetrosPage() {
       const updatedByName = user?.email || user?.user_metadata?.name || "Usuário";
       const updatedById = user?.id || null;
 
+      let nextDefaultObraId = lastSavedObraId;
+
       for (const row of rows) {
         const horimetroFinal = parsePtNumber(row.horimetroAtual);
         const odometroFinal = parsePtNumber(row.odometroAtual);
 
-        const hasSomethingToSave =
-          Boolean(row.obraId) &&
-          (horimetroFinal != null || odometroFinal != null);
+        const hasAnyWork =
+          horimetroFinal != null ||
+          odometroFinal != null ||
+          Boolean(row.observacao.trim()) ||
+          Boolean(row.novaObra.trim()) ||
+          Boolean(getEffectiveObraId(row, nextDefaultObraId));
 
-        if (!hasSomethingToSave) continue;
+        if (!hasAnyWork) continue;
+
+        const obraIdToSave = await ensureObraForSave({
+          ...row,
+          obraId: row.obraId || nextDefaultObraId,
+        });
+
+        if (!obraIdToSave) throw new Error(`${row.codigo}: obra inválida.`);
 
         const payload = {
           data: selectedDate,
-          obra_id: Number(row.obraId),
+          obra_id: Number(obraIdToSave),
           equipamento_id: row.equipamentoId,
           horimetro_inicial:
             horimetroFinal != null || row.horimetroAnterior != null ? row.horimetroAnterior : null,
@@ -706,7 +749,6 @@ export default function HorimetrosPage() {
             odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
           odometro_final: odometroFinal,
           observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
-          status: "LANCADO",
           updated_by_user_id: updatedById,
           updated_by_nome: updatedByName,
           updated_at: new Date().toISOString(),
@@ -728,8 +770,11 @@ export default function HorimetrosPage() {
 
           if (res.error) throw res.error;
         }
+
+        nextDefaultObraId = obraIdToSave;
       }
 
+      setLastSavedObraId(nextDefaultObraId);
       setOkMsg("Tudo salvo com sucesso.");
       await loadData();
     } catch (e: any) {
@@ -737,7 +782,7 @@ export default function HorimetrosPage() {
     } finally {
       setSavingAll(false);
     }
-  }, [loadData, rows, selectedDate, supabase]);
+  }, [ensureObraForSave, lastSavedObraId, loadData, rows, selectedDate, supabase]);
 
   return (
     <>
@@ -778,7 +823,7 @@ export default function HorimetrosPage() {
         }
 
         .shell {
-          width: min(1560px, 100%);
+          width: min(1600px, 100%);
           margin: 0 auto;
           display: grid;
           gap: 12px;
@@ -884,7 +929,8 @@ export default function HorimetrosPage() {
         .number-input,
         .text-input,
         .keep-btn,
-        .keep-all-btn {
+        .keep-all-btn,
+        .new-obra-input {
           width: 100%;
           height: 36px;
           border: 1px solid transparent;
@@ -902,7 +948,8 @@ export default function HorimetrosPage() {
         .date:focus,
         .select:focus,
         .number-input:focus,
-        .text-input:focus {
+        .text-input:focus,
+        .new-obra-input:focus {
           background: #fff;
           border-color: var(--line-strong);
           box-shadow: 0 0 0 3px rgba(91, 109, 246, 0.08);
@@ -1039,7 +1086,7 @@ export default function HorimetrosPage() {
 
         table {
           width: 100%;
-          min-width: 1240px;
+          min-width: 1360px;
           border-collapse: separate;
           border-spacing: 0;
           table-layout: fixed;
@@ -1047,7 +1094,7 @@ export default function HorimetrosPage() {
 
         col.eq { width: 88px; }
         col.tipo { width: 130px; }
-        col.obra { width: 180px; }
+        col.obra { width: 260px; }
         col.prev { width: 100px; }
         col.curr { width: 170px; }
         col.day { width: 120px; }
@@ -1159,6 +1206,11 @@ export default function HorimetrosPage() {
           gap: 6px;
         }
 
+        .obra-cell {
+          display: grid;
+          gap: 6px;
+        }
+
         .value {
           font-size: 13px;
           font-weight: 700;
@@ -1267,7 +1319,7 @@ export default function HorimetrosPage() {
           .header { padding: 12px; }
           .controls { grid-template-columns: 1fr; }
           .title { font-size: 17px; }
-          table { min-width: 1220px; }
+          table { min-width: 1320px; }
         }
       `}</style>
 
@@ -1283,7 +1335,7 @@ export default function HorimetrosPage() {
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
                   <p className="subtitle">
-                    Uma linha por equipamento. Tabela compacta e rolagem lateral no celular.
+                    Obra segue o último salvamento. Também dá para digitar uma nova obra na linha.
                   </p>
                 </div>
               </div>
@@ -1359,7 +1411,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  Obra vem do equipamento; se não achar, cai em Pátio. Para salvar: obra obrigatória e valor atual válido.
+                  O status não usa mais a coluna `status`. A bolinha fica verde quando o registro salva.
                 </p>
               </div>
             </div>
@@ -1406,7 +1458,8 @@ export default function HorimetrosPage() {
                       const current = getCurrentValue(row);
                       const dayValue = getDayValue(row);
                       const alertText = getAlertText(row);
-                      const rowCanSave = canSaveRow(row);
+                      const rowCanSave = canSaveRow(row, lastSavedObraId);
+                      const effectiveObraId = getEffectiveObraId(row, lastSavedObraId);
 
                       return (
                         <tr key={row.equipamentoId}>
@@ -1441,20 +1494,37 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
-                            <select
-                              className="select"
-                              value={row.obraId || String(patioId ?? "")}
-                              onChange={(e) =>
-                                updateRow(row.equipamentoId, { obraId: e.target.value })
-                              }
-                            >
-                              <option value="">Selecione</option>
-                              {obras.map((obra) => (
-                                <option key={obra.id} value={obra.id}>
-                                  {obra.obra}
-                                </option>
-                              ))}
-                            </select>
+                            <div className="obra-cell">
+                              <select
+                                className="select"
+                                value={effectiveObraId}
+                                onChange={(e) =>
+                                  updateRow(row.equipamentoId, {
+                                    obraId: e.target.value,
+                                    novaObra: "",
+                                  })
+                                }
+                              >
+                                <option value="">Selecione</option>
+                                {obras.map((obra) => (
+                                  <option key={obra.id} value={obra.id}>
+                                    {obra.obra}
+                                  </option>
+                                ))}
+                              </select>
+
+                              <input
+                                className="new-obra-input"
+                                value={row.novaObra}
+                                onChange={(e) =>
+                                  updateRow(row.equipamentoId, {
+                                    novaObra: e.target.value,
+                                    obraId: "",
+                                  })
+                                }
+                                placeholder="Nova obra"
+                              />
+                            </div>
                           </td>
 
                           <td className="center">
