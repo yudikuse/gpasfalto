@@ -1,4 +1,7 @@
+Segue o conteúdo completo e limpo de `app/horimetros/page.tsx`.  
+No GitHub: apague tudo, cole exatamente isto, salve e faça o deploy.
 
+```typescript
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -299,7 +302,8 @@ function formatDecimalInputWithCaret(rawValue: string, caret: number | null) {
     if (!rawCommaBeforeCaret) {
       const digitsWanted = countDigits(beforeCaret);
       const formattedCommaIndex = formatted.indexOf(",");
-      const leftPart = formattedCommaIndex >= 0 ? formatted.slice(0, formattedCommaIndex) : formatted;
+      const leftPart =
+        formattedCommaIndex >= 0 ? formatted.slice(0, formattedCommaIndex) : formatted;
       nextCaret = caretFromDigits(leftPart, digitsWanted);
     } else {
       const formattedCommaIndex = formatted.indexOf(",");
@@ -388,6 +392,11 @@ export default function HorimetrosPage() {
       );
     });
   }, [rows, search, obras]);
+
+  const supabase = useMemo(() => {
+    if (!env.ok) return null;
+    return createClient(env.url, env.key) as SupabaseClient;
+  }, [env.ok, env.url, env.key]);
 
   const loadData = useCallback(async () => {
     if (!supabase) return;
