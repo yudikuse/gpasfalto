@@ -1418,4 +1418,3 @@ export default function HorimetrosPage() {
     </>
   );
 }
-```
