@@ -160,14 +160,15 @@ function parsePtNumber(value: string) {
   return Number.isFinite(n) ? n : null;
 }
 
-function sanitizeDecimalDraft(value: string) {
+ function sanitizeDecimalDraft(value: string): string {
   const digits = String(value || "").replace(/\D/g, "");
 
   if (!digits) return "";
 
-  const normalized = digits.padStart(2, "0");
-  const intPart = normalized.slice(0, -1).replace(/^0+(?=\d)/, "") || "0";
-  const decPart = normalized.slice(-1);
+  const padded = digits.padStart(2, "0");
+  const intPart = padded.slice(0, -1).replace(/^0+(?=\d)/, "") || "0";
+  const decPart = padded.slice(-1);
+
   const intFormatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 
   return `${intFormatted},${decPart}`;
@@ -437,57 +438,55 @@ export default function HorimetrosPage() {
     );
   }, []);
 
-  const updateActiveInput = useCallback((equipamentoId: number, value: string) => {
-    const sanitized = sanitizeDecimalDraft(value);
+const updateActiveInput = useCallback((equipamentoId: number, rawValue: string) => {
+  setRows((current) =>
+    current.map((row) => {
+      if (row.equipamentoId !== equipamentoId) return row;
 
-    setRows((current) =>
-      current.map((row) => {
-        if (row.equipamentoId !== equipamentoId) return row;
+      const next = { ...row };
+      const masked = sanitizeDecimalDraft(rawValue);
 
-        const next = { ...row };
+      if (next.selectedMode === "horimetro") {
+        next.horimetroAtual = masked;
+      } else {
+        next.odometroAtual = masked;
+      }
 
-        if (next.selectedMode === "horimetro") {
-          next.horimetroAtual = sanitized;
-        } else {
-          next.odometroAtual = sanitized;
-        }
+      const hAtual = parsePtNumber(next.horimetroAtual);
+      const oAtual = parsePtNumber(next.odometroAtual);
 
-        const hAtual = parsePtNumber(next.horimetroAtual);
-        const oAtual = parsePtNumber(next.odometroAtual);
+      next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
+      next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
 
-        next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
-        next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
+      return next;
+    })
+  );
+}, []);
 
-        return next;
-      })
-    );
-  }, []);
+  const finalizeActiveInput = useCallback((equipamentoId: number, rawValue: string) => {
+  setRows((current) =>
+    current.map((row) => {
+      if (row.equipamentoId !== equipamentoId) return row;
 
-  const finalizeActiveInput = useCallback((equipamentoId: number, value: string) => {
-    const finalValue = sanitizeDecimalDraft(value);
+      const next = { ...row };
+      const masked = sanitizeDecimalDraft(rawValue);
 
-    setRows((current) =>
-      current.map((row) => {
-        if (row.equipamentoId !== equipamentoId) return row;
+      if (next.selectedMode === "horimetro") {
+        next.horimetroAtual = masked;
+      } else {
+        next.odometroAtual = masked;
+      }
 
-        const next = { ...row };
+      const hAtual = parsePtNumber(next.horimetroAtual);
+      const oAtual = parsePtNumber(next.odometroAtual);
 
-        if (next.selectedMode === "horimetro") {
-          next.horimetroAtual = finalValue;
-        } else {
-          next.odometroAtual = finalValue;
-        }
+      next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
+      next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
 
-        const hAtual = parsePtNumber(next.horimetroAtual);
-        const oAtual = parsePtNumber(next.odometroAtual);
-
-        next.horasDia = safePositiveDiff(hAtual, next.horimetroAnterior);
-        next.kmDia = safePositiveDiff(oAtual, next.odometroAnterior);
-
-        return next;
-      })
-    );
-  }, []);
+      return next;
+    })
+  );
+}, []);
 
   const saveOneRow = useCallback(
     async (row: RowState) => {
@@ -1330,17 +1329,20 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
-                            <input
-                              type="text"
-                              className="number-input"
-                              value={current}
-                              onChange={(e) => updateActiveInput(row.equipamentoId, e.target.value)}
-                              onBlur={(e) =>
-                                finalizeActiveInput(row.equipamentoId, e.target.value)
-                              }
-                              inputMode="numeric"
-                              placeholder="Digite"
-                            />
+                        <input
+  type="text"
+  className="number-input"
+  value={current}
+  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+    updateActiveInput(row.equipamentoId, e.target.value)
+  }
+  onBlur={(e: React.FocusEvent<HTMLInputElement>) =>
+    finalizeActiveInput(row.equipamentoId, e.target.value)
+  }
+  inputMode="numeric"
+  autoComplete="off"
+  placeholder="Digite"
+/>
                           </td>
 
                           <td>
