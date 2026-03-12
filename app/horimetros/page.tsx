@@ -1,4 +1,6 @@
+Cole **este arquivo inteiro** em `app/horimetros/page.tsx`:
 
+```tsx
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
