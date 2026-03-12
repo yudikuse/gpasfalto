@@ -91,12 +91,16 @@ function resolveSupabaseEnv(): { ok: boolean; url: string; key: string } {
   return { ok: Boolean(url && key), url, key };
 }
 
-function normCode(value: string) {
+function normalizeText(value: string) {
   return String(value || "")
-    .trim()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
     .toUpperCase()
-    .replace(/\s+/g, "")
-    .replace(/_/g, "-");
+    .trim();
+}
+
+function normCode(value: string) {
+  return normalizeText(String(value || "").replace(/_/g, "-").replace(/\s+/g, ""));
 }
 
 function modeFromPrefix(codigo: string): MeasurementMode {
@@ -182,18 +186,28 @@ function composeObservacao(text: string, isTrocaMedidor: boolean) {
   return clean || null;
 }
 
+function findPatioObraId(obras: ObraRow[]) {
+  const exact = obras.find((o) => normalizeText(o.obra) === "PATIO");
+  if (exact) return exact.id;
+
+  const contains = obras.find((o) => normalizeText(o.obra).includes("PATIO"));
+  if (contains) return contains.id;
+
+  return null;
+}
+
 function buildRows(params: {
   equipamentos: EquipamentoRow[];
   atuais: LeituraRow[];
   anteriores: LeituraRow[];
+  patioId: number | null;
 }): RowState[] {
-  const { equipamentos, atuais, anteriores } = params;
+  const { equipamentos, atuais, anteriores, patioId } = params;
 
   const atualMap = new Map<number, LeituraRow>();
   const anteriorMap = new Map<number, LeituraRow>();
 
   for (const row of atuais) atualMap.set(Number(row.equipamento_id), row);
-
   for (const row of anteriores) {
     const key = Number(row.equipamento_id);
     if (!anteriorMap.has(key)) anteriorMap.set(key, row);
@@ -218,7 +232,7 @@ function buildRows(params: {
     return {
       equipamentoId: eq.id,
       codigo: eq.codigo,
-      obraId: String(atual?.obra_id ?? eq.obra_padrao_id ?? ""),
+      obraId: String(atual?.obra_id ?? eq.obra_padrao_id ?? patioId ?? ""),
       selectedMode: resolveInitialMode(eq, atual),
       horimetroAnterior,
       horimetroAtual: horimetroAtualNum == null ? "" : format1(horimetroAtualNum),
@@ -265,13 +279,30 @@ function getAlertText(row: RowState) {
   return null;
 }
 
+function canSaveRow(row: RowState) {
+  const previous = getPreviousValue(row);
+  const current = getCurrentNumericValue(row);
+
+  if (!row.obraId) return false;
+  if (current == null) return false;
+  if (previous == null) return true;
+  if (current < previous && !row.isTrocaMedidor) return false;
+  return true;
+}
+
 function validateRow(row: RowState) {
   const previous = getPreviousValue(row);
   const current = getCurrentNumericValue(row);
 
-  if (current == null || previous == null) return null;
+  if (!row.obraId) {
+    return `${row.codigo}: selecione a obra.`;
+  }
 
-  if (current < previous && !row.isTrocaMedidor) {
+  if (current == null) {
+    return `${row.codigo}: informe o valor atual.`;
+  }
+
+  if (current < (previous ?? current) && !row.isTrocaMedidor) {
     return `${row.codigo}: valor atual não pode ser menor que o anterior sem marcar trocar (${row.selectedMode === "horimetro" ? "hor" : "odo"}).`;
   }
 
@@ -329,6 +360,8 @@ export default function HorimetrosPage() {
     () => rows.length > 0 && rows.every((row) => row.keepPreviousApplied),
     [rows]
   );
+
+  const patioId = useMemo(() => findPatioObraId(obras), [obras]);
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -395,6 +428,8 @@ export default function HorimetrosPage() {
       if (anterioresRes.error) throw anterioresRes.error;
 
       const obrasData = (obrasRes.data || []) as ObraRow[];
+      const patioDefaultId = findPatioObraId(obrasData);
+
       const equipamentosData = ((equipamentosRes.data || []) as EquipamentoRow[]).sort((a, b) =>
         normCode(a.codigo).localeCompare(normCode(b.codigo), "pt-BR")
       );
@@ -415,6 +450,7 @@ export default function HorimetrosPage() {
           equipamentos: equipamentosData,
           atuais: (atuaisRes.data || []) as LeituraRow[],
           anteriores: anterioresDedup,
+          patioId: patioDefaultId,
         })
       );
     } catch (e: any) {
@@ -455,11 +491,8 @@ export default function HorimetrosPage() {
 
         const next = { ...row, keepPreviousApplied: false };
 
-        if (next.selectedMode === "horimetro") {
-          next.horimetroAtual = sanitized;
-        } else {
-          next.odometroAtual = sanitized;
-        }
+        if (next.selectedMode === "horimetro") next.horimetroAtual = sanitized;
+        else next.odometroAtual = sanitized;
 
         const hAtual = parsePtNumber(next.horimetroAtual);
         const oAtual = parsePtNumber(next.odometroAtual);
@@ -481,11 +514,8 @@ export default function HorimetrosPage() {
 
         const next = { ...row };
 
-        if (next.selectedMode === "horimetro") {
-          next.horimetroAtual = finalValue;
-        } else {
-          next.odometroAtual = finalValue;
-        }
+        if (next.selectedMode === "horimetro") next.horimetroAtual = finalValue;
+        else next.odometroAtual = finalValue;
 
         const hAtual = parsePtNumber(next.horimetroAtual);
         const oAtual = parsePtNumber(next.odometroAtual);
@@ -581,22 +611,9 @@ export default function HorimetrosPage() {
         const horimetroFinal = parsePtNumber(row.horimetroAtual);
         const odometroFinal = parsePtNumber(row.odometroAtual);
 
-        const hasSomethingToSave =
-          row.registroId != null ||
-          Boolean(String(row.observacao || "").trim()) ||
-          Boolean(String(row.obraId || "").trim()) ||
-          Boolean(row.isTrocaMedidor) ||
-          horimetroFinal != null ||
-          odometroFinal != null;
-
-        if (!hasSomethingToSave) {
-          setSavingRowId(null);
-          return;
-        }
-
         const payload = {
           data: selectedDate,
-          obra_id: row.obraId ? Number(row.obraId) : null,
+          obra_id: Number(row.obraId),
           equipamento_id: row.equipamentoId,
           horimetro_inicial:
             horimetroFinal != null || row.horimetroAnterior != null ? row.horimetroAnterior : null,
@@ -605,7 +622,7 @@ export default function HorimetrosPage() {
             odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
           odometro_final: odometroFinal,
           observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
-          status: horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
+          status: "LANCADO",
           updated_by_user_id: updatedById,
           updated_by_nome: updatedByName,
           updated_at: new Date().toISOString(),
@@ -628,6 +645,14 @@ export default function HorimetrosPage() {
           if (res.error) throw res.error;
         }
 
+        setRows((current) =>
+          current.map((item) =>
+            item.equipamentoId === row.equipamentoId
+              ? { ...item, registroId: item.registroId ?? -1 }
+              : item
+          )
+        );
+
         setOkMsg(`${row.codigo} salvo com sucesso.`);
         await loadData();
       } catch (e: any) {
@@ -648,6 +673,9 @@ export default function HorimetrosPage() {
 
     try {
       for (const row of rows) {
+        const current = getCurrentNumericValue(row);
+        if (current == null && !row.obraId && !row.observacao && !row.isTrocaMedidor) continue;
+
         const validationError = validateRow(row);
         if (validationError) throw new Error(validationError);
       }
@@ -662,18 +690,14 @@ export default function HorimetrosPage() {
         const odometroFinal = parsePtNumber(row.odometroAtual);
 
         const hasSomethingToSave =
-          row.registroId != null ||
-          Boolean(String(row.observacao || "").trim()) ||
-          Boolean(String(row.obraId || "").trim()) ||
-          Boolean(row.isTrocaMedidor) ||
-          horimetroFinal != null ||
-          odometroFinal != null;
+          Boolean(row.obraId) &&
+          (horimetroFinal != null || odometroFinal != null);
 
         if (!hasSomethingToSave) continue;
 
         const payload = {
           data: selectedDate,
-          obra_id: row.obraId ? Number(row.obraId) : null,
+          obra_id: Number(row.obraId),
           equipamento_id: row.equipamentoId,
           horimetro_inicial:
             horimetroFinal != null || row.horimetroAnterior != null ? row.horimetroAnterior : null,
@@ -682,7 +706,7 @@ export default function HorimetrosPage() {
             odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
           odometro_final: odometroFinal,
           observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
-          status: horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
+          status: "LANCADO",
           updated_by_user_id: updatedById,
           updated_by_nome: updatedByName,
           updated_at: new Date().toISOString(),
@@ -734,12 +758,8 @@ export default function HorimetrosPage() {
           --shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
         }
 
-        * {
-          box-sizing: border-box;
-        }
-
-        html,
-        body {
+        * { box-sizing: border-box; }
+        html, body {
           margin: 0;
           padding: 0;
           background: var(--bg);
@@ -750,11 +770,7 @@ export default function HorimetrosPage() {
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
         }
 
-        input,
-        select,
-        button {
-          font: inherit;
-        }
+        input, select, button { font: inherit; }
 
         .page {
           min-height: 100vh;
@@ -980,17 +996,9 @@ export default function HorimetrosPage() {
           font-weight: 700;
         }
 
-        .message.error {
-          color: #a12d2d;
-        }
-
-        .message.ok {
-          color: #0b7b52;
-        }
-
-        .message.warn {
-          color: #8a6200;
-        }
+        .message.error { color: #a12d2d; }
+        .message.ok { color: #0b7b52; }
+        .message.warn { color: #8a6200; }
 
         .table-card {
           background: var(--surface);
@@ -1217,13 +1225,8 @@ export default function HorimetrosPage() {
           border-radius: 999px;
         }
 
-        .status-dot.saved {
-          background: #16a34a;
-        }
-
-        .status-dot.pending {
-          background: #ef4444;
-        }
+        .status-dot.saved { background: #16a34a; }
+        .status-dot.pending { background: #ef4444; }
 
         .row-save {
           width: 30px;
@@ -1244,8 +1247,8 @@ export default function HorimetrosPage() {
         }
 
         .row-save[disabled] {
-          opacity: 0.55;
-          cursor: wait;
+          opacity: 0.45;
+          cursor: not-allowed;
         }
 
         .center {
@@ -1260,25 +1263,11 @@ export default function HorimetrosPage() {
         }
 
         @media (max-width: 920px) {
-          .page {
-            padding: 10px;
-          }
-
-          .header {
-            padding: 12px;
-          }
-
-          .controls {
-            grid-template-columns: 1fr;
-          }
-
-          .title {
-            font-size: 17px;
-          }
-
-          table {
-            min-width: 1220px;
-          }
+          .page { padding: 10px; }
+          .header { padding: 12px; }
+          .controls { grid-template-columns: 1fr; }
+          .title { font-size: 17px; }
+          table { min-width: 1220px; }
         }
       `}</style>
 
@@ -1349,9 +1338,9 @@ export default function HorimetrosPage() {
                 type="button"
                 className={`keep-all-btn ${allKeepApplied ? "active" : ""}`}
                 onClick={toggleKeepPreviousForAll}
-                title={allKeepApplied ? "Remover Últ. de todos" : "Aplicar Últ. em todos"}
+                title={allKeepApplied ? "Desmarcar Últ. em todos" : "Aplicar Últ. em todos"}
               >
-                {allKeepApplied ? "Remover Últ. todos" : "Aplicar Últ. todos"}
+                {allKeepApplied ? "Desmarcar Últ. todos" : "Aplicar Últ. todos"}
               </button>
             </div>
           </section>
@@ -1370,7 +1359,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  “Últ.” copia o valor de ontem para hoje. Se marcar trocar, o alerta “Abaixo de ontem” some.
+                  Obra vem do equipamento; se não achar, cai em Pátio. Para salvar: obra obrigatória e valor atual válido.
                 </p>
               </div>
             </div>
@@ -1417,6 +1406,7 @@ export default function HorimetrosPage() {
                       const current = getCurrentValue(row);
                       const dayValue = getDayValue(row);
                       const alertText = getAlertText(row);
+                      const rowCanSave = canSaveRow(row);
 
                       return (
                         <tr key={row.equipamentoId}>
@@ -1453,7 +1443,7 @@ export default function HorimetrosPage() {
                           <td>
                             <select
                               className="select"
-                              value={row.obraId}
+                              value={row.obraId || String(patioId ?? "")}
                               onChange={(e) =>
                                 updateRow(row.equipamentoId, { obraId: e.target.value })
                               }
@@ -1550,7 +1540,10 @@ export default function HorimetrosPage() {
                               title={`Salvar ${row.codigo}`}
                               onClick={() => void saveOneRow(row)}
                               disabled={
-                                savingRowId === row.equipamentoId || savingAll || !env.ok
+                                !rowCanSave ||
+                                savingRowId === row.equipamentoId ||
+                                savingAll ||
+                                !env.ok
                               }
                             >
                               <SaveIcon />
