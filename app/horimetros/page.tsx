@@ -1,19 +1,4 @@
-Agora ficou bem claro o que está acontecendo: o **arquivo ainda começa com texto em português**, por isso o erro aponta para a linha:
 
-> `Você acabou colando **todo o meu texto de explicação**...`
-
-Esse texto está **dentro de `app/horimetros/page.tsx`**. O compilador só aceita código JavaScript/TypeScript, não texto normal.
-
-### O que você precisa fazer (sem erro agora)
-
-1. No GitHub, abra `app/horimetros/page.tsx`.
-2. Clique no ícone de lápis (**Edit**).
-3. Dentro do editor:
-   - Aperte **Ctrl + A** (seleciona tudo).
-   - Aperte **Delete** (fica o arquivo em branco).
-4. Agora cole **somente** o código abaixo, começando exatamente por `"use client";`:
-
-```typescript
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
