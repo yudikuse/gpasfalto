@@ -47,6 +47,7 @@ type RowState = {
   codigo: string;
   obraId: string;
   novaObra: string;
+  showNovaObra: boolean;
   selectedMode: MeasurementMode;
   horimetroAnterior: number | null;
   horimetroAtual: string;
@@ -224,6 +225,7 @@ function buildRows(params: {
       codigo: eq.codigo,
       obraId: String(atual?.obra_id ?? ""),
       novaObra: "",
+      showNovaObra: false,
       selectedMode: resolveInitialMode(eq, atual),
       horimetroAnterior,
       horimetroAtual: horimetroAtualNum == null ? "" : format1(horimetroAtualNum),
@@ -292,7 +294,7 @@ function validateRow(row: RowState, lastSavedObraId: string) {
   const obraId = getEffectiveObraId(row, lastSavedObraId);
 
   if (!obraId && !row.novaObra.trim()) {
-    return `${row.codigo}: selecione a obra ou digite uma nova obra.`;
+    return `${row.codigo}: selecione a obra ou cadastre uma nova obra.`;
   }
 
   if (current == null) {
@@ -322,7 +324,12 @@ function SaveIcon() {
 }
 
 function StatusDot({ saved }: { saved: boolean }) {
-  return <span className={`status-dot ${saved ? "saved" : "pending"}`} title={saved ? "Salvo" : "Pendente"} />;
+  return (
+    <span
+      className={`status-dot ${saved ? "saved" : "pending"}`}
+      title={saved ? "Salvo" : "Pendente"}
+    />
+  );
 }
 
 export default function HorimetrosPage() {
@@ -402,7 +409,7 @@ export default function HorimetrosPage() {
         supabase
           .from("horimetro_leituras_diarias")
           .select(
-            "id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,status,updated_by_user_id,updated_by_nome,updated_at,created_at"
+            "id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,updated_by_user_id,updated_by_nome,updated_at,created_at"
           )
           .eq("data", selectedDate)
           .order("equipamento_id", { ascending: true })
@@ -411,7 +418,7 @@ export default function HorimetrosPage() {
         supabase
           .from("horimetro_leituras_diarias")
           .select(
-            "id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,status,updated_by_user_id,updated_by_nome,updated_at,created_at"
+            "id,data,obra_id,equipamento_id,horimetro_inicial,horimetro_final,horas_trabalhadas,odometro_inicial,odometro_final,km_rodados,observacao,updated_by_user_id,updated_by_nome,updated_at,created_at"
           )
           .lt("data", selectedDate)
           .order("data", { ascending: false })
@@ -930,9 +937,10 @@ export default function HorimetrosPage() {
         .text-input,
         .keep-btn,
         .keep-all-btn,
-        .new-obra-input {
+        .new-obra-input,
+        .obra-popover-btn {
           width: 100%;
-          height: 36px;
+          height: 34px;
           border: 1px solid transparent;
           border-radius: 9px;
           background: var(--surface-soft);
@@ -956,13 +964,14 @@ export default function HorimetrosPage() {
         }
 
         .number-input {
-          min-width: 100px;
+          min-width: 96px;
           text-align: right;
           font-variant-numeric: tabular-nums;
         }
 
         .keep-btn,
-        .keep-all-btn {
+        .keep-all-btn,
+        .obra-popover-btn {
           width: auto;
           cursor: pointer;
           color: #475569;
@@ -985,8 +994,16 @@ export default function HorimetrosPage() {
           padding: 0 12px;
         }
 
+        .obra-popover-btn {
+          min-width: 58px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+
         .keep-btn:hover,
-        .keep-all-btn:hover {
+        .keep-all-btn:hover,
+        .obra-popover-btn:hover {
           background: var(--brand-soft);
           color: var(--brand);
           border-color: #cfd8ff;
@@ -1045,7 +1062,6 @@ export default function HorimetrosPage() {
 
         .message.error { color: #a12d2d; }
         .message.ok { color: #0b7b52; }
-        .message.warn { color: #8a6200; }
 
         .table-card {
           background: var(--surface);
@@ -1086,29 +1102,29 @@ export default function HorimetrosPage() {
 
         table {
           width: 100%;
-          min-width: 1360px;
+          min-width: 1220px;
           border-collapse: separate;
           border-spacing: 0;
           table-layout: fixed;
         }
 
         col.eq { width: 88px; }
-        col.tipo { width: 130px; }
-        col.obra { width: 260px; }
-        col.prev { width: 100px; }
-        col.curr { width: 170px; }
+        col.tipo { width: 120px; }
+        col.obra { width: 220px; }
+        col.prev { width: 96px; }
+        col.curr { width: 160px; }
         col.day { width: 120px; }
-        col.troca { width: 120px; }
-        col.obs { width: 180px; }
-        col.status { width: 70px; }
-        col.save { width: 52px; }
+        col.troca { width: 110px; }
+        col.obs { width: 160px; }
+        col.status { width: 58px; }
+        col.save { width: 46px; }
 
         thead th {
           position: sticky;
           top: 0;
           z-index: 5;
           background: var(--surface);
-          padding: 10px;
+          padding: 8px 10px;
           text-align: center;
           font-size: 10px;
           font-weight: 800;
@@ -1132,7 +1148,7 @@ export default function HorimetrosPage() {
         }
 
         tbody td {
-          padding: 7px 10px;
+          padding: 6px 10px;
           border-bottom: 1px solid var(--line);
           vertical-align: middle;
           background: #fff;
@@ -1165,7 +1181,7 @@ export default function HorimetrosPage() {
         }
 
         .equip-sub {
-          margin-top: 3px;
+          margin-top: 2px;
           font-size: 11px;
           color: var(--muted);
           font-weight: 500;
@@ -1183,7 +1199,7 @@ export default function HorimetrosPage() {
 
         .segmented button {
           height: 24px;
-          min-width: 46px;
+          min-width: 44px;
           border: 0;
           border-radius: 999px;
           padding: 0 8px;
@@ -1207,7 +1223,32 @@ export default function HorimetrosPage() {
         }
 
         .obra-cell {
+          position: relative;
+        }
+
+        .obra-row {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+
+        .obra-popover {
+          position: absolute;
+          top: 40px;
+          left: 0;
+          right: 0;
+          z-index: 30;
+          background: #fff;
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          box-shadow: 0 14px 28px rgba(15, 23, 42, 0.1);
+          padding: 8px;
           display: grid;
+          gap: 8px;
+        }
+
+        .obra-popover-actions {
+          display: flex;
           gap: 6px;
         }
 
@@ -1221,13 +1262,8 @@ export default function HorimetrosPage() {
           width: 100%;
         }
 
-        .value.muted {
-          color: #9aa4b2;
-        }
-
-        .value.success {
-          color: var(--success);
-        }
+        .value.muted { color: #9aa4b2; }
+        .value.success { color: var(--success); }
 
         .alert-chip {
           display: inline-flex;
@@ -1303,9 +1339,7 @@ export default function HorimetrosPage() {
           cursor: not-allowed;
         }
 
-        .center {
-          text-align: center;
-        }
+        .center { text-align: center; }
 
         .empty {
           padding: 16px;
@@ -1319,7 +1353,7 @@ export default function HorimetrosPage() {
           .header { padding: 12px; }
           .controls { grid-template-columns: 1fr; }
           .title { font-size: 17px; }
-          table { min-width: 1320px; }
+          table { min-width: 1180px; }
         }
       `}</style>
 
@@ -1335,7 +1369,7 @@ export default function HorimetrosPage() {
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
                   <p className="subtitle">
-                    Obra segue o último salvamento. Também dá para digitar uma nova obra na linha.
+                    A obra segue o último salvamento. “Nova obra” abre campo de cadastro sem esticar a linha.
                   </p>
                 </div>
               </div>
@@ -1397,12 +1431,6 @@ export default function HorimetrosPage() {
             </div>
           </section>
 
-          {!env.ok ? (
-            <div className="message warn">
-              Defina no Vercel: NEXT_PUBLIC_SUPABASE_URL e NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ou NEXT_PUBLIC_SUPABASE_ANON_KEY.
-            </div>
-          ) : null}
-
           {errorMsg ? <div className="message error">{errorMsg}</div> : null}
           {okMsg ? <div className="message ok">{okMsg}</div> : null}
 
@@ -1411,7 +1439,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  O status não usa mais a coluna `status`. A bolinha fica verde quando o registro salva.
+                  Não existe mais default fixo de obra. A próxima linha reaproveita a obra do último salvamento.
                 </p>
               </div>
             </div>
@@ -1495,35 +1523,82 @@ export default function HorimetrosPage() {
 
                           <td>
                             <div className="obra-cell">
-                              <select
-                                className="select"
-                                value={effectiveObraId}
-                                onChange={(e) =>
-                                  updateRow(row.equipamentoId, {
-                                    obraId: e.target.value,
-                                    novaObra: "",
-                                  })
-                                }
-                              >
-                                <option value="">Selecione</option>
-                                {obras.map((obra) => (
-                                  <option key={obra.id} value={obra.id}>
-                                    {obra.obra}
-                                  </option>
-                                ))}
-                              </select>
+                              <div className="obra-row">
+                                <select
+                                  className="select"
+                                  value={row.showNovaObra ? "__new__" : effectiveObraId}
+                                  onChange={(e) => {
+                                    const value = e.target.value;
+                                    if (value === "__new__") {
+                                      updateRow(row.equipamentoId, {
+                                        showNovaObra: true,
+                                        obraId: "",
+                                      });
+                                      return;
+                                    }
 
-                              <input
-                                className="new-obra-input"
-                                value={row.novaObra}
-                                onChange={(e) =>
-                                  updateRow(row.equipamentoId, {
-                                    novaObra: e.target.value,
-                                    obraId: "",
-                                  })
-                                }
-                                placeholder="Nova obra"
-                              />
+                                    updateRow(row.equipamentoId, {
+                                      obraId: value,
+                                      novaObra: "",
+                                      showNovaObra: false,
+                                    });
+                                  }}
+                                >
+                                  <option value="">Selecione</option>
+                                  {lastSavedObraId ? (
+                                    <option value={lastSavedObraId}>
+                                      {obras.find((o) => String(o.id) === lastSavedObraId)?.obra || "Última obra"}
+                                    </option>
+                                  ) : null}
+                                  {obras
+                                    .filter((obra) => String(obra.id) !== String(lastSavedObraId || ""))
+                                    .map((obra) => (
+                                      <option key={obra.id} value={obra.id}>
+                                        {obra.obra}
+                                      </option>
+                                    ))}
+                                  <option value="__new__">+ Nova obra...</option>
+                                </select>
+                              </div>
+
+                              {row.showNovaObra ? (
+                                <div className="obra-popover">
+                                  <input
+                                    className="new-obra-input"
+                                    value={row.novaObra}
+                                    onChange={(e) =>
+                                      updateRow(row.equipamentoId, { novaObra: e.target.value })
+                                    }
+                                    placeholder="Digite a nova obra"
+                                  />
+                                  <div className="obra-popover-actions">
+                                    <button
+                                      type="button"
+                                      className="obra-popover-btn"
+                                      onClick={() =>
+                                        updateRow(row.equipamentoId, {
+                                          showNovaObra: false,
+                                          novaObra: "",
+                                          obraId: lastSavedObraId || "",
+                                        })
+                                      }
+                                    >
+                                      Cancelar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="obra-popover-btn"
+                                      onClick={() =>
+                                        updateRow(row.equipamentoId, {
+                                          showNovaObra: false,
+                                        })
+                                      }
+                                    >
+                                      OK
+                                    </button>
+                                  </div>
+                                </div>
+                              ) : null}
                             </div>
                           </td>
 
