@@ -139,11 +139,7 @@ function parsePtNumber(value: string) {
   const s = String(value || "").trim();
   if (!s) return null;
 
-  const normalized = s
-    .replace(/\./g, "")
-    .replace(",", ".")
-    .replace(/[^0-9.-]/g, "");
-
+  const normalized = s.replace(/\./g, "").replace(",", ".").replace(/[^0-9.-]/g, "");
   if (!normalized || normalized === "-" || normalized === "." || normalized === "-.") {
     return null;
   }
@@ -171,11 +167,6 @@ function safePositiveDiff(finalValue: number | null, initialValue: number | null
   return Number.isFinite(diff) ? diff : null;
 }
 
-function isBelowPrevious(finalValue: number | null, initialValue: number | null) {
-  if (finalValue == null || initialValue == null) return false;
-  return finalValue < initialValue;
-}
-
 function stripTrocaPrefix(text: string) {
   return String(text || "").replace(/^\s*\[TROCA\]\s*/i, "").trimStart();
 }
@@ -186,9 +177,7 @@ function hasTrocaPrefix(text: string) {
 
 function composeObservacao(text: string, isTrocaMedidor: boolean) {
   const clean = stripTrocaPrefix(text).trim();
-  if (isTrocaMedidor) {
-    return clean ? `[TROCA] ${clean}` : "[TROCA]";
-  }
+  if (isTrocaMedidor) return clean ? `[TROCA] ${clean}` : "[TROCA]";
   return clean || null;
 }
 
@@ -277,9 +266,11 @@ function validateRow(row: RowState) {
   const current = getCurrentNumericValue(row);
 
   if (current == null || previous == null) return null;
+
   if (current < previous && !row.isTrocaMedidor) {
     return `${row.codigo}: valor atual não pode ser menor que o anterior sem marcar trocar (${row.selectedMode === "horimetro" ? "hor" : "odo"}).`;
   }
+
   return null;
 }
 
@@ -296,6 +287,10 @@ function SaveIcon() {
       />
     </svg>
   );
+}
+
+function StatusDot({ saved }: { saved: boolean }) {
+  return <span className={`status-dot ${saved ? "saved" : "pending"}`} title={saved ? "Salvo" : "Pendente"} />;
 }
 
 export default function HorimetrosPage() {
@@ -494,7 +489,7 @@ export default function HorimetrosPage() {
     );
   }, []);
 
-  const manterAnterior = useCallback((row: RowState) => {
+  const manterUltimo = useCallback((row: RowState) => {
     const previous = getPreviousValue(row);
     if (previous == null) return;
 
@@ -547,9 +542,6 @@ export default function HorimetrosPage() {
         const horimetroFinal = parsePtNumber(row.horimetroAtual);
         const odometroFinal = parsePtNumber(row.odometroAtual);
 
-        const horasDia = safePositiveDiff(horimetroFinal, row.horimetroAnterior);
-        const kmDia = safePositiveDiff(odometroFinal, row.odometroAnterior);
-
         const hasSomethingToSave =
           row.registroId != null ||
           Boolean(String(row.observacao || "").trim()) ||
@@ -570,11 +562,9 @@ export default function HorimetrosPage() {
           horimetro_inicial:
             horimetroFinal != null || row.horimetroAnterior != null ? row.horimetroAnterior : null,
           horimetro_final: horimetroFinal,
-          horas_trabalhadas: horasDia,
           odometro_inicial:
             odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
           odometro_final: odometroFinal,
-          km_rodados: kmDia,
           observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
           status: horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
           updated_by_user_id: updatedById,
@@ -632,9 +622,6 @@ export default function HorimetrosPage() {
         const horimetroFinal = parsePtNumber(row.horimetroAtual);
         const odometroFinal = parsePtNumber(row.odometroAtual);
 
-        const horasDia = safePositiveDiff(horimetroFinal, row.horimetroAnterior);
-        const kmDia = safePositiveDiff(odometroFinal, row.odometroAnterior);
-
         const hasSomethingToSave =
           row.registroId != null ||
           Boolean(String(row.observacao || "").trim()) ||
@@ -652,11 +639,9 @@ export default function HorimetrosPage() {
           horimetro_inicial:
             horimetroFinal != null || row.horimetroAnterior != null ? row.horimetroAnterior : null,
           horimetro_final: horimetroFinal,
-          horas_trabalhadas: horasDia,
           odometro_inicial:
             odometroFinal != null || row.odometroAnterior != null ? row.odometroAnterior : null,
           odometro_final: odometroFinal,
-          km_rodados: kmDia,
           observacao: composeObservacao(row.observacao, row.isTrocaMedidor),
           status: horimetroFinal != null || odometroFinal != null ? "LANCADO" : "PENDENTE",
           updated_by_user_id: updatedById,
@@ -875,7 +860,7 @@ export default function HorimetrosPage() {
 
         .keep-btn {
           width: auto;
-          min-width: 34px;
+          min-width: 42px;
           padding: 0 10px;
           cursor: pointer;
           font-size: 11px;
@@ -993,9 +978,9 @@ export default function HorimetrosPage() {
         col.prev { width: 100px; }
         col.curr { width: 160px; }
         col.day { width: 120px; }
-        col.troca { width: 115px; }
+        col.troca { width: 130px; }
         col.obs { width: 180px; }
-        col.status { width: 120px; }
+        col.status { width: 70px; }
         col.save { width: 52px; }
 
         thead th {
@@ -1139,40 +1124,24 @@ export default function HorimetrosPage() {
           white-space: nowrap;
         }
 
-        .status {
-          display: inline-flex;
+        .status-wrap {
+          display: flex;
           align-items: center;
-          gap: 6px;
-          padding: 6px 10px;
-          border-radius: 999px;
-          font-size: 11px;
-          font-weight: 800;
-          white-space: nowrap;
-        }
-
-        .status.saved {
-          background: #ecfdf3;
-          color: #118244;
-        }
-
-        .status.pending {
-          background: #fff1f2;
-          color: #b42318;
+          justify-content: center;
         }
 
         .status-dot {
-          width: 7px;
-          height: 7px;
+          display: inline-block;
+          width: 12px;
+          height: 12px;
           border-radius: 999px;
-          flex: 0 0 auto;
-          background: #b6bfcd;
         }
 
-        .status.saved .status-dot {
+        .status-dot.saved {
           background: #16a34a;
         }
 
-        .status.pending .status-dot {
+        .status-dot.pending {
           background: #ef4444;
         }
 
@@ -1308,7 +1277,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  Botão “=” copia o valor de ontem para hoje. Se o atual ficar menor que ontem, aparece alerta em vez de subtração.
+                  “Últ.” copia o valor de ontem para hoje. Se o atual ficar menor que ontem, aparece alerta em vez de subtração.
                 </p>
               </div>
             </div>
@@ -1426,10 +1395,10 @@ export default function HorimetrosPage() {
                               <button
                                 type="button"
                                 className="keep-btn"
-                                onClick={() => manterAnterior(row)}
-                                title="Manter valor de ontem"
+                                onClick={() => manterUltimo(row)}
+                                title="Manter o último"
                               >
-                                =
+                                Últ.
                               </button>
                             </div>
                           </td>
@@ -1473,9 +1442,8 @@ export default function HorimetrosPage() {
                           </td>
 
                           <td>
-                            <div className={`status ${row.registroId ? "saved" : "pending"}`}>
-                              <span className="status-dot" />
-                              {row.registroId ? "Salvo" : "Pendente"}
+                            <div className="status-wrap">
+                              <StatusDot saved={row.registroId != null} />
                             </div>
                           </td>
 
