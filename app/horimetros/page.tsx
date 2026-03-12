@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -162,24 +161,16 @@ function parsePtNumber(value: string) {
 }
 
 function sanitizeDecimalDraft(value: string) {
-  let s = String(value || "");
-  s = s.replace(/\./g, ",");
-  s = s.replace(/[^0-9,]/g, "");
+  const digits = String(value || "").replace(/\D/g, "");
 
-  const hasComma = s.includes(",");
-  const parts = s.split(",");
-  const intPart = (parts[0] || "").replace(/\D/g, "");
-  const decPart = hasComma
-    ? (parts.slice(1).join("") || "").replace(/\D/g, "").slice(0, 1)
-    : "";
+  if (!digits) return "";
 
-  const cleanInt = intPart.replace(/^0+(?=\d)/, "") || (intPart ? "0" : "");
+  const normalized = digits.padStart(2, "0");
+  const intPart = normalized.slice(0, -1).replace(/^0+(?=\d)/, "") || "0";
+  const decPart = normalized.slice(-1);
+  const intFormatted = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 
-  if (hasComma) {
-    return `${cleanInt || "0"},${decPart}`;
-  }
-
-  return cleanInt;
+  return `${intFormatted},${decPart}`;
 }
 
 function safePositiveDiff(finalValue: number | null, initialValue: number | null) {
@@ -473,7 +464,7 @@ export default function HorimetrosPage() {
   }, []);
 
   const finalizeActiveInput = useCallback((equipamentoId: number, value: string) => {
-    const finalValue = formatInput1(parsePtNumber(value));
+    const finalValue = sanitizeDecimalDraft(value);
 
     setRows((current) =>
       current.map((row) => {
@@ -1239,7 +1230,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  Digitação livre no campo. A formatação entra ao sair do campo. Valor do dia nunca fica negativo.
+                  Máscara automática com 1 casa decimal fixa. Ex.: 71890 vira 7.189,0.
                 </p>
               </div>
             </div>
@@ -1347,7 +1338,7 @@ export default function HorimetrosPage() {
                               onBlur={(e) =>
                                 finalizeActiveInput(row.equipamentoId, e.target.value)
                               }
-                              inputMode="decimal"
+                              inputMode="numeric"
                               placeholder="Digite"
                             />
                           </td>
