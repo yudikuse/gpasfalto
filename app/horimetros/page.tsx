@@ -272,28 +272,22 @@ function getAlertText(row: RowState) {
   return null;
 }
 
-function getEffectiveObraId(row: RowState, lastSavedObraId: string) {
-  return row.obraId || lastSavedObraId || "";
-}
-
-function canSaveRow(row: RowState, lastSavedObraId: string) {
+function canSaveRow(row: RowState) {
   const previous = getPreviousValue(row);
   const current = getCurrentNumericValue(row);
-  const obraId = getEffectiveObraId(row, lastSavedObraId);
 
-  if (!obraId && !row.novaObra.trim()) return false;
+  if (!row.obraId && !row.novaObra.trim()) return false;
   if (current == null) return false;
   if (previous == null) return true;
   if (current < previous && !row.isTrocaMedidor) return false;
   return true;
 }
 
-function validateRow(row: RowState, lastSavedObraId: string) {
+function validateRow(row: RowState) {
   const previous = getPreviousValue(row);
   const current = getCurrentNumericValue(row);
-  const obraId = getEffectiveObraId(row, lastSavedObraId);
 
-  if (!obraId && !row.novaObra.trim()) {
+  if (!row.obraId && !row.novaObra.trim()) {
     return `${row.codigo}: selecione a obra ou cadastre uma nova obra.`;
   }
 
@@ -350,7 +344,6 @@ export default function HorimetrosPage() {
   const [search, setSearch] = useState("");
   const [obras, setObras] = useState<ObraRow[]>([]);
   const [rows, setRows] = useState<RowState[]>([]);
-  const [lastSavedObraId, setLastSavedObraId] = useState("");
 
   const periodoAnterior = useMemo(() => previousIso(selectedDate), [selectedDate]);
 
@@ -371,15 +364,14 @@ export default function HorimetrosPage() {
     if (!q) return rows;
 
     return rows.filter((row) => {
-      const obraId = getEffectiveObraId(row, lastSavedObraId);
-      const obra = obras.find((o) => String(o.id) === obraId)?.obra || row.novaObra || "";
+      const obra = obras.find((o) => String(o.id) === row.obraId)?.obra || row.novaObra || "";
       return (
         row.codigo.toLowerCase().includes(q) ||
         obra.toLowerCase().includes(q) ||
         row.selectedMode.toLowerCase().includes(q)
       );
     });
-  }, [rows, search, obras, lastSavedObraId]);
+  }, [rows, search, obras]);
 
   const loadData = useCallback(async () => {
     if (!supabase) return;
@@ -454,11 +446,6 @@ export default function HorimetrosPage() {
 
       setObras(obrasData);
       setRows(built);
-
-      const lastWithObra = ((atuaisRes.data || []) as LeituraRow[]).find((r) => r.obra_id != null);
-      if (lastWithObra?.obra_id != null) {
-        setLastSavedObraId(String(lastWithObra.obra_id));
-      }
     } catch (e: any) {
       setRows([]);
       setErrorMsg(e?.message || "Erro ao carregar horímetros.");
@@ -595,8 +582,7 @@ export default function HorimetrosPage() {
 
   const ensureObraForSave = useCallback(
     async (row: RowState) => {
-      const effectiveObraId = getEffectiveObraId(row, lastSavedObraId);
-      if (effectiveObraId) return effectiveObraId;
+      if (row.obraId) return row.obraId;
 
       const nova = row.novaObra.trim();
       if (!nova) return "";
@@ -609,26 +595,27 @@ export default function HorimetrosPage() {
       const insertRes = await supabase
         .from("obras")
         .insert({ obra: nova, ativo: true })
-        .select("id,obra")
+        .select("id,obra,ativo")
         .single();
 
       if (insertRes.error) throw insertRes.error;
 
       const created = insertRes.data as ObraRow;
+
       setObras((current) =>
         [...current, created].sort((a, b) => a.obra.localeCompare(b.obra, "pt-BR"))
       );
 
       return String(created.id);
     },
-    [lastSavedObraId, obras, supabase]
+    [obras, supabase]
   );
 
   const saveOneRow = useCallback(
     async (row: RowState) => {
       if (!supabase) return;
 
-      const validationError = validateRow(row, lastSavedObraId);
+      const validationError = validateRow(row);
       if (validationError) {
         setErrorMsg(validationError);
         setOkMsg("");
@@ -684,7 +671,19 @@ export default function HorimetrosPage() {
           if (res.error) throw res.error;
         }
 
-        setLastSavedObraId(obraIdToSave);
+        setRows((current) =>
+          current.map((item) =>
+            item.equipamentoId === row.equipamentoId
+              ? {
+                  ...item,
+                  obraId: obraIdToSave,
+                  novaObra: "",
+                  showNovaObra: false,
+                }
+              : item
+          )
+        );
+
         setOkMsg(`${row.codigo} salvo com sucesso.`);
         await loadData();
       } catch (e: any) {
@@ -693,7 +692,7 @@ export default function HorimetrosPage() {
         setSavingRowId(null);
       }
     },
-    [ensureObraForSave, lastSavedObraId, loadData, selectedDate, supabase]
+    [ensureObraForSave, loadData, selectedDate, supabase]
   );
 
   const handleSaveAll = useCallback(async () => {
@@ -710,11 +709,11 @@ export default function HorimetrosPage() {
           current != null ||
           Boolean(row.observacao.trim()) ||
           Boolean(row.novaObra.trim()) ||
-          Boolean(getEffectiveObraId(row, lastSavedObraId));
+          Boolean(row.obraId);
 
         if (!hasAnyWork) continue;
 
-        const validationError = validateRow(row, lastSavedObraId);
+        const validationError = validateRow(row);
         if (validationError) throw new Error(validationError);
       }
 
@@ -722,8 +721,6 @@ export default function HorimetrosPage() {
       const user = authRes.data.user;
       const updatedByName = user?.email || user?.user_metadata?.name || "Usuário";
       const updatedById = user?.id || null;
-
-      let nextDefaultObraId = lastSavedObraId;
 
       for (const row of rows) {
         const horimetroFinal = parsePtNumber(row.horimetroAtual);
@@ -734,15 +731,11 @@ export default function HorimetrosPage() {
           odometroFinal != null ||
           Boolean(row.observacao.trim()) ||
           Boolean(row.novaObra.trim()) ||
-          Boolean(getEffectiveObraId(row, nextDefaultObraId));
+          Boolean(row.obraId);
 
         if (!hasAnyWork) continue;
 
-        const obraIdToSave = await ensureObraForSave({
-          ...row,
-          obraId: row.obraId || nextDefaultObraId,
-        });
-
+        const obraIdToSave = await ensureObraForSave(row);
         if (!obraIdToSave) throw new Error(`${row.codigo}: obra inválida.`);
 
         const payload = {
@@ -777,11 +770,8 @@ export default function HorimetrosPage() {
 
           if (res.error) throw res.error;
         }
-
-        nextDefaultObraId = obraIdToSave;
       }
 
-      setLastSavedObraId(nextDefaultObraId);
       setOkMsg("Tudo salvo com sucesso.");
       await loadData();
     } catch (e: any) {
@@ -789,7 +779,7 @@ export default function HorimetrosPage() {
     } finally {
       setSavingAll(false);
     }
-  }, [ensureObraForSave, lastSavedObraId, loadData, rows, selectedDate, supabase]);
+  }, [ensureObraForSave, loadData, rows, selectedDate, supabase]);
 
   return (
     <>
@@ -1369,7 +1359,7 @@ export default function HorimetrosPage() {
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
                   <p className="subtitle">
-                    A obra segue o último salvamento. “Nova obra” abre campo de cadastro sem esticar a linha.
+                    Cada equipamento mantém só a própria obra salva.
                   </p>
                 </div>
               </div>
@@ -1439,7 +1429,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  Não existe mais default fixo de obra. A próxima linha reaproveita a obra do último salvamento.
+                  A obra não é mais global. Salvar um equipamento não altera a obra dos demais.
                 </p>
               </div>
             </div>
@@ -1486,8 +1476,7 @@ export default function HorimetrosPage() {
                       const current = getCurrentValue(row);
                       const dayValue = getDayValue(row);
                       const alertText = getAlertText(row);
-                      const rowCanSave = canSaveRow(row, lastSavedObraId);
-                      const effectiveObraId = getEffectiveObraId(row, lastSavedObraId);
+                      const rowCanSave = canSaveRow(row);
 
                       return (
                         <tr key={row.equipamentoId}>
@@ -1526,9 +1515,10 @@ export default function HorimetrosPage() {
                               <div className="obra-row">
                                 <select
                                   className="select"
-                                  value={row.showNovaObra ? "__new__" : effectiveObraId}
+                                  value={row.showNovaObra ? "__new__" : row.obraId}
                                   onChange={(e) => {
                                     const value = e.target.value;
+
                                     if (value === "__new__") {
                                       updateRow(row.equipamentoId, {
                                         showNovaObra: true,
@@ -1545,18 +1535,11 @@ export default function HorimetrosPage() {
                                   }}
                                 >
                                   <option value="">Selecione</option>
-                                  {lastSavedObraId ? (
-                                    <option value={lastSavedObraId}>
-                                      {obras.find((o) => String(o.id) === lastSavedObraId)?.obra || "Última obra"}
+                                  {obras.map((obra) => (
+                                    <option key={obra.id} value={obra.id}>
+                                      {obra.obra}
                                     </option>
-                                  ) : null}
-                                  {obras
-                                    .filter((obra) => String(obra.id) !== String(lastSavedObraId || ""))
-                                    .map((obra) => (
-                                      <option key={obra.id} value={obra.id}>
-                                        {obra.obra}
-                                      </option>
-                                    ))}
+                                  ))}
                                   <option value="__new__">+ Nova obra...</option>
                                 </select>
                               </div>
@@ -1579,7 +1562,6 @@ export default function HorimetrosPage() {
                                         updateRow(row.equipamentoId, {
                                           showNovaObra: false,
                                           novaObra: "",
-                                          obraId: lastSavedObraId || "",
                                         })
                                       }
                                     >
