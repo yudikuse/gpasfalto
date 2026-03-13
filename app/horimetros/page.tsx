@@ -361,15 +361,29 @@ export default function HorimetrosPage() {
 
   const filteredRows = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
 
-    return rows.filter((row) => {
+    const base = rows.filter((row) => {
+      if (!q) return true;
       const obra = obras.find((o) => String(o.id) === row.obraId)?.obra || row.novaObra || "";
       return (
         row.codigo.toLowerCase().includes(q) ||
         obra.toLowerCase().includes(q) ||
         row.selectedMode.toLowerCase().includes(q)
       );
+    });
+
+    return [...base].sort((a, b) => {
+      const obraA = normalizeText(
+        obras.find((o) => String(o.id) === a.obraId)?.obra || a.novaObra || "ZZZZ SEM OBRA"
+      );
+      const obraB = normalizeText(
+        obras.find((o) => String(o.id) === b.obraId)?.obra || b.novaObra || "ZZZZ SEM OBRA"
+      );
+
+      const byObra = obraA.localeCompare(obraB, "pt-BR");
+      if (byObra !== 0) return byObra;
+
+      return normCode(a.codigo).localeCompare(normCode(b.codigo), "pt-BR");
     });
   }, [rows, search, obras]);
 
@@ -1359,7 +1373,7 @@ export default function HorimetrosPage() {
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
                   <p className="subtitle">
-                    Cada equipamento mantém só a própria obra salva.
+                    Equipamentos agrupados por obra para facilitar o lançamento por encarregado.
                   </p>
                 </div>
               </div>
@@ -1429,7 +1443,7 @@ export default function HorimetrosPage() {
               <div>
                 <h3>Lançamento diário</h3>
                 <p>
-                  A obra não é mais global. Salvar um equipamento não altera a obra dos demais.
+                  A ordenação agora é por obra e depois por código do equipamento.
                 </p>
               </div>
             </div>
