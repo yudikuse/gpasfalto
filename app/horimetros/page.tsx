@@ -1,3 +1,4 @@
+
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -339,6 +340,7 @@ export default function HorimetrosPage() {
   const [search, setSearch] = useState("");
   const [obras, setObras] = useState<ObraRow[]>([]);
   const [rows, setRows] = useState<RowState[]>([]);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   const periodoAnterior = useMemo(() => previousIso(selectedDate), [selectedDate]);
 
@@ -455,6 +457,8 @@ export default function HorimetrosPage() {
 
       setObras(obrasData);
       setRows(built);
+      const firstPending = built.find((r) => r.registroId == null);
+      if (firstPending) setExpandedId(firstPending.equipamentoId);
     } catch (e: any) {
       setRows([]);
       setErrorMsg(e?.message || "Erro ao carregar horímetros.");
@@ -695,6 +699,14 @@ export default function HorimetrosPage() {
 
         setOkMsg(`${row.codigo} salvo com sucesso.`);
         await loadData();
+        setRows((current) => {
+          const nextPending = current.find(
+            (r) => r.equipamentoId !== row.equipamentoId && r.registroId == null
+          );
+          if (nextPending) setExpandedId(nextPending.equipamentoId);
+          else setExpandedId(null);
+          return current;
+        });
       } catch (e: any) {
         setErrorMsg(e?.message || `Erro ao salvar ${row.codigo}.`);
       } finally {
@@ -804,34 +816,21 @@ export default function HorimetrosPage() {
           --success: #16a34a;
           --danger: #ef4444;
           --warning: #f4b400;
-          --shadow: 0 2px 8px rgba(15, 23, 42, 0.07);
+          --shadow: 0 1px 4px rgba(15,23,42,0.06);
         }
 
         * { box-sizing: border-box; }
-
-        html, body {
-          margin: 0;
-          padding: 0;
-          background: var(--bg);
-          color: var(--text);
-        }
-
-        body {
-          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
-        }
-
+        html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif; }
         input, select, button { font: inherit; }
 
-        .page {
-          min-height: 100vh;
-          padding: 8px;
-        }
+        .page { min-height: 100vh; padding: 8px; }
 
         .shell {
           width: min(100%, 780px);
           margin: 0 auto;
           display: grid;
-          gap: 8px;
+          gap: 7px;
         }
 
         /* ── HEADER ── */
@@ -852,17 +851,11 @@ export default function HorimetrosPage() {
           gap: 8px;
         }
 
-        .brand {
-          display: flex;
-          align-items: center;
-          gap: 8px;
-          min-width: 0;
-        }
+        .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
 
         .logo {
-          width: 30px;
-          height: 30px;
-          border-radius: 8px;
+          width: 28px; height: 28px;
+          border-radius: 7px;
           background: #fff8e8;
           overflow: hidden;
           display: inline-flex;
@@ -870,36 +863,13 @@ export default function HorimetrosPage() {
           justify-content: center;
           flex: 0 0 auto;
         }
-
         .logo img { width: 100%; height: 100%; object-fit: cover; }
 
-        .eyebrow {
-          margin: 0;
-          font-size: 9px;
-          font-weight: 800;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--muted);
-        }
-
-        .title {
-          margin: 0;
-          font-size: 14px;
-          line-height: 1.1;
-          font-weight: 900;
-          letter-spacing: -0.02em;
-        }
-
+        .eyebrow { margin: 0; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+        .title { margin: 0; font-size: 14px; font-weight: 900; letter-spacing: -.02em; }
         .subtitle { display: none; }
 
-        .period {
-          font-size: 10px;
-          color: #475569;
-          font-weight: 700;
-          text-align: right;
-          line-height: 1.4;
-          white-space: nowrap;
-        }
+        .period { font-size: 10px; color: #475569; font-weight: 700; text-align: right; line-height: 1.4; white-space: nowrap; }
 
         /* ── CONTROLS ── */
         .controls {
@@ -910,26 +880,12 @@ export default function HorimetrosPage() {
         }
 
         .field { display: grid; gap: 2px; }
+        .field label { font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 
-        .field label {
-          font-size: 9px;
-          font-weight: 800;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--muted);
-        }
-
-        .search,
-        .date,
-        .select,
-        .number-input,
-        .new-obra-input,
-        .keep-btn,
-        .keep-all-btn,
-        .save-btn,
-        .sheet-btn {
+        .search, .date, .select, .number-input, .new-obra-input,
+        .keep-btn, .keep-all-btn, .save-btn, .sheet-btn {
           width: 100%;
-          height: 36px;
+          height: 34px;
           border: 1px solid transparent;
           border-radius: 10px;
           background: var(--surface-soft);
@@ -938,17 +894,13 @@ export default function HorimetrosPage() {
           padding: 0 10px;
           font-size: 13px;
           font-weight: 700;
-          transition: 0.15s ease;
+          transition: .15s ease;
         }
 
-        .search:focus,
-        .date:focus,
-        .select:focus,
-        .number-input:focus,
-        .new-obra-input:focus {
+        .search:focus, .date:focus, .select:focus, .number-input:focus, .new-obra-input:focus {
           background: #fff;
           border-color: var(--line-strong);
-          box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.08);
+          box-shadow: 0 0 0 3px rgba(79,110,247,.08);
         }
 
         .save-btn {
@@ -959,18 +911,11 @@ export default function HorimetrosPage() {
           cursor: pointer;
           white-space: nowrap;
         }
-
-        .save-btn[disabled] { opacity: 0.7; cursor: wait; }
+        .save-btn[disabled] { opacity: .7; cursor: wait; }
 
         /* ── TOOLBAR ── */
-        .toolbar {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 6px;
-        }
-
-        .stats { display: flex; gap: 4px; flex-wrap: wrap; }
+        .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+        .stats { display: flex; gap: 4px; }
 
         .stat {
           padding: 3px 8px;
@@ -981,128 +926,102 @@ export default function HorimetrosPage() {
           font-weight: 800;
         }
 
-        .keep-all-btn,
-        .keep-btn,
-        .sheet-btn {
+        .keep-all-btn, .keep-btn, .sheet-btn {
           border: 1px solid var(--line);
           background: var(--surface-soft);
           color: #475569;
           cursor: pointer;
         }
+        .keep-all-btn { width: auto; min-width: 96px; padding: 0 10px; font-size: 11px; height: 28px; border-radius: 8px; }
+        .keep-btn { width: auto; min-width: 40px; height: 32px; padding: 0 8px; font-size: 11px; border-radius: 8px; }
+        .sheet-btn { width: auto; padding: 0 10px; font-size: 11px; height: 32px; }
 
-        .keep-all-btn {
-          width: auto;
-          min-width: 100px;
-          padding: 0 10px;
-          font-size: 11px;
-          height: 30px;
-        }
-
-        .keep-btn {
-          width: auto;
-          min-width: 44px;
-          height: 34px;
-          padding: 0 8px;
-          font-size: 11px;
-          border-radius: 8px;
-        }
-
-        .sheet-btn {
-          width: auto;
-          padding: 0 10px;
-          font-size: 11px;
-          height: 34px;
-        }
-
-        .keep-all-btn:hover,
-        .keep-btn:hover,
-        .sheet-btn:hover {
-          background: var(--brand-soft);
-          color: var(--brand);
-          border-color: #ccd5ff;
-        }
-
-        .keep-all-btn.active,
-        .keep-btn.active {
-          background: var(--brand);
-          border-color: var(--brand);
-          color: #fff;
-        }
+        .keep-all-btn:hover, .keep-btn:hover, .sheet-btn:hover { background: var(--brand-soft); color: var(--brand); border-color: #ccd5ff; }
+        .keep-all-btn.active, .keep-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; }
 
         /* ── MESSAGES ── */
-        .message {
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 12px;
-          padding: 8px 12px;
-          font-size: 12px;
-          font-weight: 700;
-        }
-
+        .message { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; font-size: 12px; font-weight: 700; }
         .message.error { color: #a12d2d; }
         .message.ok { color: #0b7b52; }
 
         /* ── LIST ── */
-        .list { display: grid; gap: 6px; }
+        .list { display: grid; gap: 5px; }
 
-        /* ── CARD ── */
+        /* ── ACCORDION CARD ── */
         .card {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 14px;
+          border-radius: 13px;
           box-shadow: var(--shadow);
-          padding: 9px 10px;
-          display: grid;
-          gap: 7px;
+          overflow: hidden;
         }
 
-        /* Row 1: code + mode toggle + dot */
-        .card-top {
+        /* collapsed header row */
+        .card-header {
           display: flex;
           align-items: center;
-          justify-content: space-between;
-          gap: 6px;
+          gap: 8px;
+          padding: 10px 12px;
+          cursor: pointer;
+          user-select: none;
+          -webkit-tap-highlight-color: transparent;
         }
-
-        .card-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
+        .card-header:active { background: var(--surface-soft); }
 
         .equip-code {
           margin: 0;
-          font-size: 17px;
-          line-height: 1;
+          font-size: 15px;
           font-weight: 900;
-          letter-spacing: -0.03em;
+          letter-spacing: -.03em;
+          min-width: 48px;
         }
 
         .equip-sub {
-          font-size: 10px;
+          flex: 1;
+          font-size: 11px;
           color: var(--muted);
           font-weight: 600;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
-          max-width: 120px;
         }
 
-        .status-wrap {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
+        .card-preview {
+          font-size: 12px;
+          font-weight: 800;
+          color: var(--success);
+          white-space: nowrap;
         }
+        .card-preview.pending { color: #94a3b8; }
 
         .status-dot {
-          width: 10px;
-          height: 10px;
+          width: 8px; height: 8px;
           border-radius: 999px;
           display: inline-block;
           flex-shrink: 0;
         }
-
         .status-dot.saved { background: var(--success); }
         .status-dot.pending { background: var(--danger); }
 
-        /* Mode toggle inline with top row */
-        .mode-row { display: none; }
+        .chevron {
+          font-size: 11px;
+          color: #94a3b8;
+          transition: transform .2s;
+          flex-shrink: 0;
+        }
+        .chevron.open { transform: rotate(180deg); }
+
+        /* expanded body */
+        .card-body {
+          border-top: 1px solid var(--line);
+          background: var(--surface-soft);
+          padding: 10px 12px;
+          display: grid;
+          gap: 8px;
+        }
+
+        /* mode toggle */
+        .mode-row { display: flex; align-items: center; gap: 6px; }
 
         .segmented {
           display: inline-flex;
@@ -1110,10 +1029,9 @@ export default function HorimetrosPage() {
           gap: 1px;
           padding: 2px;
           border-radius: 999px;
-          background: var(--surface-soft);
+          background: var(--surface);
           border: 1px solid var(--line);
         }
-
         .segmented button {
           height: 24px;
           min-width: 44px;
@@ -1126,22 +1044,47 @@ export default function HorimetrosPage() {
           font-weight: 800;
           cursor: pointer;
         }
+        .segmented button.active { background: var(--brand-soft); color: var(--brand); }
 
-        .segmented button.active {
-          background: var(--brand-soft);
-          color: var(--brand);
+        /* values row */
+        .values {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 5px;
         }
 
-        /* Obra row */
+        .value-box {
+          background: var(--surface);
+          border: 1px solid var(--line);
+          border-radius: 9px;
+          padding: 5px 8px;
+          min-height: 42px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          gap: 2px;
+        }
+        .value-box-title { font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+        .value-box-main { font-size: 15px; font-weight: 900; letter-spacing: -.03em; color: var(--text); }
+        .value-box-main.muted { color: #94a3b8; }
+        .value-box-main.success { color: var(--success); }
+
+        .alert-chip {
+          display: inline-flex;
+          align-items: center;
+          min-height: 18px;
+          padding: 0 6px;
+          border-radius: 999px;
+          background: #fff1f2;
+          color: #b42318;
+          font-size: 10px;
+          font-weight: 900;
+          white-space: nowrap;
+        }
+
+        /* obra block */
         .block { display: grid; gap: 3px; }
-
-        .block-label {
-          font-size: 9px;
-          font-weight: 800;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-          color: var(--muted);
-        }
+        .block-label { font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 
         .obra-row {
           display: grid;
@@ -1153,71 +1096,15 @@ export default function HorimetrosPage() {
         .sheet {
           margin-top: 4px;
           display: grid;
-          gap: 6px;
+          gap: 5px;
           padding: 8px;
-          border-radius: 10px;
-          background: var(--surface-soft);
+          border-radius: 9px;
+          background: var(--surface);
           border: 1px solid var(--line);
         }
+        .sheet-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
 
-        .sheet-actions {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 5px;
-        }
-
-        /* Values + input all in one compact row */
-        .values {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 5px;
-        }
-
-        .value-box {
-          background: var(--surface-soft);
-          border: 1px solid var(--line);
-          border-radius: 10px;
-          padding: 5px 8px;
-          min-height: 44px;
-          display: flex;
-          flex-direction: column;
-          justify-content: space-between;
-          gap: 2px;
-        }
-
-        .value-box-title {
-          font-size: 9px;
-          font-weight: 800;
-          letter-spacing: 0.07em;
-          text-transform: uppercase;
-          color: var(--muted);
-        }
-
-        .value-box-main {
-          font-size: 16px;
-          line-height: 1;
-          font-weight: 900;
-          letter-spacing: -0.03em;
-          color: var(--text);
-        }
-
-        .value-box-main.muted { color: #94a3b8; }
-        .value-box-main.success { color: var(--success); }
-
-        .alert-chip {
-          display: inline-flex;
-          align-items: center;
-          min-height: 20px;
-          padding: 0 6px;
-          border-radius: 999px;
-          background: #fff1f2;
-          color: #b42318;
-          font-size: 10px;
-          font-weight: 900;
-          white-space: nowrap;
-        }
-
-        /* Input + Últ. + Save in one row */
+        /* input + save row */
         .input-save-row {
           display: grid;
           grid-template-columns: 1fr auto auto;
@@ -1225,60 +1112,32 @@ export default function HorimetrosPage() {
           align-items: center;
         }
 
-        .input-row {
-          display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 6px;
-          align-items: center;
-        }
-
-        .number-input {
-          text-align: right;
-          font-variant-numeric: tabular-nums;
-        }
-
-        .footer-row {
-          display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 8px;
-          align-items: end;
-        }
-
-        .save-row { display: none; }
+        .number-input { text-align: right; font-variant-numeric: tabular-nums; }
 
         .row-save {
-          width: 36px;
-          height: 34px;
-          border: 0;
+          width: 34px; height: 32px;
+          border: 1px solid var(--line);
           border-radius: 8px;
-          background: var(--surface-soft);
+          background: var(--surface);
           color: #4b5563;
           display: inline-flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
-          border: 1px solid var(--line);
           flex-shrink: 0;
         }
-
         .row-save:hover { background: var(--brand-soft); color: var(--brand); }
+        .row-save[disabled] { opacity: .4; cursor: not-allowed; }
 
-        .row-save[disabled] { opacity: 0.45; cursor: not-allowed; }
+        .empty { background: var(--surface); border: 1px solid var(--line); border-radius: 13px; padding: 16px; color: var(--muted); font-size: 13px; font-weight: 700; }
 
-        .empty {
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 14px;
-          padding: 16px;
-          color: var(--muted);
-          font-size: 13px;
-          font-weight: 700;
-        }
+        /* unused but kept for save-all flow */
+        .save-row, .card-top, .card-title, .status-wrap, .footer-row, .mode-row-old { display: none; }
 
         @media (min-width: 760px) {
           .shell { width: min(100%, 980px); }
           .list { grid-template-columns: 1fr 1fr; }
-          .subtitle { display: block; margin: 2px 0 0; font-size: 11px; line-height: 1.35; color: var(--muted); font-weight: 500; }
+          .subtitle { display: block; margin: 1px 0 0; font-size: 11px; color: var(--muted); font-weight: 500; }
         }
       `}</style>
 
@@ -1379,189 +1238,191 @@ export default function HorimetrosPage() {
 
                 return (
                   <article className="card" key={row.equipamentoId}>
-                    <div className="card-top">
-                      <div className="card-title">
-                        <h2 className="equip-code">{row.codigo}</h2>
-                        <div className="equip-sub">
-                          {obraNome ? obraNome : (row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro")}
+                    {/* ── collapsed header — always visible ── */}
+                    <div
+                      className="card-header"
+                      onClick={() =>
+                        setExpandedId(expandedId === row.equipamentoId ? null : row.equipamentoId)
+                      }
+                    >
+                      <h2 className="equip-code">{row.codigo}</h2>
+
+                      <div className="equip-sub">
+                        {obraNome || (row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro")}
+                      </div>
+
+                      {row.registroId != null ? (
+                        <span className="card-preview">
+                          {format1(current ? parsePtNumber(current) : null) !== "—"
+                            ? format1(parsePtNumber(current))
+                            : format1(dayValue)}
+                        </span>
+                      ) : (
+                        <span className="card-preview pending">pendente</span>
+                      )}
+
+                      <StatusDot saved={row.registroId != null} />
+
+                      <span className={`chevron ${expandedId === row.equipamentoId ? "open" : ""}`}>
+                        ▼
+                      </span>
+                    </div>
+
+                    {/* ── expanded body ── */}
+                    {expandedId === row.equipamentoId && (
+                      <div className="card-body">
+
+                        <div className="mode-row">
+                          <div className="segmented">
+                            <button
+                              type="button"
+                              className={row.selectedMode === "horimetro" ? "active" : ""}
+                              onClick={() =>
+                                updateRow(row.equipamentoId, { selectedMode: "horimetro" })
+                              }
+                            >
+                              HOR
+                            </button>
+                            <button
+                              type="button"
+                              className={row.selectedMode === "odometro" ? "active" : ""}
+                              onClick={() =>
+                                updateRow(row.equipamentoId, { selectedMode: "odometro" })
+                              }
+                            >
+                              ODO
+                            </button>
+                          </div>
                         </div>
-                      </div>
 
-                      <div className="segmented">
-                        <button
-                          type="button"
-                          className={row.selectedMode === "horimetro" ? "active" : ""}
-                          onClick={() =>
-                            updateRow(row.equipamentoId, { selectedMode: "horimetro" })
-                          }
-                        >
-                          HOR
-                        </button>
-                        <button
-                          type="button"
-                          className={row.selectedMode === "odometro" ? "active" : ""}
-                          onClick={() =>
-                            updateRow(row.equipamentoId, { selectedMode: "odometro" })
-                          }
-                        >
-                          ODO
-                        </button>
-                      </div>
+                        <div className="block">
+                          <div className="block-label">Obra</div>
+                          <div className="obra-row">
+                            <select
+                              className="select"
+                              value={row.showNovaObra ? "__new__" : row.obraId}
+                              onChange={(e) => {
+                                const value = e.target.value;
+                                if (value === "__new__") {
+                                  updateRow(row.equipamentoId, { showNovaObra: true, obraId: "" });
+                                  return;
+                                }
+                                updateRow(row.equipamentoId, { obraId: value, novaObra: "", showNovaObra: false });
+                              }}
+                            >
+                              <option value="">Selecione</option>
+                              {obras.map((obra) => (
+                                <option key={obra.id} value={obra.id}>{obra.obra}</option>
+                              ))}
+                              <option value="__new__">+ Nova obra...</option>
+                            </select>
 
-                      <div className="status-wrap">
-                        <StatusDot saved={row.registroId != null} />
-                      </div>
-                    </div>
-
-                    <div className="mode-row" style={{display:'none'}}>
-                      <div className="segmented" />
-                    </div>
-
-                    <div className="block">
-                      <div className="block-label">Obra</div>
-                      <div className="obra-row">
-                        <select
-                          className="select"
-                          value={row.showNovaObra ? "__new__" : row.obraId}
-                          onChange={(e) => {
-                            const value = e.target.value;
-
-                            if (value === "__new__") {
-                              updateRow(row.equipamentoId, {
-                                showNovaObra: true,
-                                obraId: "",
-                              });
-                              return;
-                            }
-
-                            updateRow(row.equipamentoId, {
-                              obraId: value,
-                              novaObra: "",
-                              showNovaObra: false,
-                            });
-                          }}
-                        >
-                          <option value="">Selecione</option>
-                          {obras.map((obra) => (
-                            <option key={obra.id} value={obra.id}>
-                              {obra.obra}
-                            </option>
-                          ))}
-                          <option value="__new__">+ Nova obra...</option>
-                        </select>
-
-                        <button
-                          type="button"
-                          className="sheet-btn"
-                          onClick={() =>
-                            updateRow(row.equipamentoId, {
-                              showNovaObra: !row.showNovaObra,
-                              obraId: row.showNovaObra ? row.obraId : "",
-                            })
-                          }
-                        >
-                          Nova
-                        </button>
-                      </div>
-
-                      {row.showNovaObra ? (
-                        <div className="sheet">
-                          <input
-                            className="new-obra-input"
-                            value={row.novaObra}
-                            onChange={(e) =>
-                              updateRow(row.equipamentoId, { novaObra: e.target.value })
-                            }
-                            placeholder="Digite a nova obra"
-                          />
-                          <div className="sheet-actions">
                             <button
                               type="button"
                               className="sheet-btn"
                               onClick={() =>
                                 updateRow(row.equipamentoId, {
-                                  showNovaObra: false,
-                                  novaObra: "",
+                                  showNovaObra: !row.showNovaObra,
+                                  obraId: row.showNovaObra ? row.obraId : "",
                                 })
                               }
                             >
-                              Cancelar
+                              Nova
+                            </button>
+                          </div>
+
+                          {row.showNovaObra ? (
+                            <div className="sheet">
+                              <input
+                                className="new-obra-input"
+                                value={row.novaObra}
+                                onChange={(e) =>
+                                  updateRow(row.equipamentoId, { novaObra: e.target.value })
+                                }
+                                placeholder="Digite a nova obra"
+                              />
+                              <div className="sheet-actions">
+                                <button
+                                  type="button"
+                                  className="sheet-btn"
+                                  onClick={() =>
+                                    updateRow(row.equipamentoId, { showNovaObra: false, novaObra: "" })
+                                  }
+                                >
+                                  Cancelar
+                                </button>
+                                <button
+                                  type="button"
+                                  className="sheet-btn"
+                                  onClick={() =>
+                                    updateRow(row.equipamentoId, { showNovaObra: false })
+                                  }
+                                >
+                                  OK
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        <div className="values">
+                          <div className="value-box">
+                            <div className="value-box-title">Anterior</div>
+                            <div className={`value-box-main ${previous == null ? "muted" : ""}`}>
+                              {format1(previous)}
+                            </div>
+                          </div>
+
+                          <div className="value-box">
+                            <div className="value-box-title">Do dia</div>
+                            {alertText ? (
+                              <span className="alert-chip">{alertText}</span>
+                            ) : (
+                              <div className={`value-box-main ${dayValue == null ? "muted" : "success"}`}>
+                                {format1(dayValue)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="block">
+                          <div className="block-label">Atual</div>
+                          <div className="input-save-row">
+                            <input
+                              type="text"
+                              className="number-input"
+                              value={current}
+                              onChange={(e) => updateActiveInput(row.equipamentoId, e.target.value)}
+                              onBlur={(e) => finalizeActiveInput(row.equipamentoId, e.target.value)}
+                              inputMode="numeric"
+                              placeholder="Digite"
+                            />
+                            <button
+                              type="button"
+                              className={`keep-btn ${row.keepPreviousApplied ? "active" : ""}`}
+                              onClick={() => toggleKeepPreviousForRow(row)}
+                            >
+                              Últ.
                             </button>
                             <button
                               type="button"
-                              className="sheet-btn"
-                              onClick={() =>
-                                updateRow(row.equipamentoId, {
-                                  showNovaObra: false,
-                                })
+                              className="row-save"
+                              title={`Salvar ${row.codigo}`}
+                              onClick={() => void saveOneRow(row)}
+                              disabled={
+                                !rowCanSave ||
+                                savingRowId === row.equipamentoId ||
+                                savingAll ||
+                                !env.ok
                               }
                             >
-                              OK
+                              <SaveIcon />
                             </button>
                           </div>
                         </div>
-                      ) : null}
-                    </div>
 
-                    <div className="values">
-                      <div className="value-box">
-                        <div className="value-box-title">Anterior</div>
-                        <div className={`value-box-main ${previous == null ? "muted" : ""}`}>
-                          {format1(previous)}
-                        </div>
                       </div>
-
-                      <div className="value-box">
-                        <div className="value-box-title">Do dia</div>
-                        {alertText ? (
-                          <span className="alert-chip">{alertText}</span>
-                        ) : (
-                          <div className={`value-box-main ${dayValue == null ? "muted" : "success"}`}>
-                            {format1(dayValue)}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="block">
-                      <div className="block-label">Atual</div>
-                      <div className="input-save-row">
-                        <input
-                          type="text"
-                          className="number-input"
-                          value={current}
-                          onChange={(e) =>
-                            updateActiveInput(row.equipamentoId, e.target.value)
-                          }
-                          onBlur={(e) =>
-                            finalizeActiveInput(row.equipamentoId, e.target.value)
-                          }
-                          inputMode="numeric"
-                          placeholder="Digite"
-                        />
-                        <button
-                          type="button"
-                          className={`keep-btn ${row.keepPreviousApplied ? "active" : ""}`}
-                          onClick={() => toggleKeepPreviousForRow(row)}
-                        >
-                          Últ.
-                        </button>
-                        <button
-                          type="button"
-                          className="row-save"
-                          title={`Salvar ${row.codigo}`}
-                          onClick={() => void saveOneRow(row)}
-                          disabled={
-                            !rowCanSave ||
-                            savingRowId === row.equipamentoId ||
-                            savingAll ||
-                            !env.ok
-                          }
-                        >
-                          <SaveIcon />
-                        </button>
-                      </div>
-                    </div>
+                    )}
                   </article>
                 );
               })}
