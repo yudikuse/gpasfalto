@@ -1,5 +1,4 @@
-me passe completo nao tem esse trecho
-Veja abaixo o que vc me passsou
+
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
