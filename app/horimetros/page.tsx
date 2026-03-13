@@ -183,6 +183,12 @@ function hasTrocaPrefix(text: string) {
   return /^\s*\[TROCA\]\s*/i.test(String(text || ""));
 }
 
+function composeObservacao(text: string, isTrocaMedidor: boolean) {
+  const clean = stripTrocaPrefix(text).trim();
+  if (isTrocaMedidor) return clean ? `[TROCA] ${clean}` : "[TROCA]";
+  return clean || null;
+}
+
 function buildRows(params: {
   equipamentos: EquipamentoRow[];
   atuais: LeituraRow[];
