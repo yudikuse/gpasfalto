@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -793,7 +792,7 @@ export default function HorimetrosPage() {
     <>
       <style jsx global>{`
         :root {
-          --bg: #f5f7fb;
+          --bg: #f0f2f7;
           --surface: #ffffff;
           --surface-soft: #f7f9fc;
           --line: #e9edf5;
@@ -805,15 +804,12 @@ export default function HorimetrosPage() {
           --success: #16a34a;
           --danger: #ef4444;
           --warning: #f4b400;
-          --shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
+          --shadow: 0 2px 8px rgba(15, 23, 42, 0.07);
         }
 
-        * {
-          box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
-        html,
-        body {
+        html, body {
           margin: 0;
           padding: 0;
           background: var(--bg);
@@ -824,52 +820,49 @@ export default function HorimetrosPage() {
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
         }
 
-        input,
-        select,
-        button {
-          font: inherit;
-        }
+        input, select, button { font: inherit; }
 
         .page {
           min-height: 100vh;
-          padding: 10px;
+          padding: 8px;
         }
 
         .shell {
           width: min(100%, 780px);
           margin: 0 auto;
           display: grid;
-          gap: 10px;
+          gap: 8px;
         }
 
+        /* ── HEADER ── */
         .header {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 22px;
+          border-radius: 16px;
           box-shadow: var(--shadow);
-          padding: 14px;
+          padding: 10px 12px;
           display: grid;
-          gap: 12px;
+          gap: 8px;
         }
 
         .header-top {
           display: flex;
-          align-items: flex-start;
+          align-items: center;
           justify-content: space-between;
-          gap: 10px;
+          gap: 8px;
         }
 
         .brand {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 8px;
           min-width: 0;
         }
 
         .logo {
-          width: 36px;
-          height: 36px;
-          border-radius: 10px;
+          width: 30px;
+          height: 30px;
+          border-radius: 8px;
           background: #fff8e8;
           overflow: hidden;
           display: inline-flex;
@@ -878,15 +871,11 @@ export default function HorimetrosPage() {
           flex: 0 0 auto;
         }
 
-        .logo img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-        }
+        .logo img { width: 100%; height: 100%; object-fit: cover; }
 
         .eyebrow {
-          margin: 0 0 2px;
-          font-size: 10px;
+          margin: 0;
+          font-size: 9px;
           font-weight: 800;
           letter-spacing: 0.08em;
           text-transform: uppercase;
@@ -895,41 +884,35 @@ export default function HorimetrosPage() {
 
         .title {
           margin: 0;
-          font-size: 17px;
+          font-size: 14px;
           line-height: 1.1;
           font-weight: 900;
-          letter-spacing: -0.03em;
+          letter-spacing: -0.02em;
         }
 
-        .subtitle {
-          margin: 4px 0 0;
-          font-size: 12px;
-          line-height: 1.35;
-          color: var(--muted);
-          font-weight: 500;
-        }
+        .subtitle { display: none; }
 
         .period {
-          font-size: 11px;
+          font-size: 10px;
           color: #475569;
           font-weight: 700;
           text-align: right;
-          line-height: 1.35;
+          line-height: 1.4;
+          white-space: nowrap;
         }
 
+        /* ── CONTROLS ── */
         .controls {
           display: grid;
-          grid-template-columns: 1fr;
-          gap: 8px;
+          grid-template-columns: 1fr auto auto;
+          gap: 6px;
+          align-items: end;
         }
 
-        .field {
-          display: grid;
-          gap: 4px;
-        }
+        .field { display: grid; gap: 2px; }
 
         .field label {
-          font-size: 10px;
+          font-size: 9px;
           font-weight: 800;
           letter-spacing: 0.08em;
           text-transform: uppercase;
@@ -946,14 +929,14 @@ export default function HorimetrosPage() {
         .save-btn,
         .sheet-btn {
           width: 100%;
-          height: 42px;
+          height: 36px;
           border: 1px solid transparent;
-          border-radius: 14px;
+          border-radius: 10px;
           background: var(--surface-soft);
           color: var(--text);
           outline: none;
-          padding: 0 12px;
-          font-size: 14px;
+          padding: 0 10px;
+          font-size: 13px;
           font-weight: 700;
           transition: 0.15s ease;
         }
@@ -974,32 +957,27 @@ export default function HorimetrosPage() {
           color: #1f2937;
           font-weight: 900;
           cursor: pointer;
+          white-space: nowrap;
         }
 
-        .save-btn[disabled] {
-          opacity: 0.7;
-          cursor: wait;
-        }
+        .save-btn[disabled] { opacity: 0.7; cursor: wait; }
 
+        /* ── TOOLBAR ── */
         .toolbar {
-          display: grid;
-          grid-template-columns: 1fr auto;
-          gap: 8px;
+          display: flex;
           align-items: center;
+          justify-content: space-between;
+          gap: 6px;
         }
 
-        .stats {
-          display: flex;
-          gap: 6px;
-          flex-wrap: wrap;
-        }
+        .stats { display: flex; gap: 4px; flex-wrap: wrap; }
 
         .stat {
-          padding: 7px 10px;
+          padding: 3px 8px;
           border-radius: 999px;
           background: var(--surface-soft);
           color: #475569;
-          font-size: 11px;
+          font-size: 10px;
           font-weight: 800;
         }
 
@@ -1014,17 +992,26 @@ export default function HorimetrosPage() {
 
         .keep-all-btn {
           width: auto;
-          min-width: 122px;
-          padding: 0 12px;
-          font-size: 12px;
+          min-width: 100px;
+          padding: 0 10px;
+          font-size: 11px;
+          height: 30px;
         }
 
         .keep-btn {
           width: auto;
-          min-width: 54px;
-          height: 40px;
-          padding: 0 12px;
-          font-size: 12px;
+          min-width: 44px;
+          height: 34px;
+          padding: 0 8px;
+          font-size: 11px;
+          border-radius: 8px;
+        }
+
+        .sheet-btn {
+          width: auto;
+          padding: 0 10px;
+          font-size: 11px;
+          height: 34px;
         }
 
         .keep-all-btn:hover,
@@ -1042,96 +1029,85 @@ export default function HorimetrosPage() {
           color: #fff;
         }
 
+        /* ── MESSAGES ── */
         .message {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 16px;
-          box-shadow: var(--shadow);
-          padding: 10px 12px;
-          font-size: 13px;
+          border-radius: 12px;
+          padding: 8px 12px;
+          font-size: 12px;
           font-weight: 700;
         }
 
-        .message.error {
-          color: #a12d2d;
-        }
+        .message.error { color: #a12d2d; }
+        .message.ok { color: #0b7b52; }
 
-        .message.ok {
-          color: #0b7b52;
-        }
+        /* ── LIST ── */
+        .list { display: grid; gap: 6px; }
 
-        .list {
-          display: grid;
-          gap: 10px;
-        }
-
+        /* ── CARD ── */
         .card {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 20px;
+          border-radius: 14px;
           box-shadow: var(--shadow);
-          padding: 12px;
+          padding: 9px 10px;
           display: grid;
-          gap: 10px;
+          gap: 7px;
         }
 
+        /* Row 1: code + mode toggle + dot */
         .card-top {
           display: flex;
-          align-items: flex-start;
+          align-items: center;
           justify-content: space-between;
-          gap: 10px;
+          gap: 6px;
         }
 
-        .card-title {
-          min-width: 0;
-        }
+        .card-title { min-width: 0; display: flex; align-items: center; gap: 6px; }
 
         .equip-code {
           margin: 0;
-          font-size: 24px;
+          font-size: 17px;
           line-height: 1;
           font-weight: 900;
-          letter-spacing: -0.04em;
+          letter-spacing: -0.03em;
         }
 
         .equip-sub {
-          margin-top: 4px;
-          font-size: 13px;
+          font-size: 10px;
           color: var(--muted);
-          font-weight: 700;
+          font-weight: 600;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          max-width: 120px;
         }
 
         .status-wrap {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          padding-top: 4px;
         }
 
         .status-dot {
-          width: 14px;
-          height: 14px;
+          width: 10px;
+          height: 10px;
           border-radius: 999px;
           display: inline-block;
+          flex-shrink: 0;
         }
 
-        .status-dot.saved {
-          background: var(--success);
-        }
+        .status-dot.saved { background: var(--success); }
+        .status-dot.pending { background: var(--danger); }
 
-        .status-dot.pending {
-          background: var(--danger);
-        }
-
-        .mode-row {
-          display: flex;
-          justify-content: flex-start;
-        }
+        /* Mode toggle inline with top row */
+        .mode-row { display: none; }
 
         .segmented {
           display: inline-flex;
           align-items: center;
-          gap: 2px;
+          gap: 1px;
           padding: 2px;
           border-radius: 999px;
           background: var(--surface-soft);
@@ -1139,14 +1115,14 @@ export default function HorimetrosPage() {
         }
 
         .segmented button {
-          height: 30px;
-          min-width: 58px;
+          height: 24px;
+          min-width: 44px;
           border: 0;
           border-radius: 999px;
-          padding: 0 10px;
+          padding: 0 8px;
           background: transparent;
           color: #64748b;
-          font-size: 12px;
+          font-size: 10px;
           font-weight: 800;
           cursor: pointer;
         }
@@ -1156,13 +1132,11 @@ export default function HorimetrosPage() {
           color: var(--brand);
         }
 
-        .block {
-          display: grid;
-          gap: 5px;
-        }
+        /* Obra row */
+        .block { display: grid; gap: 3px; }
 
         .block-label {
-          font-size: 10px;
+          font-size: 9px;
           font-weight: 800;
           letter-spacing: 0.08em;
           text-transform: uppercase;
@@ -1172,20 +1146,16 @@ export default function HorimetrosPage() {
         .obra-row {
           display: grid;
           grid-template-columns: 1fr auto;
-          gap: 6px;
+          gap: 5px;
           align-items: center;
         }
 
-        .sheet-wrap {
-          position: relative;
-        }
-
         .sheet {
-          margin-top: 8px;
+          margin-top: 4px;
           display: grid;
-          gap: 8px;
-          padding: 10px;
-          border-radius: 16px;
+          gap: 6px;
+          padding: 8px;
+          border-radius: 10px;
           background: var(--surface-soft);
           border: 1px solid var(--line);
         }
@@ -1193,68 +1163,72 @@ export default function HorimetrosPage() {
         .sheet-actions {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 6px;
+          gap: 5px;
         }
 
+        /* Values + input all in one compact row */
         .values {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 8px;
+          gap: 5px;
         }
 
         .value-box {
           background: var(--surface-soft);
           border: 1px solid var(--line);
-          border-radius: 16px;
-          padding: 10px 12px;
-          min-height: 74px;
-          display: grid;
-          align-content: space-between;
-          gap: 6px;
+          border-radius: 10px;
+          padding: 5px 8px;
+          min-height: 44px;
+          display: flex;
+          flex-direction: column;
+          justify-content: space-between;
+          gap: 2px;
         }
 
         .value-box-title {
-          font-size: 10px;
+          font-size: 9px;
           font-weight: 800;
-          letter-spacing: 0.08em;
+          letter-spacing: 0.07em;
           text-transform: uppercase;
           color: var(--muted);
         }
 
         .value-box-main {
-          font-size: 24px;
+          font-size: 16px;
           line-height: 1;
           font-weight: 900;
-          letter-spacing: -0.04em;
+          letter-spacing: -0.03em;
           color: var(--text);
         }
 
-        .value-box-main.muted {
-          color: #94a3b8;
-        }
-
-        .value-box-main.success {
-          color: var(--success);
-        }
+        .value-box-main.muted { color: #94a3b8; }
+        .value-box-main.success { color: var(--success); }
 
         .alert-chip {
           display: inline-flex;
           align-items: center;
-          justify-content: center;
-          min-height: 28px;
-          padding: 0 10px;
+          min-height: 20px;
+          padding: 0 6px;
           border-radius: 999px;
           background: #fff1f2;
           color: #b42318;
-          font-size: 12px;
+          font-size: 10px;
           font-weight: 900;
           white-space: nowrap;
+        }
+
+        /* Input + Últ. + Save in one row */
+        .input-save-row {
+          display: grid;
+          grid-template-columns: 1fr auto auto;
+          gap: 5px;
+          align-items: center;
         }
 
         .input-row {
           display: grid;
           grid-template-columns: 1fr auto;
-          gap: 8px;
+          gap: 6px;
           align-items: center;
         }
 
@@ -1266,20 +1240,17 @@ export default function HorimetrosPage() {
         .footer-row {
           display: grid;
           grid-template-columns: 1fr auto;
-          gap: 10px;
+          gap: 8px;
           align-items: end;
         }
 
-        .save-row {
-          display: flex;
-          justify-content: flex-end;
-        }
+        .save-row { display: none; }
 
         .row-save {
-          width: 48px;
-          height: 48px;
+          width: 36px;
+          height: 34px;
           border: 0;
-          border-radius: 16px;
+          border-radius: 8px;
           background: var(--surface-soft);
           color: #4b5563;
           display: inline-flex;
@@ -1287,41 +1258,27 @@ export default function HorimetrosPage() {
           justify-content: center;
           cursor: pointer;
           border: 1px solid var(--line);
+          flex-shrink: 0;
         }
 
-        .row-save:hover {
-          background: var(--brand-soft);
-          color: var(--brand);
-        }
+        .row-save:hover { background: var(--brand-soft); color: var(--brand); }
 
-        .row-save[disabled] {
-          opacity: 0.45;
-          cursor: not-allowed;
-        }
+        .row-save[disabled] { opacity: 0.45; cursor: not-allowed; }
 
         .empty {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 18px;
-          box-shadow: var(--shadow);
-          padding: 18px;
+          border-radius: 14px;
+          padding: 16px;
           color: var(--muted);
           font-size: 13px;
           font-weight: 700;
         }
 
         @media (min-width: 760px) {
-          .shell {
-            width: min(100%, 980px);
-          }
-
-          .controls {
-            grid-template-columns: 1fr 180px 180px;
-          }
-
-          .list {
-            grid-template-columns: 1fr 1fr;
-          }
+          .shell { width: min(100%, 980px); }
+          .list { grid-template-columns: 1fr 1fr; }
+          .subtitle { display: block; margin: 2px 0 0; font-size: 11px; line-height: 1.35; color: var(--muted); font-weight: 500; }
         }
       `}</style>
 
@@ -1426,17 +1383,10 @@ export default function HorimetrosPage() {
                       <div className="card-title">
                         <h2 className="equip-code">{row.codigo}</h2>
                         <div className="equip-sub">
-                          {row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro"}
-                          {obraNome ? ` • ${obraNome}` : ""}
+                          {obraNome ? obraNome : (row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro")}
                         </div>
                       </div>
 
-                      <div className="status-wrap">
-                        <StatusDot saved={row.registroId != null} />
-                      </div>
-                    </div>
-
-                    <div className="mode-row">
                       <div className="segmented">
                         <button
                           type="button"
@@ -1457,6 +1407,14 @@ export default function HorimetrosPage() {
                           ODO
                         </button>
                       </div>
+
+                      <div className="status-wrap">
+                        <StatusDot saved={row.registroId != null} />
+                      </div>
+                    </div>
+
+                    <div className="mode-row" style={{display:'none'}}>
+                      <div className="segmented" />
                     </div>
 
                     <div className="block">
@@ -1567,7 +1525,7 @@ export default function HorimetrosPage() {
 
                     <div className="block">
                       <div className="block-label">Atual</div>
-                      <div className="input-row">
+                      <div className="input-save-row">
                         <input
                           type="text"
                           className="number-input"
@@ -1588,24 +1546,21 @@ export default function HorimetrosPage() {
                         >
                           Últ.
                         </button>
+                        <button
+                          type="button"
+                          className="row-save"
+                          title={`Salvar ${row.codigo}`}
+                          onClick={() => void saveOneRow(row)}
+                          disabled={
+                            !rowCanSave ||
+                            savingRowId === row.equipamentoId ||
+                            savingAll ||
+                            !env.ok
+                          }
+                        >
+                          <SaveIcon />
+                        </button>
                       </div>
-                    </div>
-
-                    <div className="save-row">
-                      <button
-                        type="button"
-                        className="row-save"
-                        title={`Salvar ${row.codigo}`}
-                        onClick={() => void saveOneRow(row)}
-                        disabled={
-                          !rowCanSave ||
-                          savingRowId === row.equipamentoId ||
-                          savingAll ||
-                          !env.ok
-                        }
-                      >
-                        <SaveIcon />
-                      </button>
                     </div>
                   </article>
                 );
