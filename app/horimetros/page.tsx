@@ -182,12 +182,6 @@ function hasTrocaPrefix(text: string) {
   return /^\s*\[TROCA\]\s*/i.test(String(text || ""));
 }
 
-function composeObservacao(text: string, isTrocaMedidor: boolean) {
-  const clean = stripTrocaPrefix(text).trim();
-  if (isTrocaMedidor) return clean ? `[TROCA] ${clean}` : "[TROCA]";
-  return clean || null;
-}
-
 function buildRows(params: {
   equipamentos: EquipamentoRow[];
   atuais: LeituraRow[];
@@ -296,7 +290,7 @@ function validateRow(row: RowState) {
   }
 
   if (current < (previous ?? current) && !row.isTrocaMedidor) {
-    return `${row.codigo}: valor atual não pode ser menor que o anterior sem marcar trocar (${row.selectedMode === "horimetro" ? "hor" : "odo"}).`;
+    return `${row.codigo}: valor atual não pode ser menor que o anterior sem marcar troca.`;
   }
 
   return null;
@@ -304,7 +298,7 @@ function validateRow(row: RowState) {
 
 function SaveIcon() {
   return (
-    <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
       <path
         d="M5 4h11l3 3v13H5zM8 4v5h7V4M8 20v-6h8v6"
         fill="none"
@@ -318,12 +312,7 @@ function SaveIcon() {
 }
 
 function StatusDot({ saved }: { saved: boolean }) {
-  return (
-    <span
-      className={`status-dot ${saved ? "saved" : "pending"}`}
-      title={saved ? "Salvo" : "Pendente"}
-    />
-  );
+  return <span className={`status-dot ${saved ? "saved" : "pending"}`} />;
 }
 
 export default function HorimetrosPage() {
@@ -721,7 +710,6 @@ export default function HorimetrosPage() {
         const current = getCurrentNumericValue(row);
         const hasAnyWork =
           current != null ||
-          Boolean(row.observacao.trim()) ||
           Boolean(row.novaObra.trim()) ||
           Boolean(row.obraId);
 
@@ -743,7 +731,6 @@ export default function HorimetrosPage() {
         const hasAnyWork =
           horimetroFinal != null ||
           odometroFinal != null ||
-          Boolean(row.observacao.trim()) ||
           Boolean(row.novaObra.trim()) ||
           Boolean(row.obraId);
 
@@ -799,23 +786,27 @@ export default function HorimetrosPage() {
     <>
       <style jsx global>{`
         :root {
-          --bg: #f6f7fb;
+          --bg: #f5f7fb;
           --surface: #ffffff;
-          --surface-soft: #f8fafc;
+          --surface-soft: #f7f9fc;
           --line: #e9edf5;
-          --line-strong: #d9e1ec;
-          --text: #111827;
-          --muted: #6b7280;
-          --brand: #5b6df6;
+          --line-strong: #d6deea;
+          --text: #0f172a;
+          --muted: #667085;
+          --brand: #4f6ef7;
           --brand-soft: #eef2ff;
           --success: #16a34a;
           --danger: #ef4444;
           --warning: #f4b400;
-          --shadow: 0 10px 28px rgba(15, 23, 42, 0.05);
+          --shadow: 0 12px 28px rgba(15, 23, 42, 0.06);
         }
 
-        * { box-sizing: border-box; }
-        html, body {
+        * {
+          box-sizing: border-box;
+        }
+
+        html,
+        body {
           margin: 0;
           padding: 0;
           background: var(--bg);
@@ -826,24 +817,28 @@ export default function HorimetrosPage() {
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif;
         }
 
-        input, select, button { font: inherit; }
+        input,
+        select,
+        button {
+          font: inherit;
+        }
 
         .page {
           min-height: 100vh;
-          padding: 12px;
+          padding: 10px;
         }
 
         .shell {
-          width: min(1600px, 100%);
+          width: min(100%, 780px);
           margin: 0 auto;
           display: grid;
-          gap: 12px;
+          gap: 10px;
         }
 
         .header {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 18px;
+          border-radius: 22px;
           box-shadow: var(--shadow);
           padding: 14px;
           display: grid;
@@ -852,10 +847,9 @@ export default function HorimetrosPage() {
 
         .header-top {
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: space-between;
           gap: 10px;
-          flex-wrap: wrap;
         }
 
         .brand {
@@ -866,9 +860,9 @@ export default function HorimetrosPage() {
         }
 
         .logo {
-          width: 34px;
-          height: 34px;
-          border-radius: 9px;
+          width: 36px;
+          height: 36px;
+          border-radius: 10px;
           background: #fff8e8;
           overflow: hidden;
           display: inline-flex;
@@ -894,36 +888,37 @@ export default function HorimetrosPage() {
 
         .title {
           margin: 0;
-          font-size: 19px;
-          line-height: 1;
-          font-weight: 800;
-          letter-spacing: -0.02em;
+          font-size: 17px;
+          line-height: 1.1;
+          font-weight: 900;
+          letter-spacing: -0.03em;
         }
 
         .subtitle {
           margin: 4px 0 0;
           font-size: 12px;
+          line-height: 1.35;
           color: var(--muted);
           font-weight: 500;
         }
 
         .period {
-          font-size: 12px;
+          font-size: 11px;
           color: #475569;
-          font-weight: 600;
-          white-space: nowrap;
+          font-weight: 700;
+          text-align: right;
+          line-height: 1.35;
         }
 
         .controls {
           display: grid;
-          grid-template-columns: minmax(240px, 1fr) 170px 150px;
-          gap: 10px;
-          align-items: end;
+          grid-template-columns: 1fr;
+          gap: 8px;
         }
 
         .field {
           display: grid;
-          gap: 5px;
+          gap: 4px;
         }
 
         .field label {
@@ -938,21 +933,21 @@ export default function HorimetrosPage() {
         .date,
         .select,
         .number-input,
-        .text-input,
+        .new-obra-input,
         .keep-btn,
         .keep-all-btn,
-        .new-obra-input,
-        .obra-popover-btn {
+        .save-btn,
+        .sheet-btn {
           width: 100%;
-          height: 34px;
+          height: 42px;
           border: 1px solid transparent;
-          border-radius: 9px;
+          border-radius: 14px;
           background: var(--surface-soft);
           color: var(--text);
           outline: none;
-          padding: 0 10px;
-          font-size: 13px;
-          font-weight: 600;
+          padding: 0 12px;
+          font-size: 14px;
+          font-weight: 700;
           transition: 0.15s ease;
         }
 
@@ -960,76 +955,17 @@ export default function HorimetrosPage() {
         .date:focus,
         .select:focus,
         .number-input:focus,
-        .text-input:focus,
         .new-obra-input:focus {
           background: #fff;
           border-color: var(--line-strong);
-          box-shadow: 0 0 0 3px rgba(91, 109, 246, 0.08);
-        }
-
-        .number-input {
-          min-width: 96px;
-          text-align: right;
-          font-variant-numeric: tabular-nums;
-        }
-
-        .keep-btn,
-        .keep-all-btn,
-        .obra-popover-btn {
-          width: auto;
-          cursor: pointer;
-          color: #475569;
-          font-size: 11px;
-          font-weight: 800;
-          border: 1px solid var(--line);
-        }
-
-        .keep-btn {
-          min-width: 42px;
-          padding: 0 10px;
-        }
-
-        .keep-all-btn {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          gap: 6px;
-          min-width: 132px;
-          padding: 0 12px;
-        }
-
-        .obra-popover-btn {
-          min-width: 58px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-        }
-
-        .keep-btn:hover,
-        .keep-all-btn:hover,
-        .obra-popover-btn:hover {
-          background: var(--brand-soft);
-          color: var(--brand);
-          border-color: #cfd8ff;
-        }
-
-        .keep-btn.active,
-        .keep-all-btn.active {
-          background: var(--brand);
-          color: #ffffff;
-          border-color: var(--brand);
-          box-shadow: 0 6px 18px rgba(91, 109, 246, 0.2);
+          box-shadow: 0 0 0 3px rgba(79, 110, 247, 0.08);
         }
 
         .save-btn {
-          width: 100%;
-          height: 36px;
           border: 0;
-          border-radius: 9px;
           background: var(--warning);
           color: #1f2937;
-          font-size: 13px;
-          font-weight: 800;
+          font-weight: 900;
           cursor: pointer;
         }
 
@@ -1038,157 +974,151 @@ export default function HorimetrosPage() {
           cursor: wait;
         }
 
+        .toolbar {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 8px;
+          align-items: center;
+        }
+
         .stats {
           display: flex;
           gap: 6px;
           flex-wrap: wrap;
-          align-items: center;
         }
 
         .stat {
-          padding: 6px 9px;
+          padding: 7px 10px;
           border-radius: 999px;
           background: var(--surface-soft);
           color: #475569;
           font-size: 11px;
-          font-weight: 700;
+          font-weight: 800;
+        }
+
+        .keep-all-btn,
+        .keep-btn,
+        .sheet-btn {
+          border: 1px solid var(--line);
+          background: var(--surface-soft);
+          color: #475569;
+          cursor: pointer;
+        }
+
+        .keep-all-btn {
+          width: auto;
+          min-width: 122px;
+          padding: 0 12px;
+          font-size: 12px;
+        }
+
+        .keep-btn {
+          width: auto;
+          min-width: 54px;
+          height: 40px;
+          padding: 0 12px;
+          font-size: 12px;
+        }
+
+        .keep-all-btn:hover,
+        .keep-btn:hover,
+        .sheet-btn:hover {
+          background: var(--brand-soft);
+          color: var(--brand);
+          border-color: #ccd5ff;
+        }
+
+        .keep-all-btn.active,
+        .keep-btn.active {
+          background: var(--brand);
+          border-color: var(--brand);
+          color: #fff;
         }
 
         .message {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 14px;
+          border-radius: 16px;
           box-shadow: var(--shadow);
           padding: 10px 12px;
           font-size: 13px;
           font-weight: 700;
         }
 
-        .message.error { color: #a12d2d; }
-        .message.ok { color: #0b7b52; }
+        .message.error {
+          color: #a12d2d;
+        }
 
-        .table-card {
+        .message.ok {
+          color: #0b7b52;
+        }
+
+        .list {
+          display: grid;
+          gap: 10px;
+        }
+
+        .card {
           background: var(--surface);
           border: 1px solid var(--line);
-          border-radius: 18px;
+          border-radius: 20px;
           box-shadow: var(--shadow);
-          overflow: hidden;
+          padding: 12px;
+          display: grid;
+          gap: 10px;
         }
 
-        .table-head {
-          padding: 12px 14px 8px;
+        .card-top {
           display: flex;
-          align-items: center;
+          align-items: flex-start;
           justify-content: space-between;
           gap: 10px;
-          flex-wrap: wrap;
         }
 
-        .table-head h3 {
-          margin: 0;
-          font-size: 16px;
-          font-weight: 800;
-          letter-spacing: -0.02em;
-        }
-
-        .table-head p {
-          margin: 4px 0 0;
-          color: var(--muted);
-          font-size: 12px;
-          font-weight: 500;
-        }
-
-        .table-wrap {
-          overflow-x: auto;
-          overflow-y: hidden;
-          -webkit-overflow-scrolling: touch;
-        }
-
-        table {
-          width: 100%;
-          min-width: 1220px;
-          border-collapse: separate;
-          border-spacing: 0;
-          table-layout: fixed;
-        }
-
-        col.eq { width: 88px; }
-        col.tipo { width: 120px; }
-        col.obra { width: 220px; }
-        col.prev { width: 96px; }
-        col.curr { width: 160px; }
-        col.day { width: 120px; }
-        col.troca { width: 110px; }
-        col.obs { width: 160px; }
-        col.status { width: 58px; }
-        col.save { width: 46px; }
-
-        thead th {
-          position: sticky;
-          top: 0;
-          z-index: 5;
-          background: var(--surface);
-          padding: 8px 10px;
-          text-align: center;
-          font-size: 10px;
-          font-weight: 800;
-          color: #64748b;
-          text-transform: uppercase;
-          letter-spacing: 0.07em;
-          border-bottom: 1px solid var(--line);
-          white-space: nowrap;
-          vertical-align: middle;
-        }
-
-        .th-two-lines {
-          line-height: 1.05;
-        }
-
-        .th-two-lines small {
-          display: block;
-          margin-top: 2px;
-          font-size: 9px;
-          letter-spacing: 0.05em;
-        }
-
-        tbody td {
-          padding: 6px 10px;
-          border-bottom: 1px solid var(--line);
-          vertical-align: middle;
-          background: #fff;
-        }
-
-        tbody tr:hover td {
-          background: #fcfdff;
-        }
-
-        tbody tr:last-child td {
-          border-bottom: 0;
-        }
-
-        .sticky-col {
-          position: sticky;
-          left: 0;
-          z-index: 4;
-          background: inherit;
-        }
-
-        thead .sticky-col {
-          z-index: 6;
-          background: var(--surface);
+        .card-title {
+          min-width: 0;
         }
 
         .equip-code {
-          font-size: 13px;
-          font-weight: 800;
+          margin: 0;
+          font-size: 24px;
           line-height: 1;
+          font-weight: 900;
+          letter-spacing: -0.04em;
         }
 
         .equip-sub {
-          margin-top: 2px;
-          font-size: 11px;
+          margin-top: 4px;
+          font-size: 13px;
           color: var(--muted);
-          font-weight: 500;
+          font-weight: 700;
+        }
+
+        .status-wrap {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          padding-top: 4px;
+        }
+
+        .status-dot {
+          width: 14px;
+          height: 14px;
+          border-radius: 999px;
+          display: inline-block;
+        }
+
+        .status-dot.saved {
+          background: var(--success);
+        }
+
+        .status-dot.pending {
+          background: var(--danger);
+        }
+
+        .mode-row {
+          display: flex;
+          justify-content: flex-start;
         }
 
         .segmented {
@@ -1202,17 +1132,16 @@ export default function HorimetrosPage() {
         }
 
         .segmented button {
-          height: 24px;
-          min-width: 44px;
+          height: 30px;
+          min-width: 58px;
           border: 0;
           border-radius: 999px;
-          padding: 0 8px;
+          padding: 0 10px;
           background: transparent;
           color: #64748b;
-          font-size: 11px;
-          font-weight: 700;
+          font-size: 12px;
+          font-weight: 800;
           cursor: pointer;
-          white-space: nowrap;
         }
 
         .segmented button.active {
@@ -1220,117 +1149,137 @@ export default function HorimetrosPage() {
           color: var(--brand);
         }
 
-        .current-cell {
-          display: flex;
-          align-items: center;
-          gap: 6px;
+        .block {
+          display: grid;
+          gap: 5px;
         }
 
-        .obra-cell {
-          position: relative;
+        .block-label {
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--muted);
         }
 
         .obra-row {
-          display: flex;
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 6px;
           align-items: center;
+        }
+
+        .sheet-wrap {
+          position: relative;
+        }
+
+        .sheet {
+          margin-top: 8px;
+          display: grid;
+          gap: 8px;
+          padding: 10px;
+          border-radius: 16px;
+          background: var(--surface-soft);
+          border: 1px solid var(--line);
+        }
+
+        .sheet-actions {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
           gap: 6px;
         }
 
-        .obra-popover {
-          position: absolute;
-          top: 40px;
-          left: 0;
-          right: 0;
-          z-index: 30;
-          background: #fff;
-          border: 1px solid var(--line);
-          border-radius: 12px;
-          box-shadow: 0 14px 28px rgba(15, 23, 42, 0.1);
-          padding: 8px;
+        .values {
           display: grid;
+          grid-template-columns: 1fr 1fr;
           gap: 8px;
         }
 
-        .obra-popover-actions {
-          display: flex;
+        .value-box {
+          background: var(--surface-soft);
+          border: 1px solid var(--line);
+          border-radius: 16px;
+          padding: 10px 12px;
+          min-height: 74px;
+          display: grid;
+          align-content: space-between;
           gap: 6px;
         }
 
-        .value {
-          font-size: 13px;
-          font-weight: 700;
-          color: var(--text);
-          white-space: nowrap;
-          text-align: center;
-          display: inline-block;
-          width: 100%;
+        .value-box-title {
+          font-size: 10px;
+          font-weight: 800;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          color: var(--muted);
         }
 
-        .value.muted { color: #9aa4b2; }
-        .value.success { color: var(--success); }
+        .value-box-main {
+          font-size: 24px;
+          line-height: 1;
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          color: var(--text);
+        }
+
+        .value-box-main.muted {
+          color: #94a3b8;
+        }
+
+        .value-box-main.success {
+          color: var(--success);
+        }
 
         .alert-chip {
           display: inline-flex;
           align-items: center;
           justify-content: center;
-          min-height: 24px;
-          padding: 0 8px;
+          min-height: 28px;
+          padding: 0 10px;
           border-radius: 999px;
           background: #fff1f2;
           color: #b42318;
-          font-size: 11px;
-          font-weight: 800;
+          font-size: 12px;
+          font-weight: 900;
           white-space: nowrap;
         }
 
-        .checkbox-wrap {
-          display: inline-flex;
+        .input-row {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 8px;
           align-items: center;
-          justify-content: center;
-          gap: 6px;
         }
 
-        .troca-check {
-          width: 16px;
-          height: 16px;
-          accent-color: var(--brand);
-          cursor: pointer;
+        .number-input {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
         }
 
-        .troca-label {
-          font-size: 11px;
-          color: var(--muted);
-          font-weight: 700;
-          white-space: nowrap;
+        .footer-row {
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 10px;
+          align-items: end;
         }
 
-        .status-wrap {
+        .save-row {
           display: flex;
-          align-items: center;
-          justify-content: center;
+          justify-content: flex-end;
         }
-
-        .status-dot {
-          display: inline-block;
-          width: 14px;
-          height: 14px;
-          border-radius: 999px;
-        }
-
-        .status-dot.saved { background: #16a34a; }
-        .status-dot.pending { background: #ef4444; }
 
         .row-save {
-          width: 30px;
-          height: 30px;
+          width: 48px;
+          height: 48px;
           border: 0;
-          border-radius: 8px;
+          border-radius: 16px;
           background: var(--surface-soft);
           color: #4b5563;
           display: inline-flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
+          border: 1px solid var(--line);
         }
 
         .row-save:hover {
@@ -1343,21 +1292,29 @@ export default function HorimetrosPage() {
           cursor: not-allowed;
         }
 
-        .center { text-align: center; }
-
         .empty {
-          padding: 16px;
+          background: var(--surface);
+          border: 1px solid var(--line);
+          border-radius: 18px;
+          box-shadow: var(--shadow);
+          padding: 18px;
           color: var(--muted);
           font-size: 13px;
           font-weight: 700;
         }
 
-        @media (max-width: 920px) {
-          .page { padding: 10px; }
-          .header { padding: 12px; }
-          .controls { grid-template-columns: 1fr; }
-          .title { font-size: 17px; }
-          table { min-width: 1180px; }
+        @media (min-width: 760px) {
+          .shell {
+            width: min(100%, 980px);
+          }
+
+          .controls {
+            grid-template-columns: 1fr 180px 180px;
+          }
+
+          .list {
+            grid-template-columns: 1fr 1fr;
+          }
         }
       `}</style>
 
@@ -1373,13 +1330,15 @@ export default function HorimetrosPage() {
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
                   <p className="subtitle">
-                    Equipamentos agrupados por obra para facilitar o lançamento por encarregado.
+                    Layout mobile, sem rolagem lateral, com um card por equipamento.
                   </p>
                 </div>
               </div>
 
               <div className="period">
-                Anterior: {isoToBr(periodoAnterior)} · Atual: {isoToBr(selectedDate)}
+                Anterior: {isoToBr(periodoAnterior)}
+                <br />
+                Atual: {isoToBr(selectedDate)}
               </div>
             </div>
 
@@ -1396,7 +1355,7 @@ export default function HorimetrosPage() {
               </div>
 
               <div className="field">
-                <label htmlFor="data">Data do lançamento</label>
+                <label htmlFor="data">Data</label>
                 <input
                   id="data"
                   className="date"
@@ -1419,18 +1378,19 @@ export default function HorimetrosPage() {
               </div>
             </div>
 
-            <div className="stats">
-              <div className="stat">Equipamentos: {stats.total}</div>
-              <div className="stat">Lançados: {stats.lancados}</div>
-              <div className="stat">Pendentes: {stats.pendentes}</div>
+            <div className="toolbar">
+              <div className="stats">
+                <div className="stat">Equip: {stats.total}</div>
+                <div className="stat">Salvos: {stats.lancados}</div>
+                <div className="stat">Pendentes: {stats.pendentes}</div>
+              </div>
 
               <button
                 type="button"
                 className={`keep-all-btn ${allKeepApplied ? "active" : ""}`}
                 onClick={toggleKeepPreviousForAll}
-                title={allKeepApplied ? "Desmarcar Últ. em todos" : "Aplicar Últ. em todos"}
               >
-                {allKeepApplied ? "Desmarcar Últ. todos" : "Aplicar Últ. todos"}
+                {allKeepApplied ? "Desmarcar Últ." : "Aplicar Últ."}
               </button>
             </div>
           </section>
@@ -1438,266 +1398,213 @@ export default function HorimetrosPage() {
           {errorMsg ? <div className="message error">{errorMsg}</div> : null}
           {okMsg ? <div className="message ok">{okMsg}</div> : null}
 
-          <section className="table-card">
-            <div className="table-head">
-              <div>
-                <h3>Lançamento diário</h3>
-                <p>
-                  A ordenação agora é por obra e depois por código do equipamento.
-                </p>
-              </div>
-            </div>
+          {loading ? (
+            <div className="empty">Carregando...</div>
+          ) : filteredRows.length === 0 ? (
+            <div className="empty">Nenhum equipamento encontrado.</div>
+          ) : (
+            <section className="list">
+              {filteredRows.map((row) => {
+                const previous = getPreviousValue(row);
+                const current = getCurrentValue(row);
+                const dayValue = getDayValue(row);
+                const alertText = getAlertText(row);
+                const rowCanSave = canSaveRow(row);
+                const obraNome =
+                  obras.find((o) => String(o.id) === row.obraId)?.obra || row.novaObra || "";
 
-            {loading ? (
-              <div className="empty">Carregando...</div>
-            ) : filteredRows.length === 0 ? (
-              <div className="empty">Nenhum equipamento encontrado.</div>
-            ) : (
-              <div className="table-wrap">
-                <table>
-                  <colgroup>
-                    <col className="eq" />
-                    <col className="tipo" />
-                    <col className="obra" />
-                    <col className="prev" />
-                    <col className="curr" />
-                    <col className="day" />
-                    <col className="troca" />
-                    <col className="obs" />
-                    <col className="status" />
-                    <col className="save" />
-                  </colgroup>
-                  <thead>
-                    <tr>
-                      <th className="sticky-col">Equip.</th>
-                      <th>Tipo</th>
-                      <th>Obra</th>
-                      <th>Anterior</th>
-                      <th>Atual</th>
-                      <th>Do dia</th>
-                      <th className="th-two-lines">
-                        Trocar
-                        <small>hor/odo</small>
-                      </th>
-                      <th>Observação</th>
-                      <th>Status</th>
-                      <th>Salvar</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredRows.map((row) => {
-                      const previous = getPreviousValue(row);
-                      const current = getCurrentValue(row);
-                      const dayValue = getDayValue(row);
-                      const alertText = getAlertText(row);
-                      const rowCanSave = canSaveRow(row);
+                return (
+                  <article className="card" key={row.equipamentoId}>
+                    <div className="card-top">
+                      <div className="card-title">
+                        <h2 className="equip-code">{row.codigo}</h2>
+                        <div className="equip-sub">
+                          {row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro"}
+                          {obraNome ? ` • ${obraNome}` : ""}
+                        </div>
+                      </div>
 
-                      return (
-                        <tr key={row.equipamentoId}>
-                          <td className="sticky-col">
-                            <div className="equip-code">{row.codigo}</div>
-                            <div className="equip-sub">
-                              {row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro"}
-                            </div>
-                          </td>
+                      <div className="status-wrap">
+                        <StatusDot saved={row.registroId != null} />
+                      </div>
+                    </div>
 
-                          <td className="center">
-                            <div className="segmented">
-                              <button
-                                type="button"
-                                className={row.selectedMode === "horimetro" ? "active" : ""}
-                                onClick={() =>
-                                  updateRow(row.equipamentoId, { selectedMode: "horimetro" })
-                                }
-                              >
-                                HOR
-                              </button>
-                              <button
-                                type="button"
-                                className={row.selectedMode === "odometro" ? "active" : ""}
-                                onClick={() =>
-                                  updateRow(row.equipamentoId, { selectedMode: "odometro" })
-                                }
-                              >
-                                ODO
-                              </button>
-                            </div>
-                          </td>
+                    <div className="mode-row">
+                      <div className="segmented">
+                        <button
+                          type="button"
+                          className={row.selectedMode === "horimetro" ? "active" : ""}
+                          onClick={() =>
+                            updateRow(row.equipamentoId, { selectedMode: "horimetro" })
+                          }
+                        >
+                          HOR
+                        </button>
+                        <button
+                          type="button"
+                          className={row.selectedMode === "odometro" ? "active" : ""}
+                          onClick={() =>
+                            updateRow(row.equipamentoId, { selectedMode: "odometro" })
+                          }
+                        >
+                          ODO
+                        </button>
+                      </div>
+                    </div>
 
-                          <td>
-                            <div className="obra-cell">
-                              <div className="obra-row">
-                                <select
-                                  className="select"
-                                  value={row.showNovaObra ? "__new__" : row.obraId}
-                                  onChange={(e) => {
-                                    const value = e.target.value;
+                    <div className="block">
+                      <div className="block-label">Obra</div>
+                      <div className="obra-row">
+                        <select
+                          className="select"
+                          value={row.showNovaObra ? "__new__" : row.obraId}
+                          onChange={(e) => {
+                            const value = e.target.value;
 
-                                    if (value === "__new__") {
-                                      updateRow(row.equipamentoId, {
-                                        showNovaObra: true,
-                                        obraId: "",
-                                      });
-                                      return;
-                                    }
+                            if (value === "__new__") {
+                              updateRow(row.equipamentoId, {
+                                showNovaObra: true,
+                                obraId: "",
+                              });
+                              return;
+                            }
 
-                                    updateRow(row.equipamentoId, {
-                                      obraId: value,
-                                      novaObra: "",
-                                      showNovaObra: false,
-                                    });
-                                  }}
-                                >
-                                  <option value="">Selecione</option>
-                                  {obras.map((obra) => (
-                                    <option key={obra.id} value={obra.id}>
-                                      {obra.obra}
-                                    </option>
-                                  ))}
-                                  <option value="__new__">+ Nova obra...</option>
-                                </select>
-                              </div>
+                            updateRow(row.equipamentoId, {
+                              obraId: value,
+                              novaObra: "",
+                              showNovaObra: false,
+                            });
+                          }}
+                        >
+                          <option value="">Selecione</option>
+                          {obras.map((obra) => (
+                            <option key={obra.id} value={obra.id}>
+                              {obra.obra}
+                            </option>
+                          ))}
+                          <option value="__new__">+ Nova obra...</option>
+                        </select>
 
-                              {row.showNovaObra ? (
-                                <div className="obra-popover">
-                                  <input
-                                    className="new-obra-input"
-                                    value={row.novaObra}
-                                    onChange={(e) =>
-                                      updateRow(row.equipamentoId, { novaObra: e.target.value })
-                                    }
-                                    placeholder="Digite a nova obra"
-                                  />
-                                  <div className="obra-popover-actions">
-                                    <button
-                                      type="button"
-                                      className="obra-popover-btn"
-                                      onClick={() =>
-                                        updateRow(row.equipamentoId, {
-                                          showNovaObra: false,
-                                          novaObra: "",
-                                        })
-                                      }
-                                    >
-                                      Cancelar
-                                    </button>
-                                    <button
-                                      type="button"
-                                      className="obra-popover-btn"
-                                      onClick={() =>
-                                        updateRow(row.equipamentoId, {
-                                          showNovaObra: false,
-                                        })
-                                      }
-                                    >
-                                      OK
-                                    </button>
-                                  </div>
-                                </div>
-                              ) : null}
-                            </div>
-                          </td>
+                        <button
+                          type="button"
+                          className="sheet-btn"
+                          onClick={() =>
+                            updateRow(row.equipamentoId, {
+                              showNovaObra: !row.showNovaObra,
+                              obraId: row.showNovaObra ? row.obraId : "",
+                            })
+                          }
+                        >
+                          Nova
+                        </button>
+                      </div>
 
-                          <td className="center">
-                            <span className={`value ${previous == null ? "muted" : ""}`}>
-                              {format1(previous)}
-                            </span>
-                          </td>
-
-                          <td>
-                            <div className="current-cell">
-                              <input
-                                type="text"
-                                className="number-input"
-                                value={current}
-                                onChange={(e) =>
-                                  updateActiveInput(row.equipamentoId, e.target.value)
-                                }
-                                onBlur={(e) =>
-                                  finalizeActiveInput(row.equipamentoId, e.target.value)
-                                }
-                                inputMode="numeric"
-                                placeholder="Digite"
-                              />
-                              <button
-                                type="button"
-                                className={`keep-btn ${row.keepPreviousApplied ? "active" : ""}`}
-                                onClick={() => toggleKeepPreviousForRow(row)}
-                                title="Manter o último"
-                              >
-                                Últ.
-                              </button>
-                            </div>
-                          </td>
-
-                          <td className="center">
-                            {alertText ? (
-                              <span className="alert-chip">{alertText}</span>
-                            ) : (
-                              <span className={`value ${dayValue == null ? "muted" : "success"}`}>
-                                {format1(dayValue)}
-                              </span>
-                            )}
-                          </td>
-
-                          <td className="center">
-                            <div className="checkbox-wrap">
-                              <input
-                                className="troca-check"
-                                type="checkbox"
-                                checked={row.isTrocaMedidor}
-                                onChange={(e) =>
-                                  updateRow(row.equipamentoId, {
-                                    isTrocaMedidor: e.target.checked,
-                                  })
-                                }
-                                title="Marque quando houve troca de horímetro/odômetro"
-                              />
-                              <span className="troca-label">Trocar</span>
-                            </div>
-                          </td>
-
-                          <td>
-                            <input
-                              className="text-input"
-                              value={row.observacao}
-                              onChange={(e) =>
-                                updateRow(row.equipamentoId, { observacao: e.target.value })
-                              }
-                              placeholder="Observação"
-                            />
-                          </td>
-
-                          <td>
-                            <div className="status-wrap">
-                              <StatusDot saved={row.registroId != null} />
-                            </div>
-                          </td>
-
-                          <td className="center">
+                      {row.showNovaObra ? (
+                        <div className="sheet">
+                          <input
+                            className="new-obra-input"
+                            value={row.novaObra}
+                            onChange={(e) =>
+                              updateRow(row.equipamentoId, { novaObra: e.target.value })
+                            }
+                            placeholder="Digite a nova obra"
+                          />
+                          <div className="sheet-actions">
                             <button
                               type="button"
-                              className="row-save"
-                              title={`Salvar ${row.codigo}`}
-                              onClick={() => void saveOneRow(row)}
-                              disabled={
-                                !rowCanSave ||
-                                savingRowId === row.equipamentoId ||
-                                savingAll ||
-                                !env.ok
+                              className="sheet-btn"
+                              onClick={() =>
+                                updateRow(row.equipamentoId, {
+                                  showNovaObra: false,
+                                  novaObra: "",
+                                })
                               }
                             >
-                              <SaveIcon />
+                              Cancelar
                             </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
+                            <button
+                              type="button"
+                              className="sheet-btn"
+                              onClick={() =>
+                                updateRow(row.equipamentoId, {
+                                  showNovaObra: false,
+                                })
+                              }
+                            >
+                              OK
+                            </button>
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="values">
+                      <div className="value-box">
+                        <div className="value-box-title">Anterior</div>
+                        <div className={`value-box-main ${previous == null ? "muted" : ""}`}>
+                          {format1(previous)}
+                        </div>
+                      </div>
+
+                      <div className="value-box">
+                        <div className="value-box-title">Do dia</div>
+                        {alertText ? (
+                          <span className="alert-chip">{alertText}</span>
+                        ) : (
+                          <div className={`value-box-main ${dayValue == null ? "muted" : "success"}`}>
+                            {format1(dayValue)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="block">
+                      <div className="block-label">Atual</div>
+                      <div className="input-row">
+                        <input
+                          type="text"
+                          className="number-input"
+                          value={current}
+                          onChange={(e) =>
+                            updateActiveInput(row.equipamentoId, e.target.value)
+                          }
+                          onBlur={(e) =>
+                            finalizeActiveInput(row.equipamentoId, e.target.value)
+                          }
+                          inputMode="numeric"
+                          placeholder="Digite"
+                        />
+                        <button
+                          type="button"
+                          className={`keep-btn ${row.keepPreviousApplied ? "active" : ""}`}
+                          onClick={() => toggleKeepPreviousForRow(row)}
+                        >
+                          Últ.
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="save-row">
+                      <button
+                        type="button"
+                        className="row-save"
+                        title={`Salvar ${row.codigo}`}
+                        onClick={() => void saveOneRow(row)}
+                        disabled={
+                          !rowCanSave ||
+                          savingRowId === row.equipamentoId ||
+                          savingAll ||
+                          !env.ok
+                        }
+                      >
+                        <SaveIcon />
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </section>
+          )}
         </div>
       </main>
     </>
