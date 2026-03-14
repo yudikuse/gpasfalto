@@ -1112,7 +1112,14 @@ export default function HorimetrosPage() {
           align-items: center;
         }
 
-        .number-input { text-align: right; font-variant-numeric: tabular-nums; }
+        .number-input {
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+          border: 1.5px solid var(--line-strong) !important;
+          background: #ffffff !important;
+        }
+
+        .number-input::placeholder { color: #aab0bd; }
 
         .row-save {
           width: 34px; height: 32px;
