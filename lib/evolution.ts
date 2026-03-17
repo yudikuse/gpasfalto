@@ -31,7 +31,11 @@ export async function enviarMensagemWhatsApp(texto: string): Promise<void> {
     .map(d => d.trim())
     .filter(Boolean);
 
-  for (const dest of destinatarios) {
-    await enviarParaUm(dest, texto);
+  for (let i = 0; i < destinatarios.length; i++) {
+    await enviarParaUm(destinatarios[i], texto);
+    // Aguarda 65s entre envios para respeitar o rate limit do trial (1 msg/min)
+    if (i < destinatarios.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, 65_000));
+    }
   }
 }
