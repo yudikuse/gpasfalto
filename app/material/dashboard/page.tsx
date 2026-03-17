@@ -447,31 +447,13 @@ export default function MaterialDashboardPage() {
       borderRadius: 14,
       padding: 6,
     },
-    tab: (active: boolean): CSSProperties => ({
-      padding: "8px 18px",
-      borderRadius: 10,
-      fontSize: 13,
-      fontWeight: active ? 700 : 500,
-      color: active ? "#fff" : "#6b7280",
-      background: active ? "#0f172a" : "transparent",
-      border: "none",
-      cursor: "pointer",
-      transition: "all 0.15s",
-      letterSpacing: "0.02em",
-    }),
+
     grid2: {
       display: "grid",
       gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))",
       gap: 14,
       marginBottom: 20,
     },
-    statCard: (color: string): CSSProperties => ({
-      background: "#fff",
-      borderRadius: 14,
-      border: `1px solid ${color}33`,
-      padding: "18px 20px",
-      borderLeft: `4px solid ${color}`,
-    }),
     statValue: {
       fontSize: 28,
       fontWeight: 800,
@@ -533,16 +515,38 @@ export default function MaterialDashboardPage() {
       fontVariantNumeric: "tabular-nums",
       verticalAlign: "middle" as const,
     },
-    badge: (ok: boolean): CSSProperties => ({
-      display: "inline-block",
-      padding: "2px 8px",
-      borderRadius: 20,
-      fontSize: 11,
-      fontWeight: 700,
-      background: ok ? "#dcfce7" : "#fef2f2",
-      color: ok ? "#166534" : "#991b1b",
-    }),
   };
+
+  const tabStyle = (active: boolean): CSSProperties => ({
+    padding: "8px 18px",
+    borderRadius: 10,
+    fontSize: 13,
+    fontWeight: active ? 700 : 500,
+    color: active ? "#fff" : "#6b7280",
+    background: active ? "#0f172a" : "transparent",
+    border: "none",
+    cursor: "pointer",
+    transition: "all 0.15s",
+    letterSpacing: "0.02em",
+  });
+
+  const badgeStyle = (ok: boolean): CSSProperties => ({
+    display: "inline-block",
+    padding: "2px 8px",
+    borderRadius: 20,
+    fontSize: 11,
+    fontWeight: 700,
+    background: ok ? "#dcfce7" : "#fef2f2",
+    color: ok ? "#166534" : "#991b1b",
+  });
+
+  const statCardStyle = (color: string): CSSProperties => ({
+    background: "#fff",
+    borderRadius: 14,
+    border: `1px solid ${color}33`,
+    padding: "18px 20px",
+    borderLeft: `4px solid ${color}`,
+  });
 
   if (loading) {
     return (
@@ -658,7 +662,7 @@ export default function MaterialDashboardPage() {
         {/* ── CARDS RESUMO ─────────────────── */}
         <div style={s.grid2}>
           {/* Produção total */}
-          <div style={s.statCard("#f59e0b")}>
+          <div style={statCardStyle("#f59e0b")}>
             <div style={s.statValue}>{fmtN(totalProducaoT, 1)}</div>
             <div style={s.statLabel}>Produção — ton</div>
             <div style={s.statSub}>
@@ -668,7 +672,7 @@ export default function MaterialDashboardPage() {
           </div>
 
           {/* Entradas de agregados */}
-          <div style={s.statCard("#3b82f6")}>
+          <div style={statCardStyle("#3b82f6")}>
             <div style={s.statValue}>
               {fmtN(
                 entradas.reduce((a, t) => a + Number(t.peso_t), 0),
@@ -680,7 +684,7 @@ export default function MaterialDashboardPage() {
           </div>
 
           {/* HRM */}
-          <div style={s.statCard("#6b7280")}>
+          <div style={statCardStyle("#6b7280")}>
             <div style={s.statValue}>{fmtN(hrmTotal, 1)}</div>
             <div style={s.statLabel}>Horímetro — HRM</div>
             <div style={s.statSub}>
@@ -690,7 +694,7 @@ export default function MaterialDashboardPage() {
           </div>
 
           {/* Ton/hora médio */}
-          <div style={s.statCard("#10b981")}>
+          <div style={statCardStyle("#10b981")}>
             <div style={s.statValue}>
               {hrmTotal > 0 ? fmtN(totalProducaoT / hrmTotal, 1) : "—"}
             </div>
@@ -716,7 +720,7 @@ export default function MaterialDashboardPage() {
           ).map(([key, label]) => (
             <button
               key={key}
-              style={s.tab(activeTab === key)}
+              style={tabStyle(activeTab === key)}
               onClick={() => setActiveTab(key)}
             >
               {label}
@@ -1261,10 +1265,10 @@ export default function MaterialDashboardPage() {
                               </td>
                               <td style={s.td}>
                                 {o.ilimitado ? (
-                                  <span style={s.badge(true)}>Ilimitado</span>
+                                  <span style={badgeStyle(true)}>Ilimitado</span>
                                 ) : (
                                   <div>
-                                    <span style={s.badge(ok)}>
+                                    <span style={badgeStyle(ok)}>
                                       {ok ? "OK" : "Excedido"}
                                     </span>
                                     <ProgressBar
