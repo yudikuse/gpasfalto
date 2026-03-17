@@ -1,27 +1,37 @@
 // FILE: lib/evolution.ts
 // Integração com WaSenderAPI (wasenderapi.com) para envio de mensagens WhatsApp
+//
+// WHATSAPP_DESTINO aceita um ou mais destinatários separados por vírgula:
+//   Um número:   +5564999452124
+//   Vários:      +5564999452124,+5511999887766
+//   Grupo:       120363XXXXXXXXX@g.us
 
-// Variáveis configuradas no painel da Vercel → Settings → Environment Variables
-const WASENDER_API_KEY  = process.env.WASENDER_API_KEY!;
-// Número individual: +5534999990000  (com + e código do país)
-// Grupo:            120363XXXXXXXXX@g.us
-const WHATSAPP_DESTINO  = process.env.WHATSAPP_DESTINO!;
+const WASENDER_API_KEY = process.env.WASENDER_API_KEY!;
+const WHATSAPP_DESTINO = process.env.WHATSAPP_DESTINO!;
 
-export async function enviarMensagemWhatsApp(texto: string): Promise<void> {
+async function enviarParaUm(to: string, texto: string): Promise<void> {
   const res = await fetch("https://www.wasenderapi.com/api/send-message", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "Authorization": `Bearer ${WASENDER_API_KEY}`,
     },
-    body: JSON.stringify({
-      to:   WHATSAPP_DESTINO,
-      text: texto,
-    }),
+    body: JSON.stringify({ to: to.trim(), text: texto }),
   });
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`WaSenderAPI erro ${res.status}: ${body}`);
+    throw new Error(`WaSenderAPI erro ${res.status} para ${to}: ${body}`);
+  }
+}
+
+export async function enviarMensagemWhatsApp(texto: string): Promise<void> {
+  const destinatarios = WHATSAPP_DESTINO
+    .split(",")
+    .map(d => d.trim())
+    .filter(Boolean);
+
+  for (const dest of destinatarios) {
+    await enviarParaUm(dest, texto);
   }
 }
