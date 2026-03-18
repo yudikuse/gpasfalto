@@ -292,6 +292,7 @@ export default function MaterialDashboardPage() {
   const [materiais,    setMateriais]    = useState<string[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [activeTab, setActiveTab] = useState<"estoque"|"producao"|"entradas"|"saidas"|"pedidos">("estoque");
+  const [reconcOpen,   setReconcOpen]   = useState(false);
 
   // ── Fetch — inalterado ───────────────────
   const fetchAll = useCallback(async () => {
@@ -542,15 +543,22 @@ export default function MaterialDashboardPage() {
         ══════════════════════════════════════ */}
         {activeTab === "estoque" && (
           <div>
-            {/* Grid de saldos por material */}
+            {/* Cards de saldo */}
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(190px, 1fr))", gap: 12, marginBottom: 20 }}>
               {saldos.map(s_ => {
-                const cor    = matColor(s_.material);
+                const cor = matColor(s_.material);
                 const alerta = s_.saldo_t < 50;
+                // cobertura em dias baseada no consumo médio diário (todos os dados disponíveis)
+                const linhas = saldoPorData.filter(s => s.material === s_.material && s.movimento_t < 0);
+                const diasComConsumo = linhas.length;
+                const consumoDiario = diasComConsumo > 0
+                  ? linhas.reduce((acc, l) => acc + Math.abs(l.movimento_t), 0) / diasComConsumo
+                  : 0;
+                const diasCobertura = consumoDiario > 0 ? Math.round(s_.saldo_t / consumoDiario) : null;
                 return (
                   <Card key={s_.material} style={{ padding: "16px 18px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>
                         {s_.material}
                       </span>
                       <span style={{ width: 8, height: 8, borderRadius: "50%", background: alerta ? C.danger : C.success, display: "inline-block" }} />
@@ -558,20 +566,15 @@ export default function MaterialDashboardPage() {
                     <div style={{ fontSize: 30, fontWeight: 700, color: alerta ? C.danger : C.text, lineHeight: 1, fontVariantNumeric: "tabular-nums" }}>
                       {fmtN(s_.saldo_t, 1)}
                     </div>
-                    <div style={{ fontSize: 11, color: C.textMute, marginTop: 2, marginBottom: 12 }}>toneladas em estoque</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, paddingTop: 10, borderTop: `1px solid ${C.border}`, fontSize: 11 }}>
-                      <div>
-                        <div style={{ color: C.textMute }}>Entradas</div>
-                        <div style={{ color: C.success, fontWeight: 600, marginTop: 1 }}>+{fmtN(s_.entrada_t, 1)}</div>
+                    <div style={{ fontSize: 11, color: C.textMute, marginTop: 2 }}>toneladas em estoque</div>
+                    {diasCobertura != null && (
+                      <div style={{ fontSize: 11, color: diasCobertura < 7 ? C.danger : diasCobertura < 15 ? C.warning : C.textMute, marginTop: 4, fontWeight: 600 }}>
+                        ~{diasCobertura} dias de cobertura
                       </div>
-                      <div>
-                        <div style={{ color: C.textMute }}>Consumo</div>
-                        <div style={{ color: s_.consumo_t > 0 ? C.danger : C.textMid, fontWeight: 600, marginTop: 1 }}>-{fmtN(s_.consumo_t, 1)}</div>
-                      </div>
-                    </div>
+                    )}
                     {alerta && (
-                      <div style={{ marginTop: 8, fontSize: 11, fontWeight: 600, color: C.warning, display: "flex", alignItems: "center", gap: 4 }}>
-                        <span>⚠</span> Estoque baixo
+                      <div style={{ marginTop: 6, fontSize: 11, fontWeight: 600, color: C.warning, display: "flex", alignItems: "center", gap: 4 }}>
+                        ⚠ Estoque baixo
                       </div>
                     )}
                   </Card>
@@ -584,103 +587,117 @@ export default function MaterialDashboardPage() {
               )}
             </div>
 
-            {/* Reconciliação de estoque — linha do tempo clara */}
+            {/* Gráfico de evolução — curva do saldo acumulado */}
             <Card style={{ marginBottom: 16 }}>
-              <CardHeader title="Reconciliação de estoque" sub={`Saldo inicial → entradas → consumo traço → inventário físico`} />
-              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    <th style={TH}>Material</th>
-                    <th style={THR}>Saldo inicial</th>
-                    <th style={THR}>+ Entradas</th>
-                    <th style={THR}>− Consumo traço</th>
-                    <th style={{ ...THR, borderLeft: `2px solid ${C.border}` }}>= Calculado</th>
-                    <th style={THR}>Inventário físico</th>
-                    <th style={THR}>Diferença</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {saldos.map(s_ => {
-                    const saldoInicialAjuste = ajustes.find(a => a.motivo === 'SALDO INICIAL' && normalizeMaterial(a.material) === s_.material);
-                    const ajusteInv = ajustes.find(a => a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === s_.material);
-                    const saldoInicial = saldoInicialAjuste?.quantidade_t ?? 0;
-                    const calculado = saldoInicial + s_.entrada_t - s_.consumo_t;
-                    const diferenca = ajusteInv?.quantidade_t ?? null;
-                    // saldo_fisico_t = valor fixo medido fisicamente no inventário
-                    const inventarioFisico = ajusteInv?.saldo_fisico_t ?? null;
-                    return (
-                      <tr key={s_.material}>
-                        <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
-                        <td style={TDR}>{fmtN(saldoInicial, 1)}</td>
-                        <td style={{ ...TDR, color: C.success }}>+{fmtN(s_.entrada_t, 1)}</td>
-                        <td style={{ ...TDR, color: C.danger }}>−{fmtN(s_.consumo_t, 1)}</td>
-                        <td style={{ ...TDR, fontWeight: 700, color: C.text, borderLeft: `2px solid ${C.border}` }}>
-                          {fmtN(calculado, 1)}
-                        </td>
-                        <td style={{ ...TDR, fontWeight: 700, color: inventarioFisico != null ? C.primary : C.textMute }}>
-                          {inventarioFisico != null ? fmtN(inventarioFisico, 1) : "—"}
-                        </td>
-                        <td style={{ ...TDR, fontWeight: 700, color: diferenca == null ? C.textMute : diferenca >= 0 ? C.success : C.danger }}>
-                          {diferenca != null ? `${diferenca >= 0 ? "+" : ""}${fmtN(diferenca, 1)}` : "—"}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              <div style={{ padding: "10px 14px", fontSize: 11, color: C.textMute, borderTop: `1px solid ${C.border}` }}>
-                Saldo calculado = saldo inicial + entradas − consumo pelo traço. Diferença = inventário físico − calculado (positivo = sobra, negativo = falta).
+              <CardHeader title="Evolução do saldo" sub="Curva de estoque por material — período selecionado" />
+              <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 20 }}>
+                {materiaisGrafico.length === 0 ? (
+                  <div style={{ color: C.textMute, fontSize: 13, textAlign: "center", padding: "16px 0" }}>Sem dados de evolução</div>
+                ) : materiaisGrafico.filter(m => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(m)).map(mat => {
+                  const linhas = saldoPorData.filter(s => s.material === mat).sort((a,b) => a.data.localeCompare(b.data));
+                  if (linhas.length < 2) return null;
+                  const vals = linhas.map(l => l.saldo_acumulado_t);
+                  const minVal = Math.min(...vals);
+                  const maxVal = Math.max(...vals);
+                  const range = Math.max(1, maxVal - minVal);
+                  const H = 64, W = 100;
+                  const cor = matColor(mat);
+                  const ultimo = vals[vals.length - 1];
+                  // gera path SVG da linha
+                  const pts = linhas.map((l, i) => {
+                    const x = (i / (linhas.length - 1)) * W;
+                    const y = H - ((l.saldo_acumulado_t - minVal) / range) * H;
+                    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+                  }).join(" ");
+                  // área abaixo
+                  const areaPath = pts + ` L${W},${H} L0,${H} Z`;
+                  return (
+                    <div key={mat}>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: C.textMid }}>{mat}</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: cor, fontVariantNumeric: "tabular-nums" }}>{fmtN(ultimo, 1)} t</span>
+                      </div>
+                      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 64, display: "block", overflow: "visible" }}
+                        preserveAspectRatio="none">
+                        <path d={areaPath} fill={cor} fillOpacity="0.1" stroke="none" />
+                        <path d={pts} fill="none" stroke={cor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
+                      </svg>
+                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textMute, marginTop: 2 }}>
+                        <span>{dateBR(linhas[0].data)}</span>
+                        <span>{dateBR(linhas[linhas.length - 1].data)}</span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </Card>
 
-            {/* Ajustes de inventário */}
+            {/* Reconciliação — colapsável */}
             <Card>
-              <CardHeader title="Ajustes de inventário" sub="Diferenças apuradas em inventário físico" />
-              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    <th style={TH}>Data</th>
-                    <th style={TH}>Material</th>
-                    <th style={THR}>Diferença (ton)</th>
-                    <th style={TH}>Resultado</th>
-                    <th style={TH}>Causa provável</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {ajustes.filter(a => a.motivo !== 'SALDO INICIAL').length === 0 ? (
+              <button onClick={() => setReconcOpen(o => !o)} style={{
+                width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+                padding: "16px 20px", background: "none", border: "none", cursor: "pointer",
+                borderBottom: reconcOpen ? `1px solid ${C.border}` : "none",
+              }}>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: C.text, textAlign: "left" }}>Reconciliação de estoque</div>
+                  <div style={{ fontSize: 12, color: C.textMute, marginTop: 2, textAlign: "left" }}>
+                    Saldo inicial (06/01) → entradas → consumo traço → inventário físico (16/03)
+                  </div>
+                </div>
+                <span style={{ fontSize: 18, color: C.textMute, transform: reconcOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}>
+                  ⌄
+                </span>
+              </button>
+              {reconcOpen && (
+                <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                  <thead>
                     <tr>
-                      <td colSpan={5} style={{ textAlign: "center", padding: "28px 0", color: C.textMute, fontSize: 13 }}>
-                        Nenhum ajuste de inventário registrado
+                      <th style={TH}>Material</th>
+                      <th style={THR}>Inv. 06/01</th>
+                      <th style={THR}>+ Entradas</th>
+                      <th style={THR}>− Consumo traço</th>
+                      <th style={{ ...THR, borderLeft: `2px solid ${C.border}` }}>= Calculado</th>
+                      <th style={THR}>Inv. físico</th>
+                      <th style={THR}>Diferença</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {saldos.map(s_ => {
+                      const saldoInicialAjuste = ajustes.find(a => a.motivo === 'SALDO INICIAL' && normalizeMaterial(a.material) === s_.material);
+                      const ajusteInv = ajustes.find(a => a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === s_.material);
+                      const saldoInicial = saldoInicialAjuste?.quantidade_t ?? 0;
+                      const calculado = saldoInicial + s_.entrada_t - s_.consumo_t;
+                      const diferenca = ajusteInv?.quantidade_t ?? null;
+                      const inventarioFisico = ajusteInv?.saldo_fisico_t ?? null;
+                      return (
+                        <tr key={s_.material}>
+                          <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
+                          <td style={TDR}>{fmtN(saldoInicial, 1)}</td>
+                          <td style={{ ...TDR, color: C.success }}>+{fmtN(s_.entrada_t, 1)}</td>
+                          <td style={{ ...TDR, color: C.danger }}>−{fmtN(s_.consumo_t, 1)}</td>
+                          <td style={{ ...TDR, fontWeight: 700, color: C.text, borderLeft: `2px solid ${C.border}` }}>
+                            {fmtN(calculado, 1)}
+                          </td>
+                          <td style={{ ...TDR, fontWeight: 700, color: inventarioFisico != null ? C.primary : C.textMute }}>
+                            {inventarioFisico != null ? fmtN(inventarioFisico, 1) : "—"}
+                          </td>
+                          <td style={{ ...TDR, fontWeight: 700, color: diferenca == null ? C.textMute : diferenca >= 0 ? C.success : C.danger }}>
+                            {diferenca != null ? `${diferenca >= 0 ? "+" : ""}${fmtN(diferenca, 1)}` : "—"}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td colSpan={7} style={{ padding: "10px 14px", fontSize: 11, color: C.textMute, borderTop: `1px solid ${C.border}` }}>
+                        Positivo = sobra física (traço superestimou consumo ou entradas não lançadas). Negativo = falta física (traço subestimou ou perdas não registradas).
                       </td>
                     </tr>
-                  ) : ajustes.filter(a => a.motivo !== 'SALDO INICIAL').map(a => {
-                    const sobra = a.quantidade_t >= 0;
-                    // Lógica correta:
-                    // SOBRA (+): físico > sistema → traço superestimou consumo OU entradas físicas não lançadas
-                    // FALTA (−): físico < sistema → traço subestimou consumo OU saídas/perdas não registradas
-                    const causaProvavel = sobra
-                      ? "Traço superestimou consumo (deduziu mais do que a usina usou) ou entradas físicas não lançadas no sistema"
-                      : "Traço subestimou consumo (deduziu menos do que a usina usou) ou saídas/perdas não registradas";
-                    return (
-                      <tr key={a.id}>
-                        <td style={{ ...TD, whiteSpace: "nowrap" as const }}>{dateBR(a.data)}</td>
-                        <td style={TD}>
-                          <Tag label={normalizeMaterial(a.material)} color={matColor(a.material)} />
-                        </td>
-                        <td style={{ ...TDR, fontWeight: 700, color: sobra ? C.success : C.danger }}>
-                          {sobra ? "+" : ""}{fmtN(a.quantidade_t, 3)}
-                        </td>
-                        <td style={TD}>
-                          <Badge ok={sobra} label={sobra ? "Sobra física" : "Falta física"} />
-                        </td>
-                        <td style={{ ...TD, fontSize: 12, color: C.textMute, maxWidth: 400 }}>
-                          {a.observacao ? a.observacao : causaProvavel}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                  </tfoot>
+                </table>
+              )}
             </Card>
           </div>
         )}
