@@ -319,7 +319,7 @@ export default function MaterialDashboardPage() {
           .order("obra"),
         supabase.from("material_saldo_por_data_v")
           .select("data,material,movimento_t,saldo_acumulado_t")
-          .gte("data", dateStart).lte("data", dateEnd)
+          .gte("data", "2026-01-06")
           .order("data"),
         supabase.from("material_diario_usina")
           .select("data,hrm_inicial,hrm_final,ogr_litros")
@@ -667,15 +667,32 @@ export default function MaterialDashboardPage() {
                       const saldoInicialAjuste = ajustes.find(a => a.motivo === 'SALDO INICIAL' && normalizeMaterial(a.material) === s_.material);
                       const ajusteInv = ajustes.find(a => a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === s_.material);
                       const saldoInicial = saldoInicialAjuste?.quantidade_t ?? 0;
-                      const calculado = saldoInicial + s_.entrada_t - s_.consumo_t;
-                      const diferenca = ajusteInv?.quantidade_t ?? null;
                       const inventarioFisico = ajusteInv?.saldo_fisico_t ?? null;
+                      const diferenca = ajusteInv?.quantidade_t ?? null;
+                      const dataInv = ajusteInv?.data ?? null;
+                      // calculado até a data do inventário = inventário físico - diferença
+                      // (reconstruído dos ajustes, sem depender de dados ao vivo)
+                      const calculadoNaDataInv = inventarioFisico != null && diferenca != null
+                        ? inventarioFisico - diferenca
+                        : null;
+                      // entradas até data inventário = calculado - saldo_inicial + consumo
+                      // mas não temos consumo separado aqui; mostramos entrada e consumo da view global
+                      // menos o que veio APÓS a data do inventário (saldo_por_data pós data inv)
+                      const movPostInv = saldoPorData.filter(sp =>
+                        normalizeMaterial(sp.material) === s_.material &&
+                        dataInv != null && sp.data > dataInv
+                      );
+                      const entradaPostInv = movPostInv.filter(m => m.movimento_t > 0).reduce((a, m) => a + m.movimento_t, 0);
+                      const consumoPostInv = movPostInv.filter(m => m.movimento_t < 0).reduce((a, m) => a + Math.abs(m.movimento_t), 0);
+                      const entradaAteInv = s_.entrada_t - entradaPostInv;
+                      const consumoAteInv = s_.consumo_t - consumoPostInv;
+                      const calculado = saldoInicial + entradaAteInv - consumoAteInv;
                       return (
                         <tr key={s_.material}>
                           <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
                           <td style={TDR}>{fmtN(saldoInicial, 1)}</td>
-                          <td style={{ ...TDR, color: C.success }}>+{fmtN(s_.entrada_t, 1)}</td>
-                          <td style={{ ...TDR, color: C.danger }}>−{fmtN(s_.consumo_t, 1)}</td>
+                          <td style={{ ...TDR, color: C.success }}>+{fmtN(entradaAteInv, 1)}</td>
+                          <td style={{ ...TDR, color: C.danger }}>−{fmtN(consumoAteInv, 1)}</td>
                           <td style={{ ...TDR, fontWeight: 700, color: C.text, borderLeft: `2px solid ${C.border}` }}>
                             {fmtN(calculado, 1)}
                           </td>
