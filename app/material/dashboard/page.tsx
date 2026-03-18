@@ -318,7 +318,8 @@ export default function MaterialDashboardPage() {
           .order("obra"),
         supabase.from("material_saldo_por_data_v")
           .select("data,material,movimento_t,saldo_acumulado_t")
-          .gte("data", isoMinus(60)).order("data"),
+          .gte("data", dateStart).lte("data", dateEnd)
+          .order("data"),
         supabase.from("material_diario_usina")
           .select("data,hrm_inicial,hrm_final,ogr_litros")
           .gte("data", dateStart).lte("data", dateEnd)
