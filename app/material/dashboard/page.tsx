@@ -287,6 +287,7 @@ export default function MaterialDashboardPage() {
   const [ocSaldos,     setOcSaldos]     = useState<OcSaldo[]>([]);
   const [saldoPorData, setSaldoPorData] = useState<SaldoPorData[]>([]);
   const [diarios,      setDiarios]      = useState<DiarioUsina[]>([]);
+  const [ajustes,      setAjustes]      = useState<{id:number;data:string;material:string;quantidade_t:number;motivo:string;observacao:string|null}[]>([]);
   const [obras,        setObras]        = useState<string[]>([]);
   const [materiais,    setMateriais]    = useState<string[]>([]);
   const [loading,      setLoading]      = useState(true);
@@ -303,6 +304,7 @@ export default function MaterialDashboardPage() {
         { data: ocData },
         { data: evolData },
         { data: diariosData },
+        { data: ajustesData },
       ] = await Promise.all([
         supabase.from("material_saldo_agregados_v").select("*"),
         supabase.from("material_tickets")
@@ -321,6 +323,9 @@ export default function MaterialDashboardPage() {
           .select("data,hrm_inicial,hrm_final,ogr_litros")
           .gte("data", dateStart).lte("data", dateEnd)
           .order("data", { ascending: false }),
+        supabase.from("material_ajuste_estoque")
+          .select("id,data,material,quantidade_t,motivo,observacao")
+          .order("data", { ascending: false }),
       ]);
 
       const tks = normalizeTickets((ticketsData as TicketRow[]) ?? []);
@@ -330,6 +335,7 @@ export default function MaterialDashboardPage() {
       setOcSaldos((ocData as OcSaldo[]) ?? []);
       setSaldoPorData(normalizeSaldoPorData((evolData as SaldoPorData[]) ?? []));
       setDiarios((diariosData as DiarioUsina[]) ?? []);
+      setAjustes((ajustesData as any[]) ?? []);
       setObras(Array.from(new Set(tks.map(t => t.obra).filter(Boolean))).sort());
       setMateriais(Array.from(new Set(tks.map(t => t.material).filter(Boolean))).sort());
     } finally { setLoading(false); }
@@ -421,26 +427,46 @@ export default function MaterialDashboardPage() {
 
         {/* ── FILTROS ──────────────────────── */}
         <Card style={{ marginBottom: 20 }}>
-          <div style={{ padding: "12px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.06em" }}>Período</span>
+          <div style={{ padding: "10px 18px 10px", borderBottom: `1px solid ${C.border}`, display: "flex", gap: 6, flexWrap: "wrap" as const }}>
+            {([
+              ["Hoje",      isoToday(),    isoToday()],
+              ["7 dias",    isoMinus(7),   isoToday()],
+              ["15 dias",   isoMinus(15),  isoToday()],
+              ["Mês atual", (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`; })(),  isoToday()],
+              ["Mês ant.",  (() => { const d = new Date(); d.setMonth(d.getMonth()-1); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`; })(),
+                            (() => { const d = new Date(); d.setDate(0); return d.toISOString().slice(0,10); })()],
+              ["2026",      "2026-01-01",  isoToday()],
+            ] as [string, string, string][]).map(([label, s, e]) => {
+              const active = dateStart === s && dateEnd === e;
+              return (
+                <button key={label} onClick={() => { setDateStart(s); setDateEnd(e); }} style={{
+                  height: 28, padding: "0 12px", border: `1px solid ${active ? C.primary : C.border}`,
+                  borderRadius: 5, fontSize: 12, fontWeight: active ? 600 : 400,
+                  background: active ? C.primaryBg : C.surface,
+                  color: active ? C.primary : C.textMid,
+                  cursor: "pointer", transition: "all 0.1s",
+                }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ padding: "10px 18px", display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" as const }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>Período</span>
             <input type="date" value={dateStart} onChange={e => setDateStart(e.target.value)} style={inp} />
             <span style={{ fontSize: 12, color: C.textMute }}>até</span>
             <input type="date" value={dateEnd}   onChange={e => setDateEnd(e.target.value)}   style={inp} />
-
             <div style={{ width: 1, height: 20, background: C.border, margin: "0 4px" }} />
-
-            <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.06em" }}>Obra</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>Obra</span>
             <select value={filterObra} onChange={e => setFilterObra(e.target.value)} style={{ ...inp, paddingRight: 28 }}>
               <option value="">Todas</option>
               {obras.map(o => <option key={o} value={o}>{o}</option>)}
             </select>
-
-            <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.06em" }}>Material</span>
+            <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute, textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>Material</span>
             <select value={filterMat} onChange={e => setFilterMat(e.target.value)} style={{ ...inp, paddingRight: 28 }}>
               <option value="">Todos</option>
               {materiais.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
-
             <button onClick={() => { setFilterObra(""); setFilterMat(""); setDateStart(isoMinus(30)); setDateEnd(isoToday()); }}
               style={{ marginLeft: "auto", height: 32, padding: "0 14px", border: `1px solid ${C.border}`, borderRadius: 6, background: C.surface, fontSize: 12, color: C.textMid, cursor: "pointer" }}>
               Limpar filtros
@@ -565,45 +591,108 @@ export default function MaterialDashboardPage() {
               )}
             </div>
 
-            {/* Gráfico evolução */}
-            <Card>
-              <CardHeader title="Evolução do estoque" sub="Últimos 60 dias por material" />
-              <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 18 }}>
-                {materiaisGrafico.length === 0 ? (
-                  <div style={{ color: C.textMute, fontSize: 13, textAlign: "center", padding: "16px 0" }}>Sem dados de evolução</div>
-                ) : materiaisGrafico.slice(0, 6).map(mat => {
-                  const linhas  = saldoPorData.filter(s => s.material === mat);
-                  const maxVal  = Math.max(1, ...linhas.map(l => Math.abs(l.saldo_acumulado_t)));
-                  const ultimo  = linhas[linhas.length - 1]?.saldo_acumulado_t ?? 0;
-                  const cor     = matColor(mat);
-                  const ultimos = linhas.slice(-45);
+            {/* Gráfico: entradas vs consumo por dia (movimentos) */}
+            <Card style={{ marginBottom: 16 }}>
+              <CardHeader title="Entradas vs consumo — por dia" sub="Barras: entrada (verde) e consumo calculado pelo traço (vermelho)" />
+              <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 20 }}>
+                {materiaisGrafico.filter(m => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(m)).length === 0 ? (
+                  <div style={{ color: C.textMute, fontSize: 13, textAlign: "center", padding: "16px 0" }}>Sem movimentos no período</div>
+                ) : materiaisGrafico.filter(m => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(m)).map(mat => {
+                  // agrupa entradas e consumos por data
+                  const entDias = tickets.filter(t => t.tipo === "ENTRADA" && t.material === mat);
+                  const entMap: Record<string, number> = {};
+                  for (const t of entDias) entMap[t.data] = (entMap[t.data] ?? 0) + Number(t.peso_t);
+
+                  const consDias = saldoPorData.filter(s => s.material === mat && s.movimento_t < 0);
+                  const consMap: Record<string, number> = {};
+                  for (const s of consDias) consMap[s.data] = (consMap[s.data] ?? 0) + Math.abs(s.movimento_t);
+
+                  const allDates = Array.from(new Set([...Object.keys(entMap), ...Object.keys(consMap)])).sort();
+                  if (allDates.length === 0) return null;
+
+                  const maxVal = Math.max(1, ...allDates.map(d => Math.max(entMap[d] ?? 0, consMap[d] ?? 0)));
+                  const cor = matColor(mat);
+
                   return (
                     <div key={mat}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, fontWeight: 500, color: C.textMid }}>{mat}</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: cor, fontVariantNumeric: "tabular-nums" }}>{fmtN(ultimo, 1)} t</span>
+                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: C.textMid }}>{mat}</span>
+                        <div style={{ display: "flex", gap: 12, fontSize: 11, color: C.textMute }}>
+                          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <span style={{ width: 8, height: 8, background: C.success, borderRadius: 2, display: "inline-block" }} /> Entrada
+                          </span>
+                          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                            <span style={{ width: 8, height: 8, background: C.danger + "99", borderRadius: 2, display: "inline-block" }} /> Consumo
+                          </span>
+                        </div>
                       </div>
-                      <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 40 }}>
-                        {ultimos.map((l, i) => {
-                          const h   = Math.max(2, (Math.abs(l.saldo_acumulado_t) / maxVal) * 40);
-                          const neg = l.saldo_acumulado_t < 0;
+                      <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 56, overflowX: "auto" }}>
+                        {allDates.map(d => {
+                          const ent  = entMap[d]  ?? 0;
+                          const cons = consMap[d] ?? 0;
+                          const hEnt  = ent  > 0 ? Math.max(4, (ent  / maxVal) * 56) : 0;
+                          const hCons = cons > 0 ? Math.max(4, (cons / maxVal) * 56) : 0;
                           return (
-                            <div key={i} title={`${dateBR(l.data)}: ${fmtN(l.saldo_acumulado_t, 1)}t`} style={{
-                              flex: 1, minWidth: 2, height: h,
-                              background: neg ? C.danger : cor,
-                              borderRadius: "2px 2px 0 0", opacity: 0.75,
-                            }} />
+                            <div key={d} style={{ display: "flex", alignItems: "flex-end", gap: 1, flexShrink: 0 }}
+                              title={`${dateBR(d)}\nEntrada: ${fmtN(ent,1)}t\nConsumo: ${fmtN(cons,1)}t`}>
+                              {hEnt > 0 && <div style={{ width: 7, height: hEnt, background: C.success, borderRadius: "2px 2px 0 0", opacity: 0.85 }} />}
+                              {hCons > 0 && <div style={{ width: 7, height: hCons, background: C.danger, borderRadius: "2px 2px 0 0", opacity: 0.6 }} />}
+                            </div>
                           );
                         })}
                       </div>
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textMute, marginTop: 3 }}>
-                        <span>{ultimos[0]             ? dateBR(ultimos[0].data)             : ""}</span>
-                        <span>{ultimos[ultimos.length-1] ? dateBR(ultimos[ultimos.length-1].data) : ""}</span>
+                        <span>{dateBR(allDates[0])}</span>
+                        <span>{dateBR(allDates[allDates.length - 1])}</span>
                       </div>
                     </div>
                   );
                 })}
               </div>
+            </Card>
+
+            {/* Ajustes de inventário */}
+            <Card>
+              <CardHeader title="Ajustes de inventário" sub="Diferenças apuradas em inventário físico — para ciência da gerência" />
+              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={TH}>Data</th>
+                    <th style={TH}>Material</th>
+                    <th style={THR}>Diferença (ton)</th>
+                    <th style={TH}>Tipo</th>
+                    <th style={TH}>Motivo / Observação</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {ajustes.filter(a => a.motivo !== 'SALDO INICIAL').length === 0 ? (
+                    <tr>
+                      <td colSpan={5} style={{ textAlign: "center", padding: "28px 0", color: C.textMute, fontSize: 13 }}>
+                        Nenhum ajuste de inventário registrado
+                      </td>
+                    </tr>
+                  ) : ajustes.filter(a => a.motivo !== 'SALDO INICIAL').map(a => {
+                    const sobra = a.quantidade_t >= 0;
+                    return (
+                      <tr key={a.id}>
+                        <td style={{ ...TD, whiteSpace: "nowrap" as const }}>{dateBR(a.data)}</td>
+                        <td style={TD}>
+                          <Tag label={normalizeMaterial(a.material)} color={matColor(a.material)} />
+                        </td>
+                        <td style={{ ...TDR, fontWeight: 700, color: sobra ? C.success : C.danger }}>
+                          {sobra ? "+" : ""}{fmtN(a.quantidade_t, 3)}
+                        </td>
+                        <td style={TD}>
+                          <Badge ok={sobra} label={sobra ? "Sobra" : "Falta"} />
+                        </td>
+                        <td style={{ ...TD, fontSize: 12, color: C.textMute, maxWidth: 400 }}>
+                          {a.observacao ?? a.motivo}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </Card>
           </div>
         )}
