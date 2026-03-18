@@ -287,7 +287,7 @@ export default function MaterialDashboardPage() {
   const [ocSaldos,     setOcSaldos]     = useState<OcSaldo[]>([]);
   const [saldoPorData, setSaldoPorData] = useState<SaldoPorData[]>([]);
   const [diarios,      setDiarios]      = useState<DiarioUsina[]>([]);
-  const [ajustes,      setAjustes]      = useState<{id:number;data:string;material:string;quantidade_t:number;motivo:string;observacao:string|null}[]>([]);
+  const [ajustes,      setAjustes]      = useState<{id:number;data:string;material:string;quantidade_t:number;motivo:string;observacao:string|null;saldo_fisico_t:number|null}[]>([]);
   const [obras,        setObras]        = useState<string[]>([]);
   const [materiais,    setMateriais]    = useState<string[]>([]);
   const [loading,      setLoading]      = useState(true);
@@ -325,7 +325,7 @@ export default function MaterialDashboardPage() {
           .gte("data", dateStart).lte("data", dateEnd)
           .order("data", { ascending: false }),
         supabase.from("material_ajuste_estoque")
-          .select("id,data,material,quantidade_t,motivo,observacao")
+          .select("id,data,material,quantidade_t,motivo,observacao,saldo_fisico_t")
           .order("data", { ascending: false }),
       ]);
 
@@ -601,27 +601,23 @@ export default function MaterialDashboardPage() {
                 </thead>
                 <tbody>
                   {saldos.map(s_ => {
-                    // saldo inicial = ajustes com motivo SALDO INICIAL
-                    const saldoInicial = s_.ajuste_t - (ajustes.filter(a => a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === s_.material).reduce((acc, a) => acc + a.quantidade_t, 0));
-                    // consumo real = do traço (view já tem corte)
-                    const consumoTraco = s_.consumo_t;
-                    // saldo calculado = saldo_inicial + entradas - consumo
-                    const calculado = saldoInicial + s_.entrada_t - consumoTraco;
-                    // inventário físico = ajuste de inventário inserido em 16/03
+                    const saldoInicialAjuste = ajustes.find(a => a.motivo === 'SALDO INICIAL' && normalizeMaterial(a.material) === s_.material);
                     const ajusteInv = ajustes.find(a => a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === s_.material);
-                    const inventarioFisico = ajusteInv ? calculado + ajusteInv.quantidade_t : null;
+                    const saldoInicial = saldoInicialAjuste?.quantidade_t ?? 0;
+                    const calculado = saldoInicial + s_.entrada_t - s_.consumo_t;
                     const diferenca = ajusteInv?.quantidade_t ?? null;
-                    const temAjuste = diferenca != null;
+                    // saldo_fisico_t = valor fixo medido fisicamente no inventário
+                    const inventarioFisico = ajusteInv?.saldo_fisico_t ?? null;
                     return (
                       <tr key={s_.material}>
                         <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
                         <td style={TDR}>{fmtN(saldoInicial, 1)}</td>
                         <td style={{ ...TDR, color: C.success }}>+{fmtN(s_.entrada_t, 1)}</td>
-                        <td style={{ ...TDR, color: C.danger }}>−{fmtN(consumoTraco, 1)}</td>
+                        <td style={{ ...TDR, color: C.danger }}>−{fmtN(s_.consumo_t, 1)}</td>
                         <td style={{ ...TDR, fontWeight: 700, color: C.text, borderLeft: `2px solid ${C.border}` }}>
                           {fmtN(calculado, 1)}
                         </td>
-                        <td style={{ ...TDR, fontWeight: 700, color: temAjuste ? C.primary : C.textMute }}>
+                        <td style={{ ...TDR, fontWeight: 700, color: inventarioFisico != null ? C.primary : C.textMute }}>
                           {inventarioFisico != null ? fmtN(inventarioFisico, 1) : "—"}
                         </td>
                         <td style={{ ...TDR, fontWeight: 700, color: diferenca == null ? C.textMute : diferenca >= 0 ? C.success : C.danger }}>
