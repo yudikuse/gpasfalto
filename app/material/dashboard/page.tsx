@@ -390,13 +390,15 @@ export default function MaterialDashboardPage() {
 
       {/* ── TOPBAR ─────────────────────────── */}
       <header style={{
-        height: 52, background: C.surface, borderBottom: `1px solid ${C.border}`,
+        height: 56, background: C.surface, borderBottom: `1px solid ${C.border}`,
         display: "flex", alignItems: "center", justifyContent: "space-between",
         padding: "0 28px", position: "sticky", top: 0, zIndex: 100,
         boxShadow: "0 1px 0 rgba(0,0,0,0.05)",
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ height: 32, width: "auto", objectFit: "contain" }} />
+          <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ height: 44, width: "auto", objectFit: "contain" }} />
+        </div>
+        <div style={{ position: "absolute", left: "50%", transform: "translateX(-50%)", display: "flex", alignItems: "center", gap: 8 }}>
           <span style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Materiais</span>
           <span style={{ fontSize: 13, color: C.textMute }}>/ Controle de Estoque</span>
         </div>
