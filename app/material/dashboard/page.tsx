@@ -861,63 +861,84 @@ export default function MaterialDashboardPage() {
             TAB: SAÍDAS / OBRAS
         ══════════════════════════════════════ */}
         {activeTab === "saidas" && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+
             <Card>
-              <CardHeader title="Controle por obra — OC" sub="Contratado × entrado × saído × saldo" />
-              <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
-                  <thead>
-                    <tr>
-                      <th style={TH}>Obra</th>
-                      <th style={TH}>OC</th>
-                      <th style={TH}>Material</th>
-                      <th style={THR}>Contratado</th>
-                      <th style={THR}>Entrado</th>
-                      <th style={THR}>Saído</th>
-                      <th style={THR}>Saldo</th>
-                      <th style={TH}>Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {ocSaldos.length === 0 ? <EmptyRow cols={8} /> :
-                      ocSaldos
-                        .filter(o => !filterObra || o.obra.toLowerCase().includes(filterObra.toLowerCase()))
-                        .map(o => {
-                          const ok = o.ilimitado || (o.saldo_t != null && o.saldo_t >= 0);
-                          return (
-                            <tr key={o.plan_id}>
-                              <td style={{ ...TD, fontWeight: 500, color: C.text, fontSize: 12 }}>{o.obra}</td>
-                              <td style={{ ...TD, color: C.textMute, fontSize: 12 }}>{o.oc ?? "—"}</td>
-                              <td style={TD}><Tag label={o.material} color={matColor(o.material)} /></td>
-                              <td style={TDR}>{o.ilimitado ? "∞" : fmtT(o.total_t, 1)}</td>
-                              <td style={TDR}>{fmtT(o.entrada_t, 1)}</td>
-                              <td style={TDR}>{fmtT(o.saida_t, 1)}</td>
-                              <td style={{ ...TDR, fontWeight: 600, color: ok ? C.text : C.danger }}>
-                                {o.ilimitado ? "∞" : fmtT(o.saldo_t, 1)}
-                              </td>
-                              <td style={TD}>
-                                {o.ilimitado ? <Badge ok={true} label="Ilimitado" /> : (
-                                  <div>
-                                    <Badge ok={ok} />
-                                    <div style={{ marginTop: 6 }}>
-                                      <ProgressBar value={o.saida_t} total={o.total_t} color={C.primary} />
-                                    </div>
-                                  </div>
-                                )}
-                              </td>
-                            </tr>
-                          );
-                        })
+              <CardHeader title="Saídas por destino" sub="Total entregue por obra no período" />
+              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={TH}>Obra / Destino</th>
+                    <th style={THR}>Tickets</th>
+                    <th style={THR}>Total (ton)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const map: Record<string, { qtd: number; total: number }> = {};
+                    for (const t of saidas) {
+                      if (!map[t.obra]) map[t.obra] = { qtd: 0, total: 0 };
+                      map[t.obra].qtd += 1;
+                      map[t.obra].total += Number(t.peso_t);
                     }
-                  </tbody>
-                </table>
-              </div>
+                    const rows = Object.entries(map).sort((a, b) => b[1].total - a[1].total);
+                    const totalGeral = rows.reduce((s, [, v]) => s + v.total, 0);
+                    if (rows.length === 0) return <EmptyRow cols={3} />;
+                    return (<>
+                      {rows.map(([obra, v]) => (
+                        <tr key={obra}>
+                          <td style={{ ...TD, fontWeight: 500, color: C.text, fontSize: 12 }}>{obra}</td>
+                          <td style={TDR}>{v.qtd}</td>
+                          <td style={{ ...TDR, fontWeight: 600 }}>{fmtT(v.total, 1)}</td>
+                        </tr>
+                      ))}
+                      <tr style={{ background: "#fafafa" }}>
+                        <td style={{ ...TD, fontWeight: 700, color: C.text }}>Total</td>
+                        <td style={{ ...TDR, fontWeight: 700 }}>{rows.reduce((s, [, v]) => s + v.qtd, 0)}</td>
+                        <td style={{ ...TDR, fontWeight: 700, color: C.text }}>{fmtT(totalGeral, 1)}</td>
+                      </tr>
+                    </>);
+                  })()}
+                </tbody>
+              </table>
             </Card>
 
             <Card>
-              <CardHeader title="Tickets de saída" sub="Últimos 50 registros do período" />
+              <CardHeader title="Saídas por material" sub="Total por produto usinado no período" />
+              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={TH}>Material</th>
+                    <th style={THR}>Tickets</th>
+                    <th style={THR}>Total (ton)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const map: Record<string, { qtd: number; total: number }> = {};
+                    for (const t of saidas) {
+                      if (!map[t.material]) map[t.material] = { qtd: 0, total: 0 };
+                      map[t.material].qtd += 1;
+                      map[t.material].total += Number(t.peso_t);
+                    }
+                    const rows = Object.entries(map).sort((a, b) => b[1].total - a[1].total);
+                    if (rows.length === 0) return <EmptyRow cols={3} />;
+                    return rows.map(([mat, v]) => (
+                      <tr key={mat}>
+                        <td style={TD}><Tag label={mat} color={matColor(mat)} /></td>
+                        <td style={TDR}>{v.qtd}</td>
+                        <td style={{ ...TDR, fontWeight: 600 }}>{fmtT(v.total, 1)}</td>
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </Card>
+
+            <Card style={{ gridColumn: "1/-1" }}>
+              <CardHeader title="Tickets de saída" sub="Detalhado — últimos 50 no período" />
               <div style={{ overflowX: "auto" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
                   <thead>
                     <tr>
                       <th style={TH}>Data</th>
@@ -931,7 +952,7 @@ export default function MaterialDashboardPage() {
                     {saidas.length === 0 ? <EmptyRow cols={5} /> :
                       saidas.slice(0, 50).map(t => (
                         <tr key={t.id}>
-                          <td style={{ ...TD, whiteSpace: "nowrap" }}>{dateBR(t.data)}</td>
+                          <td style={{ ...TD, whiteSpace: "nowrap" as const }}>{dateBR(t.data)}</td>
                           <td style={{ ...TD, fontFamily: "monospace", fontSize: 12 }}>{t.veiculo}</td>
                           <td style={{ ...TD, fontSize: 12, color: C.textMute }}>{t.obra}</td>
                           <td style={TD}><Tag label={t.material} color={matColor(t.material)} /></td>
@@ -942,6 +963,11 @@ export default function MaterialDashboardPage() {
                   </tbody>
                 </table>
               </div>
+              {saidas.length > 50 && (
+                <div style={{ padding: "12px 14px", fontSize: 12, color: C.textMute, borderTop: `1px solid ${C.border}` }}>
+                  Exibindo 50 de {saidas.length}. Refine os filtros para ver mais.
+                </div>
+              )}
             </Card>
           </div>
         )}
