@@ -71,9 +71,15 @@ type DiarioUsina = {
 // ─────────────────────────────────────────────
 
 function normalizeMaterial(m: string): string {
-  const u = (m || "").trim().toUpperCase();
-  if (u.startsWith("CAP")) return "CAP";
-  if (u.startsWith("OGR")) return "OGR";
+  const u = (m || "").trim().toUpperCase()
+    .replace(/[ÓÒÔÕ]/g, "O")
+    .replace(/[ÁÀÃÂ]/g, "A")
+    .replace(/[ÉÈÊ]/g, "E")
+    .replace(/[ÍÌÎ]/g, "I")
+    .replace(/[ÚÙÛ]/g, "U");
+  if (u.startsWith("CAP"))                          return "CAP";
+  if (u.startsWith("OGR"))                          return "OGR";
+  if (u.includes("PO") && u.includes("BRITA"))      return "PO BRITA";
   return m.trim();
 }
 
