@@ -584,66 +584,57 @@ export default function MaterialDashboardPage() {
               )}
             </div>
 
-            {/* Resumo: entradas vs consumo por material */}
+            {/* Reconciliação de estoque — linha do tempo clara */}
             <Card style={{ marginBottom: 16 }}>
-              <CardHeader title="Entradas vs consumo por material" sub={`${dateBR(dateStart)} — ${dateBR(dateEnd)}`} />
+              <CardHeader title="Reconciliação de estoque" sub={`Saldo inicial → entradas → consumo traço → inventário físico`} />
               <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
                 <thead>
                   <tr>
                     <th style={TH}>Material</th>
-                    <th style={THR}>Entradas (ton)</th>
-                    <th style={THR}>Consumo traço (ton)</th>
-                    <th style={THR}>Balanço</th>
-                    <th style={{ ...TH, width: 180 }}>Cobertura atual</th>
+                    <th style={THR}>Saldo inicial</th>
+                    <th style={THR}>+ Entradas</th>
+                    <th style={THR}>− Consumo traço</th>
+                    <th style={{ ...THR, borderLeft: `2px solid ${C.border}` }}>= Calculado</th>
+                    <th style={THR}>Inventário físico</th>
+                    <th style={THR}>Diferença</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {(() => {
-                    // entradas filtradas pelo período
-                    const entPeriodo: Record<string, number> = {};
-                    for (const t of entradas.filter(t => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(t.material))) {
-                      entPeriodo[t.material] = (entPeriodo[t.material] ?? 0) + Number(t.peso_t);
-                    }
-                    // consumo filtrado pelo período (saldoPorData contém movimentos negativos = consumo)
-                    const consPeriodo: Record<string, number> = {};
-                    for (const s of saldoPorData.filter(s => s.data >= dateStart && s.data <= dateEnd && s.movimento_t < 0)) {
-                      const mat = normalizeMaterial(s.material);
-                      consPeriodo[mat] = (consPeriodo[mat] ?? 0) + Math.abs(s.movimento_t);
-                    }
-                    const mats = Array.from(new Set([...Object.keys(entPeriodo), ...Object.keys(consPeriodo)])).sort();
-                    if (mats.length === 0) return (
-                      <tr><td colSpan={5} style={{ textAlign: "center", padding: "28px 0", color: C.textMute, fontSize: 13 }}>Sem dados no período</td></tr>
+                  {saldos.map(s_ => {
+                    // saldo inicial = ajustes com motivo SALDO INICIAL
+                    const saldoInicial = s_.ajuste_t - (ajustes.filter(a => a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === s_.material).reduce((acc, a) => acc + a.quantidade_t, 0));
+                    // consumo real = do traço (view já tem corte)
+                    const consumoTraco = s_.consumo_t;
+                    // saldo calculado = saldo_inicial + entradas - consumo
+                    const calculado = saldoInicial + s_.entrada_t - consumoTraco;
+                    // inventário físico = ajuste de inventário inserido em 16/03
+                    const ajusteInv = ajustes.find(a => a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === s_.material);
+                    const inventarioFisico = ajusteInv ? calculado + ajusteInv.quantidade_t : null;
+                    const diferenca = ajusteInv?.quantidade_t ?? null;
+                    const temAjuste = diferenca != null;
+                    return (
+                      <tr key={s_.material}>
+                        <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
+                        <td style={TDR}>{fmtN(saldoInicial, 1)}</td>
+                        <td style={{ ...TDR, color: C.success }}>+{fmtN(s_.entrada_t, 1)}</td>
+                        <td style={{ ...TDR, color: C.danger }}>−{fmtN(consumoTraco, 1)}</td>
+                        <td style={{ ...TDR, fontWeight: 700, color: C.text, borderLeft: `2px solid ${C.border}` }}>
+                          {fmtN(calculado, 1)}
+                        </td>
+                        <td style={{ ...TDR, fontWeight: 700, color: temAjuste ? C.primary : C.textMute }}>
+                          {inventarioFisico != null ? fmtN(inventarioFisico, 1) : "—"}
+                        </td>
+                        <td style={{ ...TDR, fontWeight: 700, color: diferenca == null ? C.textMute : diferenca >= 0 ? C.success : C.danger }}>
+                          {diferenca != null ? `${diferenca >= 0 ? "+" : ""}${fmtN(diferenca, 1)}` : "—"}
+                        </td>
+                      </tr>
                     );
-                    return mats.map(mat => {
-                      const ent  = entPeriodo[mat]  ?? 0;
-                      const cons = consPeriodo[mat] ?? 0;
-                      const balanco = ent - cons;
-                      const positivo = balanco >= 0;
-                      // cobertura: saldo atual / consumo diário médio no período
-                      const diasPeriodo = Math.max(1, Math.round((new Date(dateEnd).getTime() - new Date(dateStart).getTime()) / 86400000));
-                      const consumoDiario = cons / diasPeriodo;
-                      const saldoAtual = saldos.find(s => s.material === mat)?.saldo_t ?? null;
-                      const diasCobertura = consumoDiario > 0 && saldoAtual != null ? Math.round(saldoAtual / consumoDiario) : null;
-                      return (
-                        <tr key={mat}>
-                          <td style={TD}><Tag label={mat} color={matColor(mat)} /></td>
-                          <td style={{ ...TDR, color: C.success, fontWeight: 600 }}>+{fmtN(ent, 1)}</td>
-                          <td style={{ ...TDR, color: C.danger, fontWeight: 600 }}>{cons > 0 ? `-${fmtN(cons, 1)}` : "—"}</td>
-                          <td style={{ ...TDR, fontWeight: 700, color: positivo ? C.success : C.danger }}>
-                            {positivo ? "+" : ""}{fmtN(balanco, 1)}
-                          </td>
-                          <td style={TD}>
-                            <div style={{ fontSize: 11, color: C.textMute, marginBottom: 4 }}>
-                              {diasCobertura != null ? `~${diasCobertura} dias` : "—"}
-                            </div>
-                            <ProgressBar value={ent} total={ent + cons} color={matColor(mat)} />
-                          </td>
-                        </tr>
-                      );
-                    });
-                  })()}
+                  })}
                 </tbody>
               </table>
+              <div style={{ padding: "10px 14px", fontSize: 11, color: C.textMute, borderTop: `1px solid ${C.border}` }}>
+                Saldo calculado = saldo inicial + entradas − consumo pelo traço. Diferença = inventário físico − calculado (positivo = sobra, negativo = falta).
+              </div>
             </Card>
 
             {/* Ajustes de inventário */}
