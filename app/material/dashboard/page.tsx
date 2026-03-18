@@ -591,64 +591,52 @@ export default function MaterialDashboardPage() {
               )}
             </div>
 
-            {/* Gráfico: entradas vs consumo por dia (movimentos) */}
+            {/* Resumo: entradas vs consumo por material */}
             <Card style={{ marginBottom: 16 }}>
-              <CardHeader title="Entradas vs consumo — por dia" sub="Barras: entrada (verde) e consumo calculado pelo traço (vermelho)" />
-              <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 20 }}>
-                {materiaisGrafico.filter(m => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(m)).length === 0 ? (
-                  <div style={{ color: C.textMute, fontSize: 13, textAlign: "center", padding: "16px 0" }}>Sem movimentos no período</div>
-                ) : materiaisGrafico.filter(m => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(m)).map(mat => {
-                  // agrupa entradas e consumos por data
-                  const entDias = tickets.filter(t => t.tipo === "ENTRADA" && t.material === mat);
-                  const entMap: Record<string, number> = {};
-                  for (const t of entDias) entMap[t.data] = (entMap[t.data] ?? 0) + Number(t.peso_t);
-
-                  const consDias = saldoPorData.filter(s => s.material === mat && s.movimento_t < 0);
-                  const consMap: Record<string, number> = {};
-                  for (const s of consDias) consMap[s.data] = (consMap[s.data] ?? 0) + Math.abs(s.movimento_t);
-
-                  const allDates = Array.from(new Set([...Object.keys(entMap), ...Object.keys(consMap)])).sort();
-                  if (allDates.length === 0) return null;
-
-                  const maxVal = Math.max(1, ...allDates.map(d => Math.max(entMap[d] ?? 0, consMap[d] ?? 0)));
-                  const cor = matColor(mat);
-
-                  return (
-                    <div key={mat}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: C.textMid }}>{mat}</span>
-                        <div style={{ display: "flex", gap: 12, fontSize: 11, color: C.textMute }}>
-                          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <span style={{ width: 8, height: 8, background: C.success, borderRadius: 2, display: "inline-block" }} /> Entrada
-                          </span>
-                          <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                            <span style={{ width: 8, height: 8, background: C.danger + "99", borderRadius: 2, display: "inline-block" }} /> Consumo
-                          </span>
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 56, overflowX: "auto" }}>
-                        {allDates.map(d => {
-                          const ent  = entMap[d]  ?? 0;
-                          const cons = consMap[d] ?? 0;
-                          const hEnt  = ent  > 0 ? Math.max(4, (ent  / maxVal) * 56) : 0;
-                          const hCons = cons > 0 ? Math.max(4, (cons / maxVal) * 56) : 0;
-                          return (
-                            <div key={d} style={{ display: "flex", alignItems: "flex-end", gap: 1, flexShrink: 0 }}
-                              title={`${dateBR(d)}\nEntrada: ${fmtN(ent,1)}t\nConsumo: ${fmtN(cons,1)}t`}>
-                              {hEnt > 0 && <div style={{ width: 7, height: hEnt, background: C.success, borderRadius: "2px 2px 0 0", opacity: 0.85 }} />}
-                              {hCons > 0 && <div style={{ width: 7, height: hCons, background: C.danger, borderRadius: "2px 2px 0 0", opacity: 0.6 }} />}
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textMute, marginTop: 3 }}>
-                        <span>{dateBR(allDates[0])}</span>
-                        <span>{dateBR(allDates[allDates.length - 1])}</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              <CardHeader title="Entradas vs consumo por material" sub="Período selecionado — agregados" />
+              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={TH}>Material</th>
+                    <th style={THR}>Entradas (ton)</th>
+                    <th style={THR}>Consumo traço (ton)</th>
+                    <th style={THR}>Balanço</th>
+                    <th style={{ ...TH, width: 180 }}>Cobertura</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {saldos.filter(s => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(s.material)).length === 0 ? (
+                    <tr><td colSpan={5} style={{ textAlign: "center", padding: "28px 0", color: C.textMute, fontSize: 13 }}>Sem dados no período</td></tr>
+                  ) : saldos.filter(s => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(s.material)).map(s_ => {
+                    const balanco = s_.entrada_t - s_.consumo_t;
+                    const positivo = balanco >= 0;
+                    // cobertura: quantos dias de consumo o estoque cobre (média diária)
+                    const diasPeriodo = Math.max(1, Math.round((new Date(dateEnd).getTime() - new Date(dateStart).getTime()) / 86400000));
+                    const consumoDiario = s_.consumo_t / diasPeriodo;
+                    const diasCobertura = consumoDiario > 0 ? Math.round(s_.saldo_t / consumoDiario) : null;
+                    return (
+                      <tr key={s_.material}>
+                        <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
+                        <td style={{ ...TDR, color: C.success, fontWeight: 600 }}>+{fmtN(s_.entrada_t, 1)}</td>
+                        <td style={{ ...TDR, color: C.danger, fontWeight: 600 }}>-{fmtN(s_.consumo_t, 1)}</td>
+                        <td style={{ ...TDR, fontWeight: 700, color: positivo ? C.success : C.danger }}>
+                          {positivo ? "+" : ""}{fmtN(balanco, 1)}
+                        </td>
+                        <td style={TD}>
+                          <div style={{ fontSize: 11, color: C.textMute, marginBottom: 4 }}>
+                            Estoque cobre ~{diasCobertura != null ? `${diasCobertura} dias` : "—"}
+                          </div>
+                          <ProgressBar
+                            value={s_.entrada_t}
+                            total={s_.entrada_t + s_.consumo_t}
+                            color={matColor(s_.material)}
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             </Card>
 
             {/* Ajustes de inventário */}
@@ -660,8 +648,8 @@ export default function MaterialDashboardPage() {
                     <th style={TH}>Data</th>
                     <th style={TH}>Material</th>
                     <th style={THR}>Diferença (ton)</th>
-                    <th style={TH}>Tipo</th>
-                    <th style={TH}>Motivo / Observação</th>
+                    <th style={TH}>Resultado</th>
+                    <th style={TH}>Causa provável</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -673,6 +661,12 @@ export default function MaterialDashboardPage() {
                     </tr>
                   ) : ajustes.filter(a => a.motivo !== 'SALDO INICIAL').map(a => {
                     const sobra = a.quantidade_t >= 0;
+                    // Lógica correta:
+                    // SOBRA (+): físico > sistema → traço superestimou consumo OU entradas físicas não lançadas
+                    // FALTA (−): físico < sistema → traço subestimou consumo OU saídas/perdas não registradas
+                    const causaProvavel = sobra
+                      ? "Traço superestimou consumo (deduziu mais do que a usina usou) ou entradas físicas não lançadas no sistema"
+                      : "Traço subestimou consumo (deduziu menos do que a usina usou) ou saídas/perdas não registradas";
                     return (
                       <tr key={a.id}>
                         <td style={{ ...TD, whiteSpace: "nowrap" as const }}>{dateBR(a.data)}</td>
@@ -683,10 +677,10 @@ export default function MaterialDashboardPage() {
                           {sobra ? "+" : ""}{fmtN(a.quantidade_t, 3)}
                         </td>
                         <td style={TD}>
-                          <Badge ok={sobra} label={sobra ? "Sobra" : "Falta"} />
+                          <Badge ok={sobra} label={sobra ? "Sobra física" : "Falta física"} />
                         </td>
                         <td style={{ ...TD, fontSize: 12, color: C.textMute, maxWidth: 400 }}>
-                          {a.observacao ?? a.motivo}
+                          {a.observacao ? a.observacao : causaProvavel}
                         </td>
                       </tr>
                     );
