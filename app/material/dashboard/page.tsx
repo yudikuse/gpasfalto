@@ -303,6 +303,26 @@ export default function MaterialDashboardPage() {
     "OGR":         18.582,
   };
   const DATA_INVENTARIO_MANUAL = "18/03/2026";
+  const DATA_INV_ISO = "2026-03-18";
+  const DATA_INV_ANTERIOR_ISO = "2026-03-16"; // data do último ajuste de inventário
+
+  // Calcula saldo do sistema até a data do inventário manual
+  // Fórmula: saldo_físico_16/03 + entradas(17→18/03) - consumo_traço(17→18/03)
+  const saldoSistemaAteInv = (material: string): number => {
+    const ajusteInv = ajustes.find(a =>
+      a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === material
+    );
+    const saldoBase = ajusteInv?.saldo_fisico_t ?? 0; // saldo físico de 16/03
+
+    // movimentos de 17/03 até 18/03
+    const movs = saldoPorData.filter(s =>
+      normalizeMaterial(s.material) === material &&
+      s.data > DATA_INV_ANTERIOR_ISO &&
+      s.data <= DATA_INV_ISO
+    );
+    const delta = movs.reduce((acc, m) => acc + m.movimento_t, 0);
+    return saldoBase + delta;
+  };
 
   // ── Fetch — inalterado ───────────────────
   const fetchAll = useCallback(async () => {
@@ -618,9 +638,9 @@ export default function MaterialDashboardPage() {
                   {saldos
                     .filter(s_ => INVENTARIO_MANUAL[s_.material] != null)
                     .map(s_ => {
-                      const fisico = INVENTARIO_MANUAL[s_.material];
-                      const sistema = s_.saldo_t;
-                      const diff = fisico - sistema;
+                      const fisico  = INVENTARIO_MANUAL[s_.material];
+                      const sistema = saldoSistemaAteInv(s_.material);
+                      const diff    = fisico - sistema;
                       const pctDiff = sistema !== 0 ? (diff / sistema) * 100 : 0;
                       const ok = Math.abs(diff) < 5;
                       const cor = ok ? C.success : Math.abs(diff) < 15 ? C.warning : C.danger;
