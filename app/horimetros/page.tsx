@@ -803,66 +803,56 @@ export default function HorimetrosPage() {
   return (
     <>
       <style jsx global>{`
-        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800;900&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
         :root {
-          --bg: #eef0f6;
+          --bg: #f2f4f8;
           --surface: #ffffff;
-          --surface-soft: #f4f6fb;
-          --line: #e4e8f2;
-          --line-strong: #c9d1e3;
-          --text: #0d1117;
-          --muted: #6b7a99;
-          --brand: #f59e0b;
-          --brand-dark: #d97706;
-          --brand-soft: #fffbeb;
-          --blue: #3b82f6;
-          --blue-soft: #eff6ff;
+          --surface-soft: #f8f9fb;
+          --line: #e5e9f0;
+          --line-strong: #d1d7e3;
+          --text: #111827;
+          --muted: #6b7280;
+          --brand: #3b82f6;
+          --brand-soft: #eff6ff;
+          --brand-dark: #2563eb;
           --success: #16a34a;
           --success-soft: #f0fdf4;
           --danger: #dc2626;
-          --danger-soft: #fff1f2;
-          --shadow-sm: 0 1px 3px rgba(13,17,23,0.07), 0 1px 2px rgba(13,17,23,0.04);
-          --shadow-md: 0 4px 16px rgba(13,17,23,0.08), 0 1px 4px rgba(13,17,23,0.04);
+          --danger-soft: #fef2f2;
+          --shadow: 0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
         }
 
         * { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
-        body { font-family: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif; -webkit-font-smoothing: antialiased; }
+        body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; -webkit-font-smoothing: antialiased; }
         input, select, button { font: inherit; }
 
-        /* ── PAGE SHELL ── */
-        .page { min-height: 100vh; padding: 0 0 24px; }
+        /* ── PAGE ── */
+        .page { min-height: 100vh; padding: 0 0 32px; }
 
         .shell {
-          width: min(100%, 780px);
+          width: min(100%, 640px);
           margin: 0 auto;
           display: grid;
-          gap: 8px;
+          gap: 0;
         }
 
-        /* ── HEADER (dark panel) ── */
-        .header {
-          background: #0d1117;
-          padding: 14px 14px 16px;
-          display: grid;
-          gap: 12px;
-          border-radius: 0 0 22px 22px;
-        }
-
-        .header-top {
+        /* ── TOP BAR ── */
+        .topbar {
+          background: var(--surface);
+          border-bottom: 1px solid var(--line);
+          padding: 12px 16px;
           display: flex;
           align-items: center;
           justify-content: space-between;
           gap: 8px;
         }
 
-        .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
-
         .logo {
-          width: 34px; height: 34px;
-          border-radius: 9px;
-          background: var(--brand);
+          width: 28px; height: 28px;
+          border-radius: 6px;
+          background: #f3f4f6;
           overflow: hidden;
           display: inline-flex;
           align-items: center;
@@ -871,155 +861,154 @@ export default function HorimetrosPage() {
         }
         .logo img { width: 100%; height: 100%; object-fit: cover; }
 
-        .eyebrow { margin: 0; font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #6b7a99; }
-        .title { margin: 0; font-size: 15px; font-weight: 800; letter-spacing: -.02em; color: #ffffff; }
-        .subtitle { display: none; }
+        .breadcrumb {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          font-size: 13px;
+          color: var(--muted);
+          font-weight: 500;
+        }
+        .breadcrumb span { color: var(--text); font-weight: 600; }
+        .breadcrumb-sep { color: var(--line-strong); }
 
-        .period {
-          font-size: 10px;
-          color: #6b7a99;
+        .topbar-action {
+          height: 30px;
+          padding: 0 12px;
+          border: 0;
+          border-radius: 7px;
+          background: var(--brand);
+          color: #fff;
+          font-size: 12px;
           font-weight: 600;
-          text-align: right;
-          line-height: 1.5;
+          cursor: pointer;
           white-space: nowrap;
         }
-        .period strong { color: var(--brand); }
+        .topbar-action:hover { background: var(--brand-dark); }
+        .topbar-action[disabled] { opacity: .6; cursor: wait; }
 
-        /* ── STATS STRIP ── */
-        .stats-strip {
-          display: grid;
-          grid-template-columns: 1fr 1fr 1fr;
-          gap: 6px;
-        }
-
-        .stat-card {
-          background: #161b27;
-          border-radius: 12px;
-          padding: 8px 10px;
-          display: flex;
-          flex-direction: column;
-          gap: 2px;
-        }
-        .stat-card-label { font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #4a5568; }
-        .stat-card-value { font-size: 20px; font-weight: 900; letter-spacing: -.04em; color: #fff; }
-        .stat-card.green .stat-card-value { color: #4ade80; }
-        .stat-card.amber .stat-card-value { color: var(--brand); }
-
-        /* ── CONTROLS ── */
-        .controls {
+        /* ── CONTROLS BAR ── */
+        .controls-bar {
+          background: var(--surface);
+          border-bottom: 1px solid var(--line);
+          padding: 10px 16px;
           display: grid;
           grid-template-columns: 1fr auto auto;
-          gap: 6px;
-          align-items: end;
+          gap: 8px;
+          align-items: center;
         }
 
-        .field { display: grid; gap: 3px; }
-        .field label { font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #5a6580; }
-
-        .search, .date, .select, .number-input, .new-obra-input,
-        .keep-btn, .keep-all-btn, .save-btn, .sheet-btn {
-          width: 100%;
-          height: 36px;
-          border: 1px solid #1e2536;
-          border-radius: 10px;
-          background: #161b27;
-          color: #e2e8f0;
+        .search, .date {
+          height: 34px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--surface-soft);
+          color: var(--text);
           outline: none;
           padding: 0 10px;
           font-size: 13px;
-          font-weight: 600;
+          font-weight: 400;
+          width: 100%;
           transition: .15s ease;
         }
-
-        .search::placeholder, .date::placeholder { color: #3d4a63; }
-
+        .search::placeholder { color: #9ca3af; }
         .search:focus, .date:focus {
-          background: #1a2133;
+          background: var(--surface);
           border-color: var(--brand);
-          box-shadow: 0 0 0 3px rgba(245,158,11,.12);
-          color: #fff;
+          box-shadow: 0 0 0 3px rgba(59,130,246,.1);
         }
 
-        .save-btn {
-          border: 0;
-          background: var(--brand);
-          color: #0d1117;
-          font-weight: 800;
-          cursor: pointer;
-          white-space: nowrap;
-          letter-spacing: -.01em;
+        /* ── STATS ROW ── */
+        .stats-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 10px;
+          padding: 14px 16px;
+          background: var(--surface);
+          border-bottom: 1px solid var(--line);
         }
-        .save-btn:hover { background: var(--brand-dark); }
-        .save-btn[disabled] { opacity: .65; cursor: wait; }
 
-        /* ── TOOLBAR (below header, in light zone) ── */
+        .stat-card {
+          background: var(--surface-soft);
+          border: 1px solid var(--line);
+          border-radius: 10px;
+          padding: 10px 12px;
+          display: flex;
+          flex-direction: column;
+          gap: 3px;
+        }
+        .stat-label {
+          font-size: 10px;
+          font-weight: 600;
+          color: var(--muted);
+          text-transform: uppercase;
+          letter-spacing: .05em;
+        }
+        .stat-value {
+          font-size: 22px;
+          font-weight: 700;
+          color: var(--text);
+          line-height: 1;
+          letter-spacing: -.02em;
+        }
+        .stat-card.green .stat-value { color: var(--success); }
+        .stat-card.red .stat-value { color: var(--danger); }
+
+        /* ── TOOLBAR ── */
         .toolbar {
           display: flex;
           align-items: center;
           justify-content: space-between;
-          gap: 6px;
-          padding: 0 2px;
+          padding: 8px 16px;
+          background: var(--bg);
         }
+        .toolbar-label { font-size: 12px; color: var(--muted); font-weight: 500; }
 
-        .toolbar-label { font-size: 11px; font-weight: 700; color: var(--muted); }
-
-        .keep-all-btn, .keep-btn, .sheet-btn {
-          border: 1.5px solid var(--line);
+        .keep-all-btn {
+          height: 30px;
+          padding: 0 12px;
+          border: 1px solid var(--line);
+          border-radius: 7px;
           background: var(--surface);
           color: var(--muted);
+          font-size: 12px;
+          font-weight: 600;
           cursor: pointer;
+          white-space: nowrap;
         }
-        .keep-all-btn { width: auto; min-width: 108px; padding: 0 12px; font-size: 11px; height: 32px; border-radius: 10px; font-weight: 700; }
-        .keep-btn { width: auto; min-width: 42px; height: 32px; padding: 0 8px; font-size: 11px; border-radius: 8px; font-weight: 700; }
-        .sheet-btn { width: auto; padding: 0 12px; font-size: 11px; height: 32px; border-radius: 8px; font-weight: 700; }
-
-        .keep-all-btn:hover, .keep-btn:hover, .sheet-btn:hover { background: var(--blue-soft); color: var(--blue); border-color: #bfdbfe; }
-        .keep-all-btn.active, .keep-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+        .keep-all-btn:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+        .keep-all-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; }
 
         /* ── MESSAGES ── */
         .message {
-          background: var(--surface);
-          border: 1.5px solid var(--line);
-          border-radius: 12px;
-          padding: 9px 14px;
+          margin: 0 16px;
+          border-radius: 8px;
+          padding: 8px 12px;
           font-size: 12px;
-          font-weight: 700;
-          margin: 0 2px;
-          box-shadow: var(--shadow-sm);
+          font-weight: 600;
+          border: 1px solid var(--line);
+          background: var(--surface);
         }
         .message.error { color: var(--danger); border-color: #fecaca; background: var(--danger-soft); }
         .message.ok { color: var(--success); border-color: #bbf7d0; background: var(--success-soft); }
 
         /* ── LIST ── */
-        .list { display: grid; gap: 6px; padding: 0 2px; }
+        .list { display: grid; gap: 8px; padding: 0 16px; }
 
-        /* ── ACCORDION CARD ── */
+        /* ── CARD ── */
         .card {
           background: var(--surface);
-          border: 1.5px solid var(--line);
-          border-radius: 14px;
-          box-shadow: var(--shadow-sm);
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          box-shadow: var(--shadow);
           overflow: hidden;
-          position: relative;
         }
 
-        /* left status bar */
-        .card::before {
-          content: '';
-          position: absolute;
-          left: 0; top: 0; bottom: 0;
-          width: 4px;
-          background: var(--danger);
-          border-radius: 14px 0 0 14px;
-        }
-        .card.saved::before { background: var(--success); }
-
-        /* collapsed header row */
         .card-header {
           display: flex;
           align-items: center;
-          gap: 8px;
-          padding: 11px 12px 11px 16px;
+          gap: 10px;
+          padding: 12px 14px;
           cursor: pointer;
           user-select: none;
           -webkit-tap-highlight-color: transparent;
@@ -1029,17 +1018,17 @@ export default function HorimetrosPage() {
         .equip-code {
           margin: 0;
           font-size: 14px;
-          font-weight: 800;
-          letter-spacing: -.02em;
-          min-width: 52px;
+          font-weight: 700;
           color: var(--text);
+          min-width: 54px;
+          letter-spacing: -.01em;
         }
 
         .equip-sub {
           flex: 1;
-          font-size: 11px;
+          font-size: 12px;
           color: var(--muted);
-          font-weight: 600;
+          font-weight: 500;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
@@ -1047,19 +1036,11 @@ export default function HorimetrosPage() {
 
         .card-preview {
           font-size: 12px;
-          font-weight: 800;
+          font-weight: 600;
           color: var(--success);
           white-space: nowrap;
-          background: var(--success-soft);
-          border: 1px solid #bbf7d0;
-          padding: 2px 7px;
-          border-radius: 999px;
         }
-        .card-preview.pending {
-          color: #94a3b8;
-          background: #f8fafc;
-          border-color: var(--line);
-        }
+        .card-preview.pending { color: #9ca3af; }
 
         .status-dot {
           width: 7px; height: 7px;
@@ -1072,320 +1053,288 @@ export default function HorimetrosPage() {
 
         .chevron {
           font-size: 10px;
-          color: #94a3b8;
+          color: #9ca3af;
           transition: transform .2s;
           flex-shrink: 0;
         }
         .chevron.open { transform: rotate(180deg); }
 
-        /* expanded body */
+        /* ── EXPANDED BODY ── */
         .card-body {
-          border-top: 1.5px solid var(--line);
+          border-top: 1px solid var(--line);
           background: var(--surface-soft);
-          padding: 12px 12px 12px 16px;
+          padding: 12px 14px;
           display: grid;
           gap: 10px;
         }
 
         /* mode toggle */
-        .mode-row { display: flex; align-items: center; gap: 6px; }
+        .mode-row { display: flex; }
 
         .segmented {
           display: inline-flex;
           align-items: center;
-          gap: 2px;
-          padding: 3px;
-          border-radius: 999px;
+          padding: 2px;
+          border-radius: 8px;
           background: var(--surface);
-          border: 1.5px solid var(--line);
+          border: 1px solid var(--line);
+          gap: 2px;
         }
         .segmented button {
           height: 26px;
-          min-width: 46px;
+          min-width: 44px;
           border: 0;
-          border-radius: 999px;
+          border-radius: 6px;
           padding: 0 10px;
           background: transparent;
           color: var(--muted);
-          font-size: 10px;
-          font-weight: 800;
+          font-size: 11px;
+          font-weight: 600;
           cursor: pointer;
-          letter-spacing: .02em;
         }
-        .segmented button.active { background: #0d1117; color: var(--brand); }
+        .segmented button.active {
+          background: var(--brand);
+          color: #fff;
+        }
 
-        /* values row */
+        /* values */
         .values {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 6px;
+          gap: 8px;
         }
 
         .value-box {
           background: var(--surface);
-          border: 1.5px solid var(--line);
-          border-radius: 10px;
-          padding: 7px 10px;
-          min-height: 48px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          padding: 8px 10px;
           display: flex;
           flex-direction: column;
-          justify-content: space-between;
-          gap: 3px;
+          gap: 4px;
         }
-        .value-box-title { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-        .value-box-main { font-size: 17px; font-weight: 900; letter-spacing: -.04em; color: var(--text); }
-        .value-box-main.muted { color: #c2cad8; }
+        .value-box-title { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+        .value-box-main { font-size: 16px; font-weight: 700; color: var(--text); letter-spacing: -.02em; }
+        .value-box-main.muted { color: #d1d5db; }
         .value-box-main.success { color: var(--success); }
 
         .alert-chip {
           display: inline-flex;
           align-items: center;
-          min-height: 20px;
-          padding: 0 7px;
+          padding: 2px 8px;
           border-radius: 999px;
           background: var(--danger-soft);
           border: 1px solid #fecaca;
           color: var(--danger);
           font-size: 10px;
-          font-weight: 800;
+          font-weight: 600;
           white-space: nowrap;
         }
 
-        /* obra block */
+        /* obra */
         .block { display: grid; gap: 4px; }
-        .block-label { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+        .block-label { font-size: 10px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 
         .obra-row {
           display: grid;
           grid-template-columns: 1fr auto;
-          gap: 5px;
+          gap: 6px;
           align-items: center;
         }
 
         .select, .new-obra-input {
-          border: 1.5px solid var(--line);
+          height: 36px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
           background: var(--surface);
           color: var(--text);
-          border-radius: 10px;
-          height: 36px;
           padding: 0 10px;
           font-size: 13px;
-          font-weight: 600;
+          font-weight: 400;
           outline: none;
+          width: 100%;
         }
         .select:focus, .new-obra-input:focus {
-          border-color: var(--blue);
+          border-color: var(--brand);
           box-shadow: 0 0 0 3px rgba(59,130,246,.1);
         }
+
+        .sheet-btn {
+          height: 34px;
+          padding: 0 12px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--surface);
+          color: var(--muted);
+          font-size: 12px;
+          font-weight: 600;
+          cursor: pointer;
+          white-space: nowrap;
+          width: auto;
+        }
+        .sheet-btn:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
 
         .sheet {
           margin-top: 2px;
           display: grid;
           gap: 6px;
           padding: 10px;
-          border-radius: 10px;
+          border-radius: 8px;
           background: var(--surface);
-          border: 1.5px solid var(--line);
+          border: 1px solid var(--line);
         }
-        .sheet-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
-        .sheet-btn {
-          border-radius: 9px !important;
-          background: var(--surface-soft);
-          border: 1.5px solid var(--line);
-          color: var(--muted);
-          font-size: 12px;
-          font-weight: 700;
-          height: 34px;
-          width: auto;
-          padding: 0 12px;
-          cursor: pointer;
-        }
-        .sheet-btn:hover { background: var(--blue-soft); color: var(--blue); border-color: #bfdbfe; }
+        .sheet-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 
-        /* input + save row */
+        /* input + save */
         .input-save-row {
           display: grid;
           grid-template-columns: 1fr auto auto;
-          gap: 5px;
+          gap: 6px;
           align-items: center;
         }
 
         .number-input {
+          height: 36px;
           text-align: right;
           font-variant-numeric: tabular-nums;
-          border: 1.5px solid var(--line-strong) !important;
+          border: 1px solid var(--line-strong) !important;
+          border-radius: 8px !important;
           background: var(--surface) !important;
           color: var(--text) !important;
-          border-radius: 10px;
-          height: 36px;
-          font-weight: 700;
-          font-size: 14px;
           padding: 0 10px;
+          font-size: 14px;
+          font-weight: 600;
           outline: none;
+          width: 100%;
         }
         .number-input:focus {
-          border-color: var(--blue) !important;
+          border-color: var(--brand) !important;
           box-shadow: 0 0 0 3px rgba(59,130,246,.1);
         }
-        .number-input::placeholder { color: #c2cad8; }
+        .number-input::placeholder { color: #d1d5db; }
 
         .keep-btn {
-          background: var(--surface);
-          border: 1.5px solid var(--line);
-          color: var(--muted);
-          font-weight: 700;
-          font-size: 11px;
           height: 36px;
-          border-radius: 9px;
-          min-width: 42px;
+          padding: 0 10px;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--surface);
+          color: var(--muted);
+          font-size: 11px;
+          font-weight: 600;
           cursor: pointer;
-          padding: 0 8px;
+          white-space: nowrap;
           width: auto;
+          min-width: 40px;
         }
-        .keep-btn:hover { background: var(--blue-soft); color: var(--blue); border-color: #bfdbfe; }
-        .keep-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
+        .keep-btn:hover { border-color: var(--brand); color: var(--brand); background: var(--brand-soft); }
+        .keep-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; }
 
         .row-save {
           width: 36px; height: 36px;
-          border: 0;
-          border-radius: 9px;
-          background: var(--brand);
-          color: #0d1117;
+          border: 1px solid var(--line);
+          border-radius: 8px;
+          background: var(--surface);
+          color: var(--muted);
           display: inline-flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
           flex-shrink: 0;
-          transition: .15s ease;
         }
-        .row-save:hover { background: var(--brand-dark); }
-        .row-save[disabled] { opacity: .35; cursor: not-allowed; background: var(--line); color: var(--muted); }
-
-        /* obs block */
-        .obs-block { display: grid; gap: 4px; }
-        .obs-row { display: flex; align-items: center; gap: 8px; }
-        .troca-toggle {
-          display: flex; align-items: center; gap: 5px;
-          font-size: 11px; font-weight: 700; color: var(--muted);
-          cursor: pointer;
-          user-select: none;
-          padding: 4px 0;
-        }
-        .troca-toggle input[type=checkbox] { accent-color: var(--brand); width: 15px; height: 15px; cursor: pointer; }
+        .row-save:hover { background: var(--brand); border-color: var(--brand); color: #fff; }
+        .row-save[disabled] { opacity: .35; cursor: not-allowed; }
 
         .empty {
           background: var(--surface);
-          border: 1.5px solid var(--line);
-          border-radius: 14px;
-          padding: 20px 16px;
+          border: 1px solid var(--line);
+          border-radius: 12px;
+          padding: 20px;
           color: var(--muted);
           font-size: 13px;
-          font-weight: 600;
           text-align: center;
-          margin: 0 2px;
+          margin: 0 16px;
         }
 
-        /* unused but kept for save-all flow */
         .save-row, .card-top, .card-title, .status-wrap, .footer-row, .mode-row-old { display: none; }
 
-        @media (min-width: 760px) {
+        @media (min-width: 640px) {
           .shell { width: min(100%, 980px); }
           .list { grid-template-columns: 1fr 1fr; }
-          .subtitle { display: block; margin: 1px 0 0; font-size: 11px; color: #4a5568; font-weight: 500; }
+          .stats-row { grid-template-columns: repeat(3, 1fr); }
         }
       `}</style>
 
       <main className="page">
         <div className="shell">
 
-          {/* ── DARK HEADER ── */}
-          <section className="header">
-            <div className="header-top">
-              <div className="brand">
-                <div className="logo">
-                  <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
-                </div>
-                <div>
-                  <p className="eyebrow">GP Asfalto</p>
-                  <h1 className="title">Horímetros e Odômetros</h1>
-                  <p className="subtitle">Lançamento diário por equipamento</p>
-                </div>
+          {/* ── TOP BAR ── */}
+          <div className="topbar">
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div className="logo">
+                <img src="/gpasfalto-logo.png" alt="GP Asfalto" />
               </div>
-
-              <div className="period">
-                Ant: {isoToBr(periodoAnterior)}
-                <br />
-                <strong>Atual: {isoToBr(selectedDate)}</strong>
+              <div className="breadcrumb">
+                Horímetros <span className="breadcrumb-sep">/</span> <span>Lançamento diário</span>
               </div>
             </div>
+            <button
+              className="topbar-action"
+              type="button"
+              onClick={() => void handleSaveAll()}
+              disabled={savingAll || loading || !env.ok}
+            >
+              {savingAll ? "Salvando…" : "Salvar tudo"}
+            </button>
+          </div>
 
-            {/* stats strip inside header */}
-            <div className="stats-strip">
-              <div className="stat-card">
-                <span className="stat-card-label">Equip.</span>
-                <span className="stat-card-value">{stats.total}</span>
-              </div>
-              <div className="stat-card green">
-                <span className="stat-card-label">Salvos</span>
-                <span className="stat-card-value">{stats.lancados}</span>
-              </div>
-              <div className="stat-card amber">
-                <span className="stat-card-label">Pendentes</span>
-                <span className="stat-card-value">{stats.pendentes}</span>
-              </div>
+          {/* ── CONTROLS ── */}
+          <div className="controls-bar">
+            <input
+              className="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Buscar por código, obra…"
+            />
+            <input
+              className="date"
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+              style={{ width: 130 }}
+            />
+          </div>
+
+          {/* ── STATS ── */}
+          <div className="stats-row">
+            <div className="stat-card">
+              <span className="stat-label">Equipamentos</span>
+              <span className="stat-value">{stats.total}</span>
             </div>
-
-            <div className="controls">
-              <div className="field">
-                <label htmlFor="busca">Buscar</label>
-                <input
-                  id="busca"
-                  className="search"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="CB-02, obra..."
-                />
-              </div>
-
-              <div className="field">
-                <label htmlFor="data">Data</label>
-                <input
-                  id="data"
-                  className="date"
-                  type="date"
-                  value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
-                />
-              </div>
-
-              <div className="field">
-                <label>&nbsp;</label>
-                <button
-                  className="save-btn"
-                  type="button"
-                  onClick={() => void handleSaveAll()}
-                  disabled={savingAll || loading || !env.ok}
-                >
-                  {savingAll ? "Salvando…" : "Salvar tudo"}
-                </button>
-              </div>
+            <div className="stat-card green">
+              <span className="stat-label">Salvos</span>
+              <span className="stat-value">{stats.lancados}</span>
             </div>
-          </section>
+            <div className="stat-card red">
+              <span className="stat-label">Pendentes</span>
+              <span className="stat-value">{stats.pendentes}</span>
+            </div>
+          </div>
 
-          {/* ── TOOLBAR (light zone) ── */}
-          <div className="toolbar" style={{ padding: "0 4px" }}>
-            <span className="toolbar-label">{filteredRows.length} exibidos</span>
+          {/* ── TOOLBAR ── */}
+          <div className="toolbar">
+            <span className="toolbar-label">{filteredRows.length} equipamentos · Ant: {isoToBr(periodoAnterior)}</span>
             <button
               type="button"
               className={`keep-all-btn ${allKeepApplied ? "active" : ""}`}
               onClick={toggleKeepPreviousForAll}
             >
-              {allKeepApplied ? "✕ Desmarcar Últ." : "Aplicar Últ. p/ todos"}
+              {allKeepApplied ? "Desmarcar Últ." : "Aplicar Últ. p/ todos"}
             </button>
           </div>
 
-          {errorMsg ? <div className="message error">⚠ {errorMsg}</div> : null}
-          {okMsg ? <div className="message ok">✓ {okMsg}</div> : null}
+          {errorMsg ? <div className="message error">{errorMsg}</div> : null}
+          {okMsg ? <div className="message ok">{okMsg}</div> : null}
 
           {loading ? (
             <div className="empty">Carregando equipamentos…</div>
@@ -1404,8 +1353,7 @@ export default function HorimetrosPage() {
                 const isSaved = row.registroId != null;
 
                 return (
-                  <article className={`card ${isSaved ? "saved" : ""}`} key={row.equipamentoId}>
-                    {/* ── collapsed header ── */}
+                  <article className="card" key={row.equipamentoId}>
                     <div
                       className="card-header"
                       onClick={() =>
@@ -1413,11 +1361,9 @@ export default function HorimetrosPage() {
                       }
                     >
                       <h2 className="equip-code">{row.codigo}</h2>
-
                       <div className="equip-sub">
                         {obraNome || (row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro")}
                       </div>
-
                       {isSaved ? (
                         <span className="card-preview">
                           {format1(current ? parsePtNumber(current) : null) !== "—"
@@ -1427,37 +1373,27 @@ export default function HorimetrosPage() {
                       ) : (
                         <span className="card-preview pending">pendente</span>
                       )}
-
                       <StatusDot saved={isSaved} />
-
-                      <span className={`chevron ${expandedId === row.equipamentoId ? "open" : ""}`}>
-                        ▼
-                      </span>
+                      <span className={`chevron ${expandedId === row.equipamentoId ? "open" : ""}`}>▼</span>
                     </div>
 
-                    {/* ── expanded body ── */}
                     {expandedId === row.equipamentoId && (
                       <div className="card-body">
-
                         <div className="mode-row">
                           <div className="segmented">
                             <button
                               type="button"
                               className={row.selectedMode === "horimetro" ? "active" : ""}
-                              onClick={() =>
-                                updateRow(row.equipamentoId, { selectedMode: "horimetro" })
-                              }
+                              onClick={() => updateRow(row.equipamentoId, { selectedMode: "horimetro" })}
                             >
-                              HOR
+                              Horímetro
                             </button>
                             <button
                               type="button"
                               className={row.selectedMode === "odometro" ? "active" : ""}
-                              onClick={() =>
-                                updateRow(row.equipamentoId, { selectedMode: "odometro" })
-                              }
+                              onClick={() => updateRow(row.equipamentoId, { selectedMode: "odometro" })}
                             >
-                              ODO
+                              Odômetro
                             </button>
                           </div>
                         </div>
@@ -1483,7 +1419,6 @@ export default function HorimetrosPage() {
                               ))}
                               <option value="__new__">+ Nova obra...</option>
                             </select>
-
                             <button
                               type="button"
                               className="sheet-btn"
@@ -1497,34 +1432,21 @@ export default function HorimetrosPage() {
                               Nova
                             </button>
                           </div>
-
                           {row.showNovaObra ? (
                             <div className="sheet">
                               <input
                                 className="new-obra-input"
                                 value={row.novaObra}
-                                onChange={(e) =>
-                                  updateRow(row.equipamentoId, { novaObra: e.target.value })
-                                }
-                                placeholder="Digite a nova obra"
+                                onChange={(e) => updateRow(row.equipamentoId, { novaObra: e.target.value })}
+                                placeholder="Nome da nova obra"
                               />
                               <div className="sheet-actions">
-                                <button
-                                  type="button"
-                                  className="sheet-btn"
-                                  onClick={() =>
-                                    updateRow(row.equipamentoId, { showNovaObra: false, novaObra: "" })
-                                  }
-                                >
+                                <button type="button" className="sheet-btn"
+                                  onClick={() => updateRow(row.equipamentoId, { showNovaObra: false, novaObra: "" })}>
                                   Cancelar
                                 </button>
-                                <button
-                                  type="button"
-                                  className="sheet-btn"
-                                  onClick={() =>
-                                    updateRow(row.equipamentoId, { showNovaObra: false })
-                                  }
-                                >
+                                <button type="button" className="sheet-btn"
+                                  onClick={() => updateRow(row.equipamentoId, { showNovaObra: false })}>
                                   OK
                                 </button>
                               </div>
@@ -1539,7 +1461,6 @@ export default function HorimetrosPage() {
                               {format1(previous)}
                             </div>
                           </div>
-
                           <div className="value-box">
                             <div className="value-box-title">Do dia</div>
                             {alertText ? (
@@ -1576,18 +1497,12 @@ export default function HorimetrosPage() {
                               className="row-save"
                               title={`Salvar ${row.codigo}`}
                               onClick={() => void saveOneRow(row)}
-                              disabled={
-                                !rowCanSave ||
-                                savingRowId === row.equipamentoId ||
-                                savingAll ||
-                                !env.ok
-                              }
+                              disabled={!rowCanSave || savingRowId === row.equipamentoId || savingAll || !env.ok}
                             >
                               <SaveIcon />
                             </button>
                           </div>
                         </div>
-
                       </div>
                     )}
                   </article>
