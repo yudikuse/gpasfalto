@@ -803,45 +803,51 @@ export default function HorimetrosPage() {
   return (
     <>
       <style jsx global>{`
+        @import url('https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800;900&display=swap');
+
         :root {
-          --bg: #f0f2f7;
+          --bg: #eef0f6;
           --surface: #ffffff;
-          --surface-soft: #f7f9fc;
-          --line: #e9edf5;
-          --line-strong: #d6deea;
-          --text: #0f172a;
-          --muted: #667085;
-          --brand: #4f6ef7;
-          --brand-soft: #eef2ff;
+          --surface-soft: #f4f6fb;
+          --line: #e4e8f2;
+          --line-strong: #c9d1e3;
+          --text: #0d1117;
+          --muted: #6b7a99;
+          --brand: #f59e0b;
+          --brand-dark: #d97706;
+          --brand-soft: #fffbeb;
+          --blue: #3b82f6;
+          --blue-soft: #eff6ff;
           --success: #16a34a;
-          --danger: #ef4444;
-          --warning: #f4b400;
-          --shadow: 0 1px 4px rgba(15,23,42,0.06);
+          --success-soft: #f0fdf4;
+          --danger: #dc2626;
+          --danger-soft: #fff1f2;
+          --shadow-sm: 0 1px 3px rgba(13,17,23,0.07), 0 1px 2px rgba(13,17,23,0.04);
+          --shadow-md: 0 4px 16px rgba(13,17,23,0.08), 0 1px 4px rgba(13,17,23,0.04);
         }
 
         * { box-sizing: border-box; }
         html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, Arial, sans-serif; }
+        body { font-family: 'Sora', -apple-system, BlinkMacSystemFont, sans-serif; -webkit-font-smoothing: antialiased; }
         input, select, button { font: inherit; }
 
-        .page { min-height: 100vh; padding: 8px; }
+        /* ── PAGE SHELL ── */
+        .page { min-height: 100vh; padding: 0 0 24px; }
 
         .shell {
           width: min(100%, 780px);
           margin: 0 auto;
           display: grid;
-          gap: 7px;
+          gap: 8px;
         }
 
-        /* ── HEADER ── */
+        /* ── HEADER (dark panel) ── */
         .header {
-          background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 16px;
-          box-shadow: var(--shadow);
-          padding: 10px 12px;
+          background: #0d1117;
+          padding: 14px 14px 16px;
           display: grid;
-          gap: 8px;
+          gap: 12px;
+          border-radius: 0 0 22px 22px;
         }
 
         .header-top {
@@ -851,12 +857,12 @@ export default function HorimetrosPage() {
           gap: 8px;
         }
 
-        .brand { display: flex; align-items: center; gap: 8px; min-width: 0; }
+        .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 
         .logo {
-          width: 28px; height: 28px;
-          border-radius: 7px;
-          background: #fff8e8;
+          width: 34px; height: 34px;
+          border-radius: 9px;
+          background: var(--brand);
           overflow: hidden;
           display: inline-flex;
           align-items: center;
@@ -865,11 +871,39 @@ export default function HorimetrosPage() {
         }
         .logo img { width: 100%; height: 100%; object-fit: cover; }
 
-        .eyebrow { margin: 0; font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-        .title { margin: 0; font-size: 14px; font-weight: 900; letter-spacing: -.02em; }
+        .eyebrow { margin: 0; font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: #6b7a99; }
+        .title { margin: 0; font-size: 15px; font-weight: 800; letter-spacing: -.02em; color: #ffffff; }
         .subtitle { display: none; }
 
-        .period { font-size: 10px; color: #475569; font-weight: 700; text-align: right; line-height: 1.4; white-space: nowrap; }
+        .period {
+          font-size: 10px;
+          color: #6b7a99;
+          font-weight: 600;
+          text-align: right;
+          line-height: 1.5;
+          white-space: nowrap;
+        }
+        .period strong { color: var(--brand); }
+
+        /* ── STATS STRIP ── */
+        .stats-strip {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 6px;
+        }
+
+        .stat-card {
+          background: #161b27;
+          border-radius: 12px;
+          padding: 8px 10px;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+        .stat-card-label { font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #4a5568; }
+        .stat-card-value { font-size: 20px; font-weight: 900; letter-spacing: -.04em; color: #fff; }
+        .stat-card.green .stat-card-value { color: #4ade80; }
+        .stat-card.amber .stat-card-value { color: var(--brand); }
 
         /* ── CONTROLS ── */
         .controls {
@@ -879,89 +913,113 @@ export default function HorimetrosPage() {
           align-items: end;
         }
 
-        .field { display: grid; gap: 2px; }
-        .field label { font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+        .field { display: grid; gap: 3px; }
+        .field label { font-size: 9px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #5a6580; }
 
         .search, .date, .select, .number-input, .new-obra-input,
         .keep-btn, .keep-all-btn, .save-btn, .sheet-btn {
           width: 100%;
-          height: 34px;
-          border: 1px solid transparent;
+          height: 36px;
+          border: 1px solid #1e2536;
           border-radius: 10px;
-          background: var(--surface-soft);
-          color: var(--text);
+          background: #161b27;
+          color: #e2e8f0;
           outline: none;
           padding: 0 10px;
           font-size: 13px;
-          font-weight: 700;
+          font-weight: 600;
           transition: .15s ease;
         }
 
-        .search:focus, .date:focus, .select:focus, .number-input:focus, .new-obra-input:focus {
-          background: #fff;
-          border-color: var(--line-strong);
-          box-shadow: 0 0 0 3px rgba(79,110,247,.08);
+        .search::placeholder, .date::placeholder { color: #3d4a63; }
+
+        .search:focus, .date:focus {
+          background: #1a2133;
+          border-color: var(--brand);
+          box-shadow: 0 0 0 3px rgba(245,158,11,.12);
+          color: #fff;
         }
 
         .save-btn {
           border: 0;
-          background: var(--warning);
-          color: #1f2937;
-          font-weight: 900;
+          background: var(--brand);
+          color: #0d1117;
+          font-weight: 800;
           cursor: pointer;
           white-space: nowrap;
+          letter-spacing: -.01em;
         }
-        .save-btn[disabled] { opacity: .7; cursor: wait; }
+        .save-btn:hover { background: var(--brand-dark); }
+        .save-btn[disabled] { opacity: .65; cursor: wait; }
 
-        /* ── TOOLBAR ── */
-        .toolbar { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-        .stats { display: flex; gap: 4px; }
-
-        .stat {
-          padding: 3px 8px;
-          border-radius: 999px;
-          background: var(--surface-soft);
-          color: #475569;
-          font-size: 10px;
-          font-weight: 800;
+        /* ── TOOLBAR (below header, in light zone) ── */
+        .toolbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 6px;
+          padding: 0 2px;
         }
+
+        .toolbar-label { font-size: 11px; font-weight: 700; color: var(--muted); }
 
         .keep-all-btn, .keep-btn, .sheet-btn {
-          border: 1px solid var(--line);
-          background: var(--surface-soft);
-          color: #475569;
+          border: 1.5px solid var(--line);
+          background: var(--surface);
+          color: var(--muted);
           cursor: pointer;
         }
-        .keep-all-btn { width: auto; min-width: 96px; padding: 0 10px; font-size: 11px; height: 28px; border-radius: 8px; }
-        .keep-btn { width: auto; min-width: 40px; height: 32px; padding: 0 8px; font-size: 11px; border-radius: 8px; }
-        .sheet-btn { width: auto; padding: 0 10px; font-size: 11px; height: 32px; }
+        .keep-all-btn { width: auto; min-width: 108px; padding: 0 12px; font-size: 11px; height: 32px; border-radius: 10px; font-weight: 700; }
+        .keep-btn { width: auto; min-width: 42px; height: 32px; padding: 0 8px; font-size: 11px; border-radius: 8px; font-weight: 700; }
+        .sheet-btn { width: auto; padding: 0 12px; font-size: 11px; height: 32px; border-radius: 8px; font-weight: 700; }
 
-        .keep-all-btn:hover, .keep-btn:hover, .sheet-btn:hover { background: var(--brand-soft); color: var(--brand); border-color: #ccd5ff; }
-        .keep-all-btn.active, .keep-btn.active { background: var(--brand); border-color: var(--brand); color: #fff; }
+        .keep-all-btn:hover, .keep-btn:hover, .sheet-btn:hover { background: var(--blue-soft); color: var(--blue); border-color: #bfdbfe; }
+        .keep-all-btn.active, .keep-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
 
         /* ── MESSAGES ── */
-        .message { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 7px 12px; font-size: 12px; font-weight: 700; }
-        .message.error { color: #a12d2d; }
-        .message.ok { color: #0b7b52; }
+        .message {
+          background: var(--surface);
+          border: 1.5px solid var(--line);
+          border-radius: 12px;
+          padding: 9px 14px;
+          font-size: 12px;
+          font-weight: 700;
+          margin: 0 2px;
+          box-shadow: var(--shadow-sm);
+        }
+        .message.error { color: var(--danger); border-color: #fecaca; background: var(--danger-soft); }
+        .message.ok { color: var(--success); border-color: #bbf7d0; background: var(--success-soft); }
 
         /* ── LIST ── */
-        .list { display: grid; gap: 5px; }
+        .list { display: grid; gap: 6px; padding: 0 2px; }
 
         /* ── ACCORDION CARD ── */
         .card {
           background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 13px;
-          box-shadow: var(--shadow);
+          border: 1.5px solid var(--line);
+          border-radius: 14px;
+          box-shadow: var(--shadow-sm);
           overflow: hidden;
+          position: relative;
         }
+
+        /* left status bar */
+        .card::before {
+          content: '';
+          position: absolute;
+          left: 0; top: 0; bottom: 0;
+          width: 4px;
+          background: var(--danger);
+          border-radius: 14px 0 0 14px;
+        }
+        .card.saved::before { background: var(--success); }
 
         /* collapsed header row */
         .card-header {
           display: flex;
           align-items: center;
           gap: 8px;
-          padding: 10px 12px;
+          padding: 11px 12px 11px 16px;
           cursor: pointer;
           user-select: none;
           -webkit-tap-highlight-color: transparent;
@@ -970,10 +1028,11 @@ export default function HorimetrosPage() {
 
         .equip-code {
           margin: 0;
-          font-size: 15px;
-          font-weight: 900;
-          letter-spacing: -.03em;
-          min-width: 48px;
+          font-size: 14px;
+          font-weight: 800;
+          letter-spacing: -.02em;
+          min-width: 52px;
+          color: var(--text);
         }
 
         .equip-sub {
@@ -991,11 +1050,19 @@ export default function HorimetrosPage() {
           font-weight: 800;
           color: var(--success);
           white-space: nowrap;
+          background: var(--success-soft);
+          border: 1px solid #bbf7d0;
+          padding: 2px 7px;
+          border-radius: 999px;
         }
-        .card-preview.pending { color: #94a3b8; }
+        .card-preview.pending {
+          color: #94a3b8;
+          background: #f8fafc;
+          border-color: var(--line);
+        }
 
         .status-dot {
-          width: 8px; height: 8px;
+          width: 7px; height: 7px;
           border-radius: 999px;
           display: inline-block;
           flex-shrink: 0;
@@ -1004,7 +1071,7 @@ export default function HorimetrosPage() {
         .status-dot.pending { background: var(--danger); }
 
         .chevron {
-          font-size: 11px;
+          font-size: 10px;
           color: #94a3b8;
           transition: transform .2s;
           flex-shrink: 0;
@@ -1013,11 +1080,11 @@ export default function HorimetrosPage() {
 
         /* expanded body */
         .card-body {
-          border-top: 1px solid var(--line);
+          border-top: 1.5px solid var(--line);
           background: var(--surface-soft);
-          padding: 10px 12px;
+          padding: 12px 12px 12px 16px;
           display: grid;
-          gap: 8px;
+          gap: 10px;
         }
 
         /* mode toggle */
@@ -1026,65 +1093,67 @@ export default function HorimetrosPage() {
         .segmented {
           display: inline-flex;
           align-items: center;
-          gap: 1px;
-          padding: 2px;
+          gap: 2px;
+          padding: 3px;
           border-radius: 999px;
           background: var(--surface);
-          border: 1px solid var(--line);
+          border: 1.5px solid var(--line);
         }
         .segmented button {
-          height: 24px;
-          min-width: 44px;
+          height: 26px;
+          min-width: 46px;
           border: 0;
           border-radius: 999px;
-          padding: 0 8px;
+          padding: 0 10px;
           background: transparent;
-          color: #64748b;
+          color: var(--muted);
           font-size: 10px;
           font-weight: 800;
           cursor: pointer;
+          letter-spacing: .02em;
         }
-        .segmented button.active { background: var(--brand-soft); color: var(--brand); }
+        .segmented button.active { background: #0d1117; color: var(--brand); }
 
         /* values row */
         .values {
           display: grid;
           grid-template-columns: 1fr 1fr;
-          gap: 5px;
+          gap: 6px;
         }
 
         .value-box {
           background: var(--surface);
-          border: 1px solid var(--line);
-          border-radius: 9px;
-          padding: 5px 8px;
-          min-height: 42px;
+          border: 1.5px solid var(--line);
+          border-radius: 10px;
+          padding: 7px 10px;
+          min-height: 48px;
           display: flex;
           flex-direction: column;
           justify-content: space-between;
-          gap: 2px;
+          gap: 3px;
         }
-        .value-box-title { font-size: 9px; font-weight: 800; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
-        .value-box-main { font-size: 15px; font-weight: 900; letter-spacing: -.03em; color: var(--text); }
-        .value-box-main.muted { color: #94a3b8; }
+        .value-box-title { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+        .value-box-main { font-size: 17px; font-weight: 900; letter-spacing: -.04em; color: var(--text); }
+        .value-box-main.muted { color: #c2cad8; }
         .value-box-main.success { color: var(--success); }
 
         .alert-chip {
           display: inline-flex;
           align-items: center;
-          min-height: 18px;
-          padding: 0 6px;
+          min-height: 20px;
+          padding: 0 7px;
           border-radius: 999px;
-          background: #fff1f2;
-          color: #b42318;
+          background: var(--danger-soft);
+          border: 1px solid #fecaca;
+          color: var(--danger);
           font-size: 10px;
-          font-weight: 900;
+          font-weight: 800;
           white-space: nowrap;
         }
 
         /* obra block */
-        .block { display: grid; gap: 3px; }
-        .block-label { font-size: 9px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+        .block { display: grid; gap: 4px; }
+        .block-label { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 
         .obra-row {
           display: grid;
@@ -1093,16 +1162,45 @@ export default function HorimetrosPage() {
           align-items: center;
         }
 
-        .sheet {
-          margin-top: 4px;
-          display: grid;
-          gap: 5px;
-          padding: 8px;
-          border-radius: 9px;
+        .select, .new-obra-input {
+          border: 1.5px solid var(--line);
           background: var(--surface);
-          border: 1px solid var(--line);
+          color: var(--text);
+          border-radius: 10px;
+          height: 36px;
+          padding: 0 10px;
+          font-size: 13px;
+          font-weight: 600;
+          outline: none;
+        }
+        .select:focus, .new-obra-input:focus {
+          border-color: var(--blue);
+          box-shadow: 0 0 0 3px rgba(59,130,246,.1);
+        }
+
+        .sheet {
+          margin-top: 2px;
+          display: grid;
+          gap: 6px;
+          padding: 10px;
+          border-radius: 10px;
+          background: var(--surface);
+          border: 1.5px solid var(--line);
         }
         .sheet-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 5px; }
+        .sheet-btn {
+          border-radius: 9px !important;
+          background: var(--surface-soft);
+          border: 1.5px solid var(--line);
+          color: var(--muted);
+          font-size: 12px;
+          font-weight: 700;
+          height: 34px;
+          width: auto;
+          padding: 0 12px;
+          cursor: pointer;
+        }
+        .sheet-btn:hover { background: var(--blue-soft); color: var(--blue); border-color: #bfdbfe; }
 
         /* input + save row */
         .input-save-row {
@@ -1116,27 +1214,76 @@ export default function HorimetrosPage() {
           text-align: right;
           font-variant-numeric: tabular-nums;
           border: 1.5px solid var(--line-strong) !important;
-          background: #ffffff !important;
+          background: var(--surface) !important;
+          color: var(--text) !important;
+          border-radius: 10px;
+          height: 36px;
+          font-weight: 700;
+          font-size: 14px;
+          padding: 0 10px;
+          outline: none;
         }
+        .number-input:focus {
+          border-color: var(--blue) !important;
+          box-shadow: 0 0 0 3px rgba(59,130,246,.1);
+        }
+        .number-input::placeholder { color: #c2cad8; }
 
-        .number-input::placeholder { color: #aab0bd; }
+        .keep-btn {
+          background: var(--surface);
+          border: 1.5px solid var(--line);
+          color: var(--muted);
+          font-weight: 700;
+          font-size: 11px;
+          height: 36px;
+          border-radius: 9px;
+          min-width: 42px;
+          cursor: pointer;
+          padding: 0 8px;
+          width: auto;
+        }
+        .keep-btn:hover { background: var(--blue-soft); color: var(--blue); border-color: #bfdbfe; }
+        .keep-btn.active { background: var(--blue); border-color: var(--blue); color: #fff; }
 
         .row-save {
-          width: 34px; height: 32px;
-          border: 1px solid var(--line);
-          border-radius: 8px;
-          background: var(--surface);
-          color: #4b5563;
+          width: 36px; height: 36px;
+          border: 0;
+          border-radius: 9px;
+          background: var(--brand);
+          color: #0d1117;
           display: inline-flex;
           align-items: center;
           justify-content: center;
           cursor: pointer;
           flex-shrink: 0;
+          transition: .15s ease;
         }
-        .row-save:hover { background: var(--brand-soft); color: var(--brand); }
-        .row-save[disabled] { opacity: .4; cursor: not-allowed; }
+        .row-save:hover { background: var(--brand-dark); }
+        .row-save[disabled] { opacity: .35; cursor: not-allowed; background: var(--line); color: var(--muted); }
 
-        .empty { background: var(--surface); border: 1px solid var(--line); border-radius: 13px; padding: 16px; color: var(--muted); font-size: 13px; font-weight: 700; }
+        /* obs block */
+        .obs-block { display: grid; gap: 4px; }
+        .obs-row { display: flex; align-items: center; gap: 8px; }
+        .troca-toggle {
+          display: flex; align-items: center; gap: 5px;
+          font-size: 11px; font-weight: 700; color: var(--muted);
+          cursor: pointer;
+          user-select: none;
+          padding: 4px 0;
+        }
+        .troca-toggle input[type=checkbox] { accent-color: var(--brand); width: 15px; height: 15px; cursor: pointer; }
+
+        .empty {
+          background: var(--surface);
+          border: 1.5px solid var(--line);
+          border-radius: 14px;
+          padding: 20px 16px;
+          color: var(--muted);
+          font-size: 13px;
+          font-weight: 600;
+          text-align: center;
+          margin: 0 2px;
+        }
 
         /* unused but kept for save-all flow */
         .save-row, .card-top, .card-title, .status-wrap, .footer-row, .mode-row-old { display: none; }
@@ -1144,12 +1291,14 @@ export default function HorimetrosPage() {
         @media (min-width: 760px) {
           .shell { width: min(100%, 980px); }
           .list { grid-template-columns: 1fr 1fr; }
-          .subtitle { display: block; margin: 1px 0 0; font-size: 11px; color: var(--muted); font-weight: 500; }
+          .subtitle { display: block; margin: 1px 0 0; font-size: 11px; color: #4a5568; font-weight: 500; }
         }
       `}</style>
 
       <main className="page">
         <div className="shell">
+
+          {/* ── DARK HEADER ── */}
           <section className="header">
             <div className="header-top">
               <div className="brand">
@@ -1159,28 +1308,42 @@ export default function HorimetrosPage() {
                 <div>
                   <p className="eyebrow">GP Asfalto</p>
                   <h1 className="title">Horímetros e Odômetros</h1>
-                  <p className="subtitle">
-                    Layout mobile, sem rolagem lateral, com um card por equipamento.
-                  </p>
+                  <p className="subtitle">Lançamento diário por equipamento</p>
                 </div>
               </div>
 
               <div className="period">
-                Anterior: {isoToBr(periodoAnterior)}
+                Ant: {isoToBr(periodoAnterior)}
                 <br />
-                Atual: {isoToBr(selectedDate)}
+                <strong>Atual: {isoToBr(selectedDate)}</strong>
+              </div>
+            </div>
+
+            {/* stats strip inside header */}
+            <div className="stats-strip">
+              <div className="stat-card">
+                <span className="stat-card-label">Equip.</span>
+                <span className="stat-card-value">{stats.total}</span>
+              </div>
+              <div className="stat-card green">
+                <span className="stat-card-label">Salvos</span>
+                <span className="stat-card-value">{stats.lancados}</span>
+              </div>
+              <div className="stat-card amber">
+                <span className="stat-card-label">Pendentes</span>
+                <span className="stat-card-value">{stats.pendentes}</span>
               </div>
             </div>
 
             <div className="controls">
               <div className="field">
-                <label htmlFor="busca">Buscar equipamento</label>
+                <label htmlFor="busca">Buscar</label>
                 <input
                   id="busca"
                   className="search"
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Ex.: CB-02, obra..."
+                  placeholder="CB-02, obra..."
                 />
               </div>
 
@@ -1196,40 +1359,36 @@ export default function HorimetrosPage() {
               </div>
 
               <div className="field">
-                <label>Ação</label>
+                <label>&nbsp;</label>
                 <button
                   className="save-btn"
                   type="button"
                   onClick={() => void handleSaveAll()}
                   disabled={savingAll || loading || !env.ok}
                 >
-                  {savingAll ? "Salvando..." : "Salvar tudo"}
+                  {savingAll ? "Salvando…" : "Salvar tudo"}
                 </button>
               </div>
             </div>
-
-            <div className="toolbar">
-              <div className="stats">
-                <div className="stat">Equip: {stats.total}</div>
-                <div className="stat">Salvos: {stats.lancados}</div>
-                <div className="stat">Pendentes: {stats.pendentes}</div>
-              </div>
-
-              <button
-                type="button"
-                className={`keep-all-btn ${allKeepApplied ? "active" : ""}`}
-                onClick={toggleKeepPreviousForAll}
-              >
-                {allKeepApplied ? "Desmarcar Últ." : "Aplicar Últ."}
-              </button>
-            </div>
           </section>
 
-          {errorMsg ? <div className="message error">{errorMsg}</div> : null}
-          {okMsg ? <div className="message ok">{okMsg}</div> : null}
+          {/* ── TOOLBAR (light zone) ── */}
+          <div className="toolbar" style={{ padding: "0 4px" }}>
+            <span className="toolbar-label">{filteredRows.length} exibidos</span>
+            <button
+              type="button"
+              className={`keep-all-btn ${allKeepApplied ? "active" : ""}`}
+              onClick={toggleKeepPreviousForAll}
+            >
+              {allKeepApplied ? "✕ Desmarcar Últ." : "Aplicar Últ. p/ todos"}
+            </button>
+          </div>
+
+          {errorMsg ? <div className="message error">⚠ {errorMsg}</div> : null}
+          {okMsg ? <div className="message ok">✓ {okMsg}</div> : null}
 
           {loading ? (
-            <div className="empty">Carregando...</div>
+            <div className="empty">Carregando equipamentos…</div>
           ) : filteredRows.length === 0 ? (
             <div className="empty">Nenhum equipamento encontrado.</div>
           ) : (
@@ -1242,10 +1401,11 @@ export default function HorimetrosPage() {
                 const rowCanSave = canSaveRow(row);
                 const obraNome =
                   obras.find((o) => String(o.id) === row.obraId)?.obra || row.novaObra || "";
+                const isSaved = row.registroId != null;
 
                 return (
-                  <article className="card" key={row.equipamentoId}>
-                    {/* ── collapsed header — always visible ── */}
+                  <article className={`card ${isSaved ? "saved" : ""}`} key={row.equipamentoId}>
+                    {/* ── collapsed header ── */}
                     <div
                       className="card-header"
                       onClick={() =>
@@ -1258,7 +1418,7 @@ export default function HorimetrosPage() {
                         {obraNome || (row.selectedMode === "horimetro" ? "Horímetro" : "Odômetro")}
                       </div>
 
-                      {row.registroId != null ? (
+                      {isSaved ? (
                         <span className="card-preview">
                           {format1(current ? parsePtNumber(current) : null) !== "—"
                             ? format1(parsePtNumber(current))
@@ -1268,7 +1428,7 @@ export default function HorimetrosPage() {
                         <span className="card-preview pending">pendente</span>
                       )}
 
-                      <StatusDot saved={row.registroId != null} />
+                      <StatusDot saved={isSaved} />
 
                       <span className={`chevron ${expandedId === row.equipamentoId ? "open" : ""}`}>
                         ▼
@@ -1393,7 +1553,7 @@ export default function HorimetrosPage() {
                         </div>
 
                         <div className="block">
-                          <div className="block-label">Atual</div>
+                          <div className="block-label">Leitura atual</div>
                           <div className="input-save-row">
                             <input
                               type="text"
