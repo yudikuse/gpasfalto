@@ -291,7 +291,7 @@ export default function MaterialDashboardPage() {
   const [obras,        setObras]        = useState<string[]>([]);
   const [materiais,    setMateriais]    = useState<string[]>([]);
   const [loading,      setLoading]      = useState(true);
-  const [activeTab, setActiveTab] = useState<"estoque"|"producao"|"entradas"|"saidas"|"pedidos"|"financeiro">("estoque");
+  const [activeTab, setActiveTab] = useState<"estoque"|"producao"|"entradas"|"saidas"|"pedidos"|"financeiro">("financeiro");
   const [reconcOpen,   setReconcOpen]   = useState(false);
 
   // Inventário manual de 18/03 (snapshot físico)
@@ -374,6 +374,82 @@ export default function MaterialDashboardPage() {
   }, [dateStart, dateEnd]);
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  // ── Export Excel ──────────────────────────
+  useEffect(() => {
+    const exportar = (comTickets: boolean) => {
+      const XLSX = (window as any).XLSX;
+      if (!XLSX) return;
+
+      const wb = XLSX.utils.book_new();
+
+      // Aba 1: Resumo mensal
+      const mesMap: Record<string, { prodTon: number; prodQtd: number; entTon: number; entQtd: number }> = {};
+      for (const t of tickets) {
+        const mes = t.data.slice(0, 7);
+        if (!mesMap[mes]) mesMap[mes] = { prodTon: 0, prodQtd: 0, entTon: 0, entQtd: 0 };
+        if (t.tipo === "SAIDA") { mesMap[mes].prodTon += Number(t.peso_t); mesMap[mes].prodQtd += 1; }
+        else if (["PO BRITA","BRITA ZERO","BRITA 01"].includes(t.material)) {
+          mesMap[mes].entTon += Number(t.peso_t); mesMap[mes].entQtd += 1;
+        }
+      }
+      const resumoData = [
+        ["Mês", "Produção CBUQ (ton)", "Tickets Saída", "Entradas Agregados (ton)", "Tickets Entrada"],
+        ...Object.entries(mesMap).sort().map(([m, d]) => {
+          const [y, mo] = m.split("-");
+          return [`${mo}/${y}`, d.prodTon.toFixed(3), d.prodQtd, d.entTon.toFixed(3), d.entQtd];
+        }),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(resumoData), "Resumo Mensal");
+
+      // Aba 2: Fornecedores
+      const fornMap: Record<string, { qtd: number; ton: number }> = {};
+      for (const t of entradas) {
+        const k = `${t.origem}||${t.material}`;
+        if (!fornMap[k]) fornMap[k] = { qtd: 0, ton: 0 };
+        fornMap[k].qtd += 1; fornMap[k].ton += Number(t.peso_t);
+      }
+      const fornData = [
+        ["Fornecedor", "Material", "Tickets", "Volume (ton)"],
+        ...Object.entries(fornMap)
+          .sort((a, b) => b[1].ton - a[1].ton)
+          .map(([k, v]) => { const [orig, mat] = k.split("||"); return [orig, mat, v.qtd, v.ton.toFixed(3)]; }),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fornData), "Fornecedores");
+
+      // Aba 3: Obras / Clientes
+      const obrasMap: Record<string, { qtd: number; ton: number }> = {};
+      for (const t of saidas) {
+        const k = `${t.obra}||${t.material}`;
+        if (!obrasMap[k]) obrasMap[k] = { qtd: 0, ton: 0 };
+        obrasMap[k].qtd += 1; obrasMap[k].ton += Number(t.peso_t);
+      }
+      const obrasData = [
+        ["Obra / Cliente", "Material", "Tickets (CB)", "Volume (ton)"],
+        ...Object.entries(obrasMap)
+          .sort((a, b) => b[1].ton - a[1].ton)
+          .map(([k, v]) => { const [obra, mat] = k.split("||"); return [obra, mat, v.qtd, v.ton.toFixed(3)]; }),
+      ];
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(obrasData), "Obras Clientes");
+
+      // Aba 4 (opcional): Todos os tickets
+      if (comTickets) {
+        const ticketsData = [
+          ["ID", "Data", "Tipo", "Veículo", "Origem", "Obra", "Material", "Peso (ton)"],
+          ...tickets.map(t => [t.id, t.data, t.tipo, t.veiculo, t.origem, t.obra, t.material, Number(t.peso_t).toFixed(3)]),
+        ];
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ticketsData), "Tickets");
+      }
+
+      const periodo = `${dateStart}_${dateEnd}`.replace(/-/g, "");
+      XLSX.writeFile(wb, `materiais_${periodo}.xlsx`);
+    };
+
+    const btnSem = document.getElementById("btn-export-sem");
+    const btnCom = document.getElementById("btn-export-com");
+    if (btnSem) btnSem.onclick = () => exportar(false);
+    if (btnCom) btnCom.onclick = () => exportar(true);
+  }, [tickets, entradas, saidas, dateStart, dateEnd]);
 
   // ── Cálculos — inalterados ───────────────
   const tks = tickets.filter(t => {
@@ -547,26 +623,56 @@ export default function MaterialDashboardPage() {
         </div>
 
         {/* ── TABS ─────────────────────────── */}
-        <div style={{ display: "flex", gap: 2, marginBottom: 18, borderBottom: `1px solid ${C.border}` }}>
-          {([
-            ["estoque",    "Saldo Estoque"],
-            ["producao",   "Produção"],
-            ["entradas",   "Entradas"],
-            ["saidas",     "Saídas / Obras"],
-            ["pedidos",    "Pedidos / OC"],
-            ["financeiro", "Financeiro"],
-          ] as const).map(([key, label]) => (
-            <button key={key} onClick={() => setActiveTab(key)} style={{
-              padding: "10px 18px", border: "none", background: "none",
-              fontSize: 13, fontWeight: activeTab === key ? 600 : 400,
-              color: activeTab === key ? C.primary : C.textMid,
-              cursor: "pointer",
-              borderBottom: activeTab === key ? `2px solid ${C.primary}` : "2px solid transparent",
-              marginBottom: -1, transition: "all 0.15s",
-            }}>
-              {label}
-            </button>
-          ))}
+        <div style={{ display: "flex", alignItems: "center", marginBottom: 18, borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ display: "flex", gap: 2, flex: 1 }}>
+            {([
+              ["financeiro", "Financeiro"],
+              ["estoque",    "Saldo Estoque"],
+              ["producao",   "Produção"],
+              ["entradas",   "Entradas"],
+              ["saidas",     "Saídas / Obras"],
+              ["pedidos",    "Pedidos / OC"],
+            ] as const).map(([key, label]) => (
+              <button key={key} onClick={() => setActiveTab(key)} style={{
+                padding: "10px 18px", border: "none", background: "none",
+                fontSize: 13, fontWeight: activeTab === key ? 600 : 400,
+                color: activeTab === key ? C.primary : C.textMid,
+                cursor: "pointer",
+                borderBottom: activeTab === key ? `2px solid ${C.primary}` : "2px solid transparent",
+                marginBottom: -1, transition: "all 0.15s",
+              }}>
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Botão exportar — só aparece na aba financeiro */}
+          {activeTab === "financeiro" && (
+            <div style={{ display: "flex", gap: 8, paddingBottom: 8 }}>
+              <button id="btn-export-sem" style={{
+                height: 32, padding: "0 14px", border: `1px solid ${C.border}`,
+                borderRadius: 6, background: C.surface, fontSize: 12, color: C.textMid,
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 6,
+              }}>
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M6.5 1v8M3 6l3.5 3.5L10 6" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M1 11h11" strokeLinecap="round"/>
+                </svg>
+                Exportar Excel
+              </button>
+              <button id="btn-export-com" style={{
+                height: 32, padding: "0 14px", border: `1px solid ${C.primary}`,
+                borderRadius: 6, background: C.primaryBg, fontSize: 12, color: C.primary,
+                cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontWeight: 600,
+              }}>
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none" stroke="currentColor" strokeWidth="1.5">
+                  <path d="M6.5 1v8M3 6l3.5 3.5L10 6" strokeLinecap="round" strokeLinejoin="round"/>
+                  <path d="M1 11h11" strokeLinecap="round"/>
+                </svg>
+                + Tickets
+              </button>
+            </div>
+          )}
         </div>
 
         {/* ══════════════════════════════════════
@@ -1277,6 +1383,7 @@ export default function MaterialDashboardPage() {
         )}
 
       </div>
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" />
     </div>
   );
 }
