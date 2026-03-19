@@ -291,8 +291,18 @@ export default function MaterialDashboardPage() {
   const [obras,        setObras]        = useState<string[]>([]);
   const [materiais,    setMateriais]    = useState<string[]>([]);
   const [loading,      setLoading]      = useState(true);
-  const [activeTab, setActiveTab] = useState<"estoque"|"producao"|"entradas"|"saidas"|"pedidos">("estoque");
+  const [activeTab, setActiveTab] = useState<"estoque"|"producao"|"entradas"|"saidas"|"pedidos"|"financeiro">("estoque");
   const [reconcOpen,   setReconcOpen]   = useState(false);
+
+  // Inventário manual de 18/03 (snapshot físico)
+  const INVENTARIO_MANUAL: Record<string, number> = {
+    "PO BRITA":   136.88,
+    "BRITA ZERO": 105.74,
+    "BRITA 01":    51.38,
+    "CAP":         61.94,
+    "OGR":         18.582,
+  };
+  const DATA_INVENTARIO_MANUAL = "18/03/2026";
 
   // ── Fetch — inalterado ───────────────────
   const fetchAll = useCallback(async () => {
@@ -519,11 +529,12 @@ export default function MaterialDashboardPage() {
         {/* ── TABS ─────────────────────────── */}
         <div style={{ display: "flex", gap: 2, marginBottom: 18, borderBottom: `1px solid ${C.border}` }}>
           {([
-            ["estoque",  "Saldo Estoque"],
-            ["producao", "Produção"],
-            ["entradas", "Entradas"],
-            ["saidas",   "Saídas / Obras"],
-            ["pedidos",  "Pedidos / OC"],
+            ["estoque",    "Saldo Estoque"],
+            ["producao",   "Produção"],
+            ["entradas",   "Entradas"],
+            ["saidas",     "Saídas / Obras"],
+            ["pedidos",    "Pedidos / OC"],
+            ["financeiro", "Financeiro"],
           ] as const).map(([key, label]) => (
             <button key={key} onClick={() => setActiveTab(key)} style={{
               padding: "10px 18px", border: "none", background: "none",
@@ -587,48 +598,62 @@ export default function MaterialDashboardPage() {
               )}
             </div>
 
-            {/* Gráfico de evolução — curva do saldo acumulado */}
+            {/* Painel: sistema vs inventário manual */}
             <Card style={{ marginBottom: 16 }}>
-              <CardHeader title="Evolução do saldo" sub="Curva de estoque por material — período selecionado" />
-              <div style={{ padding: "16px 20px", display: "flex", flexDirection: "column", gap: 20 }}>
-                {materiaisGrafico.length === 0 ? (
-                  <div style={{ color: C.textMute, fontSize: 13, textAlign: "center", padding: "16px 0" }}>Sem dados de evolução</div>
-                ) : materiaisGrafico.filter(m => ["PO BRITA","BRITA ZERO","BRITA 01","CAP"].includes(m)).map(mat => {
-                  const linhas = saldoPorData.filter(s => s.material === mat).sort((a,b) => a.data.localeCompare(b.data));
-                  if (linhas.length < 2) return null;
-                  const vals = linhas.map(l => l.saldo_acumulado_t);
-                  const minVal = Math.min(...vals);
-                  const maxVal = Math.max(...vals);
-                  const range = Math.max(1, maxVal - minVal);
-                  const H = 64, W = 100;
-                  const cor = matColor(mat);
-                  const ultimo = vals[vals.length - 1];
-                  // gera path SVG da linha
-                  const pts = linhas.map((l, i) => {
-                    const x = (i / (linhas.length - 1)) * W;
-                    const y = H - ((l.saldo_acumulado_t - minVal) / range) * H;
-                    return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-                  }).join(" ");
-                  // área abaixo
-                  const areaPath = pts + ` L${W},${H} L0,${H} Z`;
-                  return (
-                    <div key={mat}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                        <span style={{ fontSize: 12, fontWeight: 600, color: C.textMid }}>{mat}</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: cor, fontVariantNumeric: "tabular-nums" }}>{fmtN(ultimo, 1)} t</span>
-                      </div>
-                      <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", height: 64, display: "block", overflow: "visible" }}
-                        preserveAspectRatio="none">
-                        <path d={areaPath} fill={cor} fillOpacity="0.1" stroke="none" />
-                        <path d={pts} fill="none" stroke={cor} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" />
-                      </svg>
-                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: C.textMute, marginTop: 2 }}>
-                        <span>{dateBR(linhas[0].data)}</span>
-                        <span>{dateBR(linhas[linhas.length - 1].data)}</span>
-                      </div>
-                    </div>
-                  );
-                })}
+              <CardHeader
+                title={`Sistema vs inventário físico — ${DATA_INVENTARIO_MANUAL}`}
+                sub="Saldo calculado pelo sistema a partir de 16/03 comparado com medição manual"
+              />
+              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                <thead>
+                  <tr>
+                    <th style={TH}>Material</th>
+                    <th style={THR}>Sistema (calc.)</th>
+                    <th style={THR}>Inventário físico</th>
+                    <th style={THR}>Diferença</th>
+                    <th style={TH}>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {saldos
+                    .filter(s_ => INVENTARIO_MANUAL[s_.material] != null)
+                    .map(s_ => {
+                      const fisico = INVENTARIO_MANUAL[s_.material];
+                      const sistema = s_.saldo_t;
+                      const diff = fisico - sistema;
+                      const pctDiff = sistema !== 0 ? (diff / sistema) * 100 : 0;
+                      const ok = Math.abs(diff) < 5;
+                      const cor = ok ? C.success : Math.abs(diff) < 15 ? C.warning : C.danger;
+                      return (
+                        <tr key={s_.material}>
+                          <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
+                          <td style={{ ...TDR, fontWeight: 600 }}>{fmtN(sistema, 1)}</td>
+                          <td style={{ ...TDR, fontWeight: 600, color: C.primary }}>{fmtN(fisico, 1)}</td>
+                          <td style={{ ...TDR, fontWeight: 700, color: cor }}>
+                            {diff >= 0 ? "+" : ""}{fmtN(diff, 1)}
+                            <span style={{ fontSize: 11, fontWeight: 400, color: C.textMute, marginLeft: 4 }}>
+                              ({pctDiff >= 0 ? "+" : ""}{pctDiff.toFixed(1)}%)
+                            </span>
+                          </td>
+                          <td style={TD}>
+                            <span style={{
+                              display: "inline-flex", alignItems: "center", gap: 4,
+                              padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                              background: ok ? "#ecfdf5" : Math.abs(diff) < 15 ? "#fffbeb" : "#fef2f2",
+                              color: cor,
+                            }}>
+                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: cor, flexShrink: 0 }} />
+                              {ok ? "OK" : diff > 0 ? `Físico maior (+${fmtN(diff,1)}t)` : `Sistema maior (${fmtN(diff,1)}t)`}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                </tbody>
+              </table>
+              <div style={{ padding: "10px 14px", fontSize: 11, color: C.textMute, borderTop: `1px solid ${C.border}` }}>
+                Diferença positiva = físico tem mais que o sistema calcula. Negativa = sistema calculou mais que o físico.
+                Tolerância verde: &lt;5t · Amarelo: 5–15t · Vermelho: &gt;15t
               </div>
             </Card>
 
@@ -1051,6 +1076,184 @@ export default function MaterialDashboardPage() {
               </table>
             </div>
           </Card>
+        )}
+
+        {/* ══════════════════════════════════════
+            TAB: FINANCEIRO
+        ══════════════════════════════════════ */}
+        {activeTab === "financeiro" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+
+            {/* Resumo mensal */}
+            <Card>
+              <CardHeader title="Resumo mensal" sub="Produção, entradas de agregados e saídas por mês" />
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={TH}>Mês</th>
+                      <th style={THR}>Produção CBUQ (ton)</th>
+                      <th style={THR}>Tickets saída</th>
+                      <th style={THR}>Entradas agr. (ton)</th>
+                      <th style={THR}>Tickets entrada</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const mesMap: Record<string, {
+                        prodTon: number; prodQtd: number;
+                        entTon: number;  entQtd: number;
+                      }> = {};
+                      for (const t of tickets) {
+                        const mes = t.data.slice(0, 7); // YYYY-MM
+                        if (!mesMap[mes]) mesMap[mes] = { prodTon: 0, prodQtd: 0, entTon: 0, entQtd: 0 };
+                        if (t.tipo === "SAIDA") {
+                          mesMap[mes].prodTon += Number(t.peso_t);
+                          mesMap[mes].prodQtd += 1;
+                        } else {
+                          const agr = ["PO BRITA","BRITA ZERO","BRITA 01"];
+                          if (agr.includes(t.material)) {
+                            mesMap[mes].entTon += Number(t.peso_t);
+                            mesMap[mes].entQtd += 1;
+                          }
+                        }
+                      }
+                      const meses = Object.keys(mesMap).sort();
+                      if (meses.length === 0) return <EmptyRow cols={5} />;
+                      const totProd = meses.reduce((a, m) => a + mesMap[m].prodTon, 0);
+                      const totEnt  = meses.reduce((a, m) => a + mesMap[m].entTon,  0);
+                      return (
+                        <>
+                          {meses.map(mes => {
+                            const [y, m] = mes.split("-");
+                            const label = `${m}/${y}`;
+                            const d = mesMap[mes];
+                            return (
+                              <tr key={mes}>
+                                <td style={{ ...TD, fontWeight: 500 }}>{label}</td>
+                                <td style={{ ...TDR, fontWeight: 600, color: C.primary }}>{fmtT(d.prodTon, 1)}</td>
+                                <td style={TDR}>{d.prodQtd}</td>
+                                <td style={{ ...TDR, fontWeight: 600, color: "#0d9f6e" }}>{fmtT(d.entTon, 1)}</td>
+                                <td style={TDR}>{d.entQtd}</td>
+                              </tr>
+                            );
+                          })}
+                          <tr style={{ background: "#fafafa" }}>
+                            <td style={{ ...TD, fontWeight: 700 }}>Total período</td>
+                            <td style={{ ...TDR, fontWeight: 700, color: C.primary }}>{fmtT(totProd, 1)}</td>
+                            <td style={{ ...TDR, fontWeight: 700 }}>{tickets.filter(t => t.tipo === "SAIDA").length}</td>
+                            <td style={{ ...TDR, fontWeight: 700, color: "#0d9f6e" }}>{fmtT(totEnt, 1)}</td>
+                            <td style={{ ...TDR, fontWeight: 700 }}>{tickets.filter(t => t.tipo === "ENTRADA" && ["PO BRITA","BRITA ZERO","BRITA 01"].includes(t.material)).length}</td>
+                          </tr>
+                        </>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Entradas por fornecedor */}
+            <Card>
+              <CardHeader title="Entradas por fornecedor" sub="Volume recebido por origem no período" />
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={TH}>Fornecedor</th>
+                      <th style={TH}>Material</th>
+                      <th style={THR}>Tickets</th>
+                      <th style={THR}>Volume (ton)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const map: Record<string, { qtd: number; ton: number }> = {};
+                      for (const t of entradas) {
+                        const key = `${t.origem}||${t.material}`;
+                        if (!map[key]) map[key] = { qtd: 0, ton: 0 };
+                        map[key].qtd += 1;
+                        map[key].ton += Number(t.peso_t);
+                      }
+                      const rows = Object.entries(map)
+                        .map(([k, v]) => { const [orig, mat] = k.split("||"); return { orig, mat, ...v }; })
+                        .sort((a, b) => b.ton - a.ton);
+                      if (rows.length === 0) return <EmptyRow cols={4} />;
+                      const total = rows.reduce((a, r) => a + r.ton, 0);
+                      return (
+                        <>
+                          {rows.map((r, i) => (
+                            <tr key={i}>
+                              <td style={{ ...TD, fontWeight: 500, color: C.text }}>{r.orig || "—"}</td>
+                              <td style={TD}><Tag label={r.mat} color={matColor(r.mat)} /></td>
+                              <td style={TDR}>{r.qtd}</td>
+                              <td style={{ ...TDR, fontWeight: 600 }}>{fmtT(r.ton, 1)}</td>
+                            </tr>
+                          ))}
+                          <tr style={{ background: "#fafafa" }}>
+                            <td colSpan={2} style={{ ...TD, fontWeight: 700 }}>Total</td>
+                            <td style={{ ...TDR, fontWeight: 700 }}>{rows.reduce((a,r)=>a+r.qtd,0)}</td>
+                            <td style={{ ...TDR, fontWeight: 700 }}>{fmtT(total, 1)}</td>
+                          </tr>
+                        </>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+            {/* Saídas por obra/cliente */}
+            <Card>
+              <CardHeader title="Saídas por obra / cliente" sub="Volume entregue por destino no período" />
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                  <thead>
+                    <tr>
+                      <th style={TH}>Obra / Destino</th>
+                      <th style={TH}>Material</th>
+                      <th style={THR}>Tickets (CB)</th>
+                      <th style={THR}>Volume (ton)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const map: Record<string, { qtd: number; ton: number }> = {};
+                      for (const t of saidas) {
+                        const key = `${t.obra}||${t.material}`;
+                        if (!map[key]) map[key] = { qtd: 0, ton: 0 };
+                        map[key].qtd += 1;
+                        map[key].ton += Number(t.peso_t);
+                      }
+                      const rows = Object.entries(map)
+                        .map(([k, v]) => { const [obra, mat] = k.split("||"); return { obra, mat, ...v }; })
+                        .sort((a, b) => b.ton - a.ton);
+                      if (rows.length === 0) return <EmptyRow cols={4} />;
+                      const total = rows.reduce((a, r) => a + r.ton, 0);
+                      return (
+                        <>
+                          {rows.map((r, i) => (
+                            <tr key={i}>
+                              <td style={{ ...TD, fontWeight: 500, color: C.text, fontSize: 12 }}>{r.obra || "—"}</td>
+                              <td style={TD}><Tag label={r.mat} color={matColor(r.mat)} /></td>
+                              <td style={TDR}>{r.qtd}</td>
+                              <td style={{ ...TDR, fontWeight: 600 }}>{fmtT(r.ton, 1)}</td>
+                            </tr>
+                          ))}
+                          <tr style={{ background: "#fafafa" }}>
+                            <td colSpan={2} style={{ ...TD, fontWeight: 700 }}>Total</td>
+                            <td style={{ ...TDR, fontWeight: 700 }}>{rows.reduce((a,r)=>a+r.qtd,0)}</td>
+                            <td style={{ ...TDR, fontWeight: 700 }}>{fmtT(total, 1)}</td>
+                          </tr>
+                        </>
+                      );
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </Card>
+
+          </div>
         )}
 
       </div>
