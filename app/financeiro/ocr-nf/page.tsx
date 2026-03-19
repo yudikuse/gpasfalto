@@ -7,9 +7,9 @@ import { useCallback, useRef, useState, type CSSProperties } from "react";
 // CONSTANTES
 // ─────────────────────────────────────────────
 
-const SIENGE_TENANT = "gpaengenharia";
-const SIENGE_USER   = "gpaengenharia-ocr-nf";
-const SIENGE_PASS   = "jZL3iphiJLGt6T01bveto549CAAa56Gi";
+const SIENGE_TENANT = process.env.NEXT_PUBLIC_SIENGE_TENANT ?? "";
+const SIENGE_USER   = process.env.NEXT_PUBLIC_SIENGE_USER ?? "";
+const SIENGE_PASS   = process.env.NEXT_PUBLIC_SIENGE_PASS ?? "";
 const SIENGE_BASE   = `https://api.sienge.com.br/${SIENGE_TENANT}/public/api/v1`;
 
 const C = {
