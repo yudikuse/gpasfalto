@@ -375,82 +375,6 @@ export default function MaterialDashboardPage() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
-  // ── Export Excel ──────────────────────────
-  useEffect(() => {
-    const exportar = (comTickets: boolean) => {
-      const XLSX = (window as any).XLSX;
-      if (!XLSX) return;
-
-      const wb = XLSX.utils.book_new();
-
-      // Aba 1: Resumo mensal
-      const mesMap: Record<string, { prodTon: number; prodQtd: number; entTon: number; entQtd: number }> = {};
-      for (const t of tickets) {
-        const mes = t.data.slice(0, 7);
-        if (!mesMap[mes]) mesMap[mes] = { prodTon: 0, prodQtd: 0, entTon: 0, entQtd: 0 };
-        if (t.tipo === "SAIDA") { mesMap[mes].prodTon += Number(t.peso_t); mesMap[mes].prodQtd += 1; }
-        else if (["PO BRITA","BRITA ZERO","BRITA 01"].includes(t.material)) {
-          mesMap[mes].entTon += Number(t.peso_t); mesMap[mes].entQtd += 1;
-        }
-      }
-      const resumoData = [
-        ["Mês", "Produção CBUQ (ton)", "Tickets Saída", "Entradas Agregados (ton)", "Tickets Entrada"],
-        ...Object.entries(mesMap).sort().map(([m, d]) => {
-          const [y, mo] = m.split("-");
-          return [`${mo}/${y}`, d.prodTon.toFixed(3), d.prodQtd, d.entTon.toFixed(3), d.entQtd];
-        }),
-      ];
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(resumoData), "Resumo Mensal");
-
-      // Aba 2: Fornecedores
-      const fornMap: Record<string, { qtd: number; ton: number }> = {};
-      for (const t of entradas) {
-        const k = `${t.origem}||${t.material}`;
-        if (!fornMap[k]) fornMap[k] = { qtd: 0, ton: 0 };
-        fornMap[k].qtd += 1; fornMap[k].ton += Number(t.peso_t);
-      }
-      const fornData = [
-        ["Fornecedor", "Material", "Tickets", "Volume (ton)"],
-        ...Object.entries(fornMap)
-          .sort((a, b) => b[1].ton - a[1].ton)
-          .map(([k, v]) => { const [orig, mat] = k.split("||"); return [orig, mat, v.qtd, v.ton.toFixed(3)]; }),
-      ];
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(fornData), "Fornecedores");
-
-      // Aba 3: Obras / Clientes
-      const obrasMap: Record<string, { qtd: number; ton: number }> = {};
-      for (const t of saidas) {
-        const k = `${t.obra}||${t.material}`;
-        if (!obrasMap[k]) obrasMap[k] = { qtd: 0, ton: 0 };
-        obrasMap[k].qtd += 1; obrasMap[k].ton += Number(t.peso_t);
-      }
-      const obrasData = [
-        ["Obra / Cliente", "Material", "Tickets (CB)", "Volume (ton)"],
-        ...Object.entries(obrasMap)
-          .sort((a, b) => b[1].ton - a[1].ton)
-          .map(([k, v]) => { const [obra, mat] = k.split("||"); return [obra, mat, v.qtd, v.ton.toFixed(3)]; }),
-      ];
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(obrasData), "Obras Clientes");
-
-      // Aba 4 (opcional): Todos os tickets
-      if (comTickets) {
-        const ticketsData = [
-          ["ID", "Data", "Tipo", "Veículo", "Origem", "Obra", "Material", "Peso (ton)"],
-          ...tickets.map(t => [t.id, t.data, t.tipo, t.veiculo, t.origem, t.obra, t.material, Number(t.peso_t).toFixed(3)]),
-        ];
-        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(ticketsData), "Tickets");
-      }
-
-      const periodo = `${dateStart}_${dateEnd}`.replace(/-/g, "");
-      XLSX.writeFile(wb, `materiais_${periodo}.xlsx`);
-    };
-
-    const btnSem = document.getElementById("btn-export-sem");
-    const btnCom = document.getElementById("btn-export-com");
-    if (btnSem) btnSem.onclick = () => exportar(false);
-    if (btnCom) btnCom.onclick = () => exportar(true);
-  }, [tickets, entradas, saidas, dateStart, dateEnd]);
-
   // ── Cálculos — inalterados ───────────────
   const tks = tickets.filter(t => {
     if (filterObra && t.obra !== filterObra) return false;
@@ -479,6 +403,68 @@ export default function MaterialDashboardPage() {
   const ogrTotal = diarios.reduce((acc, d) => acc + (d.ogr_litros ?? 0), 0);
   const totalProducaoT = Object.values(producaoMap).reduce((a, b) => a + b, 0);
   const materiaisGrafico = Array.from(new Set(saldoPorData.map(s => s.material)));
+
+  // ── Export Excel ──────────────────────────
+  useEffect(() => {
+    const exportar = (comTickets: boolean) => {
+      const XLSX = (window as any).XLSX;
+      if (!XLSX) { alert("Aguarde o carregamento da biblioteca de Excel."); return; }
+      const wb = XLSX.utils.book_new();
+      // Aba 1: Resumo mensal
+      const mesMap: Record<string, { prodTon: number; prodQtd: number; entTon: number; entQtd: number }> = {};
+      for (const t of tickets) {
+        const mes = t.data.slice(0, 7);
+        if (!mesMap[mes]) mesMap[mes] = { prodTon: 0, prodQtd: 0, entTon: 0, entQtd: 0 };
+        if (t.tipo === "SAIDA") { mesMap[mes].prodTon += Number(t.peso_t); mesMap[mes].prodQtd += 1; }
+        else if (["PO BRITA","BRITA ZERO","BRITA 01"].includes(t.material)) {
+          mesMap[mes].entTon += Number(t.peso_t); mesMap[mes].entQtd += 1;
+        }
+      }
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        ["Mês","Produção CBUQ (ton)","Tickets Saída","Entradas Agregados (ton)","Tickets Entrada"],
+        ...Object.entries(mesMap).sort().map(([m,d]) => {
+          const [y,mo] = m.split("-");
+          return [`${mo}/${y}`, Number(d.prodTon.toFixed(3)), d.prodQtd, Number(d.entTon.toFixed(3)), d.entQtd];
+        }),
+      ]), "Resumo Mensal");
+      // Aba 2: Fornecedores
+      const fornMap: Record<string, {qtd:number;ton:number}> = {};
+      for (const t of entradas) {
+        const k = `${t.origem}||${t.material}`;
+        if (!fornMap[k]) fornMap[k] = {qtd:0,ton:0};
+        fornMap[k].qtd += 1; fornMap[k].ton += Number(t.peso_t);
+      }
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        ["Fornecedor","Material","Tickets","Volume (ton)"],
+        ...Object.entries(fornMap).sort((a,b)=>b[1].ton-a[1].ton)
+          .map(([k,v])=>{ const [o,m]=k.split("||"); return [o,m,v.qtd,Number(v.ton.toFixed(3))]; }),
+      ]), "Fornecedores");
+      // Aba 3: Obras
+      const obrasMap: Record<string, {qtd:number;ton:number}> = {};
+      for (const t of saidas) {
+        const k = `${t.obra}||${t.material}`;
+        if (!obrasMap[k]) obrasMap[k] = {qtd:0,ton:0};
+        obrasMap[k].qtd += 1; obrasMap[k].ton += Number(t.peso_t);
+      }
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+        ["Obra / Cliente","Material","Tickets (CB)","Volume (ton)"],
+        ...Object.entries(obrasMap).sort((a,b)=>b[1].ton-a[1].ton)
+          .map(([k,v])=>{ const [ob,m]=k.split("||"); return [ob,m,v.qtd,Number(v.ton.toFixed(3))]; }),
+      ]), "Obras Clientes");
+      // Aba 4 opcional: tickets
+      if (comTickets) {
+        XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
+          ["ID","Data","Tipo","Veículo","Origem","Obra","Material","Peso (ton)"],
+          ...tickets.map(t=>[t.id,t.data,t.tipo,t.veiculo,t.origem,t.obra,t.material,Number(Number(t.peso_t).toFixed(3))]),
+        ]), "Tickets");
+      }
+      XLSX.writeFile(wb, `materiais_${dateStart}_${dateEnd}.xlsx`.replace(/-/g,""));
+    };
+    const btnSem = document.getElementById("btn-export-sem");
+    const btnCom = document.getElementById("btn-export-com");
+    if (btnSem) (btnSem as HTMLButtonElement).onclick = () => exportar(false);
+    if (btnCom) (btnCom as HTMLButtonElement).onclick = () => exportar(true);
+  }, [tickets, entradas, saidas, dateStart, dateEnd]);
 
   // ── Estilos inline ───────────────────────
   const inp: CSSProperties = {
