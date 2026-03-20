@@ -176,27 +176,65 @@ function parseNf(texto: string, pagina: number) {
       })();
 
   // ── Descrição dos produtos ────────────────────────────────────────
-  // O Vision OCR do DANFE extrai os dados do produto em linhas da tabela.
-  // Estratégia 1: linha após o label da coluna de descrição
-  let descricao =
-    t.match(/DESCRI[ÇC][ÃA]O\s+DO\s+PRODUTO\s*[\/\s]\s*SERVI[ÇC]O[^\n]*\n([^\n]{3,120})/i)?.[1]
-    // Estratégia 2: linha após "DADOS DO PRODUTO/SERVIÇO"
-    ?? t.match(/DADOS\s+DO\s+PRODUTO[^\n]*\n(?:[^\n]{0,30}\n){1,3}([A-ZÁÉÍÓÚ][^\n]{3,80})/i)?.[1]
-    // Estratégia 3: linha não numérica que vem logo antes ou depois do NCM (8 dígitos)
-    ?? (() => {
-        const mNcm = t.match(/([A-ZÁÉÍÓÚA-Z][^\n]{3,60})\n[^\n]*\b\d{8}\b/i)
-                  || t.match(/\b\d{8}\b[^\n]*\n([A-ZÁÉÍÓÚ][^\n]{3,60})/i);
-        return mNcm?.[1] ?? "";
-      })()
-    // Estratégia 4: qualquer linha com produto típico (BRITA, TUBO, ASFALTO, etc.)
-    ?? t.match(/\b(BRITA|TUBO|ASFALTO|CAP|CBUQ|AREIA|PEDRA|CIMENTO|TINTA|DIESEL|GASOLINA|SERVICO|MANUTENCAO|LOCACAO|AGREGADO|EMULSAO|IMPRIMACAO|CONCRETO|PAVIMENTO)[^\n]{0,80}/i)?.[0]
-    ?? "";
+  // O Vision OCR extrai colunas separadas. A descrição pode aparecer como:
+  // - linha solta "BRITA 01" entre cabeçalhos da tabela
+  // - bloco em "DADOS DO PRODUTO" com várias linhas de itens
+  // Estratégia: extrair TODAS as linhas de descrição e montar resumo
 
-  // Limpa cabeçalhos de tabela e ruídos comuns do OCR
-  const BLACKLIST_DESC = /^(NCM|CST|CFOP|UN|QTD|QUANT|VALOR|UNIT|TOTAL|ICMS|IPI|PIS|COFINS|ALIQ|BASE|BC|PROD|COD|SH|CEST|DESCRI[ÇC][ÃA]O|SERVI[ÇC]O|PRODUTO|DADOS|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORTA|PESO|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV)$/i;
+  // Linhas que são claramente cabeçalho/ruído de tabela
+  const LIXO_DESC = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|DADOS\s+DO|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORT|PESO\b|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|UNIDADE|ROLO\b)/i;
 
-  descricao = limpar(descricao.split("\n")[0]);
-  if (descricao.length < 3 || /^\d+$/.test(descricao) || BLACKLIST_DESC.test(descricao.trim())) descricao = "";
+  // Função para identificar se uma linha parece descrição de produto
+  function ehDescricao(l: string): boolean {
+    if (l.length < 3 || l.length > 100) return false;
+    if (/^\d+[,\.]?\d*$/.test(l)) return false;           // só número
+    if (/^\d{8}$/.test(l)) return false;                  // NCM
+    if (/^\d{5,}\/\d+/.test(l)) return false;             // lançamento
+    if (/^\d{2}\/\d{2}\/\d{4}/.test(l)) return false;    // data
+    if (/^[0-9\s,\.\/\-]+$/.test(l)) return false;        // só nums/pontuação
+    if (LIXO_DESC.test(l.trim())) return false;
+    if (/^(CST|IBS|CBS|IS|RT|Total\s+RT|UF\s+DE|CÓD\.|COD\.)/i.test(l)) return false;
+    // Deve ter ao menos uma letra maiúscula e parecer nome de produto
+    return /[A-ZÁÉÍÓÚ]{2,}/.test(l);
+  }
+
+  // Encontra o bloco de produtos no texto
+  const idxDados = t.search(/DADOS\s+DO\s+PRODUTO/i);
+  const idxFim   = t.search(/DADOS\s+ADICIONAIS|CÁLCULO\s+DO\s+ISSQN|INFORMAÇÕES\s+COMPLEMENTARES/i);
+  const bloco    = idxDados >= 0
+    ? t.slice(idxDados, idxFim > idxDados ? idxFim : idxDados + 3000)
+    : t;
+
+  // Extrai todas as linhas que parecem descrição de produto
+  const linhasBloco = bloco.split("\n").map(l => l.trim()).filter(Boolean);
+  const itens: string[] = [];
+  const vistos = new Set<string>();
+
+  for (const l of linhasBloco) {
+    if (!ehDescricao(l)) continue;
+    // Remove prefixos como "CST:000 cTrib..." que aparecem inline
+    const limpo = l.replace(/\s*CST:.*$/i,"").replace(/\s*IBS:.*$/i,"").trim();
+    if (limpo.length < 3) continue;
+    const norm = limpo.toUpperCase().slice(0,30);
+    if (vistos.has(norm)) continue;
+    vistos.add(norm);
+    itens.push(limpar(limpo));
+    if (itens.length >= 5) break; // máximo 5 itens distintos
+  }
+
+  // Monta descrição final
+  let descricao = "";
+  if (itens.length === 0) {
+    // Fallback: qualquer produto típico no texto completo
+    const m = t.match(/\b(BRITA|TUBO|ASFALTO|CAP\b|CBUQ|AREIA|PEDRA|CIMENTO|DIESEL|GASOLINA|OLEO\s+\w|TINTA|PNEU|FILTRO|ROLAMENTO|PECA|PARAFUSO|MANGUEIRA|FUSIVEL|CHAVE\s+\w|AGREGADO|EMULSAO|CONCRETO)[^\n]{0,60}/i);
+    if (m) descricao = limpar(m[0].split("\n")[0]);
+  } else if (itens.length === 1) {
+    descricao = itens[0];
+  } else if (itens.length <= 3) {
+    descricao = itens.join(", ");
+  } else {
+    descricao = `${itens.slice(0,2).join(", ")} e mais ${itens.length - 2} itens`;
+  }
 
   // ── Condição de pagamento ─────────────────────────────────────────
   const condicao_pagamento =
