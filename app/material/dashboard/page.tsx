@@ -296,15 +296,15 @@ export default function MaterialDashboardPage() {
 
   // Inventário manual de 18/03 (snapshot físico)
   const INVENTARIO_MANUAL: Record<string, number> = {
-    "PO BRITA":   136.88,
-    "BRITA ZERO": 105.74,
-    "BRITA 01":    51.38,
-    "CAP":         61.94,
-    "OGR":         18.582,
+    "PO BRITA":   104.980,
+    "BRITA ZERO":  69.200,
+    "BRITA 01":    51.380,
+    "CAP":         53.050,
+    "OGR":         17.202,
   };
-  const DATA_INVENTARIO_MANUAL = "18/03/2026";
-  const DATA_INV_ISO = "2026-03-18";
-  const DATA_INV_ANTERIOR_ISO = "2026-03-16"; // data do último ajuste de inventário
+  const DATA_INVENTARIO_MANUAL = "19/03/2026";
+  const DATA_INV_ISO = "2026-03-19";
+  const DATA_INV_ANTERIOR_ISO = "2026-03-19"; // mesma data — saldo já inclui o dia
 
   // Calcula saldo do sistema até a data do inventário manual
   // Fórmula: saldo_físico_16/03 + entradas(17→18/03) - consumo_traço(17→18/03)
