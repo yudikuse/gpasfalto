@@ -4,10 +4,7 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ChangeEvent } from "react";
 import { matchCredor, buscarTodosCredores, upsertCredores, normalizar, type Credor } from "@/app/financeiro/credores/page";
 
-const SIENGE_TENANT = process.env.NEXT_PUBLIC_SIENGE_TENANT ?? "";
-const SIENGE_USER   = process.env.NEXT_PUBLIC_SIENGE_USER   ?? "";
-const SIENGE_PASS   = process.env.NEXT_PUBLIC_SIENGE_PASS   ?? "";
-const SIENGE_BASE   = `https://api.sienge.com.br/${SIENGE_TENANT}/public/api/v1`;
+const SIENGE_BASE   = `/api/financeiro`; // proxy server-side — sem CORS
 
 const C = {
   bg:"#f4f5f7",surface:"#ffffff",border:"#e8eaed",borderMid:"#d1d5db",
@@ -85,15 +82,15 @@ export default function PdfNfPage() {
   // Busca credor no Sienge pelo CNPJ.
   // Se achar → preenche o ID e salva no Supabase para próxima vez.
   // Retorna o id encontrado ou null.
+  // Usa route server-side para evitar CORS
   const buscarCredorNaSienge = async(cnpj:string): Promise<{id:number;nome:string}|null>=>{
     const limpo=cnpj.replace(/\D/g,""); if(!limpo) return null;
     try{
-      const auth=btoa(`${SIENGE_USER}:${SIENGE_PASS}`);
-      const r=await fetch(`${SIENGE_BASE}/creditors?cpfCnpj=${limpo}&limit=5`,{headers:{Authorization:`Basic ${auth}`,Accept:"application/json"}});
+      const r=await fetch(`/api/financeiro/buscar-credor?cnpj=${limpo}`);
       if(!r.ok) return null;
-      const d=await r.json(); const list=d.results??d.data??(Array.isArray(d)?d:[]);
-      if(!list.length) return null;
-      const credor={id:list[0].id as number, nome:(list[0].name??list[0].companyName??"") as string};
+      const d=await r.json();
+      if(!d.ok||!d.found) return null;
+      const credor={id:d.id as number, nome:d.nome as string};
       // Salva no Supabase para não precisar buscar da próxima vez
       upsertCredores([{codigo:credor.id,nome:credor.nome}]).catch(()=>{});
       setCredores(cs=>{ const exists=cs.find(c=>c.codigo===credor.id); if(exists)return cs; return [...cs,{codigo:credor.id,nome:credor.nome,nome_norm:normalizar(credor.nome)}]; });
@@ -107,23 +104,19 @@ export default function PdfNfPage() {
     const cnpjLimpo=nf.cnpj_fornecedor.replace(/\D/g,"");
     if(!nf.fornecedor||!cnpjLimpo){ alert("Preencha o nome e CNPJ do fornecedor antes de criar."); return; }
     try{
-      const auth=btoa(`${SIENGE_USER}:${SIENGE_PASS}`);
-      const tipoDoc=cnpjLimpo.length===14?"J":"F"; // J=CNPJ F=CPF
-      const payload={
-        name:nf.fornecedor,
-        cpfCnpj:cnpjLimpo,
-        personType:tipoDoc,
-      };
-      const r=await fetch(`${SIENGE_BASE}/creditors`,{method:"POST",headers:{Authorization:`Basic ${auth}`,"Content-Type":"application/json",Accept:"application/json"},body:JSON.stringify(payload)});
-      const txt=await r.text(); let data:any={}; try{data=JSON.parse(txt);}catch{}
-      if(r.ok||r.status===201){
-        const novoId=String(data.id??data.creditorId??"");
-        setNotas(ns=>ns.map(n=>n._id===nfId?{...n,_creditorId:novoId,_creditorName:nf.fornecedor,_status:"pendente"}:n));
-        // Salva no Supabase
+      const r=await fetch("/api/financeiro/buscar-credor",{
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({name:nf.fornecedor,cpfCnpj:cnpjLimpo,personType:cnpjLimpo.length===14?"J":"F"}),
+      });
+      const data=await r.json();
+      if(data.ok){
+        const novoId=String(data.id??"");
+        setNotas(ns=>ns.map(n=>n._id===nfId?{...n,_creditorId:novoId,_creditorName:nf.fornecedor}:n));
         if(novoId) upsertCredores([{codigo:parseInt(novoId),nome:nf.fornecedor}]).catch(()=>{});
-        alert(`✓ Credor criado! ID Sienge: ${novoId}`);
+        alert(`✓ Credor criado! ID: ${novoId}`);
       } else {
-        alert(`Erro ao criar credor (${r.status}): ${txt.slice(0,200)}`);
+        alert(`Erro ao criar credor: ${data.error?.slice(0,200)}`);
       }
     }catch(e:any){ alert("Falha: "+e.message); }
   };
