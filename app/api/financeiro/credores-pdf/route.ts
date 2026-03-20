@@ -80,49 +80,70 @@ function normalizar(s: string) {
 function parsearCredores(texto: string): Credor[] {
   const credores = new Map<number, string>();
 
-  // Relatório Contas Pagas do Sienge — duas situações:
-  // 1. Nome + código na mesma linha: "FETZ MINERADORA LTDA. 5197 NFEB.73354 ..."
-  // 2. Nome quebrado em várias linhas, código na última:
-  //      "AUTO PEÇAS"
-  //      "BANDEIRANTES LTDA"
-  //      "1201 NFEA.9664 ..."
+  // O Vision OCR extrai as colunas da tabela separadas.
+  // Formato real:
+  //   "FABIANA LEITE"     ← nome (linha própria)
+  //   "5069"              ← código (linha própria, só dígitos)
+  //   "RECB.200223"       ← documento
+  // Ou nome+código inline: "ADRIANO MATOSO FLEITA 6172"
 
-  // Regex 1: nome embutido na linha antes do código
-  const RE_COM_NOME = /^(.{3,60}?)\s{1,6}(\d{1,5})\s{1,6}[A-Z]{2,6}[.\-][A-Z0-9]/;
-  // Regex 2: linha começa direto com código (nome estava no buffer)
-  const RE_SEM_NOME = /^(\d{1,5})\s{1,6}[A-Z]{2,6}[.\-][A-Z0-9]/;
+  const IGNORAR = /^(Credor\b|Cd\.\s|Empresa\s|Per[íi]odo|Data\s+da\s+baixa|Total\s+d|SIENGE|Contas\s+Pag|ALVARENGA|Lançamento|Dt\.\s|Valor\s|Acréscimo|Desconto|Líquido|Seq\.|Qt\.)/i;
 
-  const IGNORAR = /^(Credor\b|Cd\.\s|Empresa\s|Per[íi]odo\s|Data\s+da\s+baixa|Total\s+d|20\/\d{2}\/|SIENGE|Contas\s+Pag)/i;
+  // Descarta valores monetários, lançamentos, datas e sequências numéricas
+  const EH_LIXO = (l: string) =>
+    /^\d{1,3}[\d\.]*,\d{2}T?$/.test(l)         ||  // 3.225,21T  0,00
+    /^\d{5,}\/\d+/.test(l)                      ||  // 105388/38
+    /^\d{1,3}\s+\d{2}\/\d{2}\/\d{4}/.test(l)   ||  // 50 01/03/2026
+    /^\d{2}\/\d{2}\/\d{4}/.test(l)              ||  // 01/03/2026
+    /^[\d\s\/]{6,}$/.test(l);                       // só números/barras
+
+  const EH_CODIGO  = (l: string) => /^\d{1,5}$/.test(l.trim());
+  const EH_DOC     = (l: string) => /^[A-Z]{2,6}[.\-][A-Z0-9]/i.test(l.trim());
+  const RE_INLINE  = /^(.{3,60}?)\s{1,6}(\d{1,5})$/;
 
   const linhas = texto.split("\n").map(l => l.trim()).filter(Boolean);
   let buf = "";
 
   for (const linha of linhas) {
-    if (IGNORAR.test(linha)) { buf = ""; continue; }
+    if (IGNORAR.test(linha) || EH_LIXO(linha) || EH_DOC(linha)) { buf = ""; continue; }
 
-    // Caso 1: nome inline
-    const m1 = RE_COM_NOME.exec(linha);
-    if (m1) {
-      const nome   = (buf ? `${buf} ${m1[1]}` : m1[1]).replace(/\s+/g, " ").trim();
-      const codigo = parseInt(m1[2], 10);
-      if (!credores.has(codigo) && nome.length >= 3) credores.set(codigo, nome);
+    // Caso 1: linha só com código → pareia com buf
+    if (EH_CODIGO(linha) && buf) {
+      const codigo = parseInt(linha, 10);
+      // Se buf acumulou mais de um nome (> 60 chars), pega só o trecho final
+      const nome = (buf.length > 65
+        ? buf.split(" ").slice(-4).join(" ")  // últimas 4 palavras
+        : buf
+      ).replace(/\s+/g, " ").trim();
+      if (nome.length >= 3 && !credores.has(codigo)) credores.set(codigo, nome);
       buf = "";
       continue;
     }
 
-    // Caso 2: código no início, nome estava no buffer
-    const m2 = RE_SEM_NOME.exec(linha);
-    if (m2 && buf) {
-      const codigo = parseInt(m2[1], 10);
-      const nome   = buf.replace(/\s+/g, " ").trim();
-      if (!credores.has(codigo) && nome.length >= 3) credores.set(codigo, nome);
+    // Caso 2: nome+código inline
+    const m = RE_INLINE.exec(linha);
+    if (m && !EH_DOC(linha) && !EH_LIXO(linha)) {
+      const nome = (buf ? `${buf} ${m[1]}` : m[1]).replace(/\s+/g, " ").trim();
+      const codigo = parseInt(m[2], 10);
+      if (nome.length >= 3 && !credores.has(codigo)) credores.set(codigo, nome);
       buf = "";
       continue;
     }
 
-    // Acumula no buffer se parece ser parte de um nome (não começa com número longo, não é rodapé)
-    if (linha.length >= 2 && linha.length <= 70 && !/^\d{4,}/.test(linha) && !IGNORAR.test(linha)) {
-      buf = buf ? `${buf} ${linha}` : linha;
+    // Caso 3: acumula no buffer como parte do nome
+    if (linha.length >= 2 && linha.length <= 70 && !EH_CODIGO(linha) && !EH_DOC(linha) && !EH_LIXO(linha)) {
+      // Se buf já parece um nome completo (tem sufixo empresarial) e a nova linha
+      // também parece início de novo nome, reseta buf (eram dois credores diferentes)
+      const SUFIXO = /\b(LTDA\.?|S\.?A\.?|ME\b|EPP\b|EIRELI\b|MINERADORA|TRANSPORTES|CONSTRUTORA)/i;
+      const deveResetar = buf.length > 0
+        && SUFIXO.test(buf)
+        && linha.length >= 4
+        && !/^(LTDA\.?|S\.?A\.?|ME\b|EPP\b|EIRELI\b)$/i.test(linha.trim());
+      if (deveResetar) {
+        buf = linha;
+      } else {
+        buf = buf ? `${buf} ${linha}` : linha;
+      }
     } else {
       buf = "";
     }
