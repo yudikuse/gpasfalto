@@ -65,6 +65,24 @@ type DiarioUsina = {
   ogr_litros: number | null;
 };
 
+type InvFisicoRow = {
+  data: string;
+  material: string;
+  saldo_t: number;
+};
+
+type BalancoDiarioRow = {
+  data: string;
+  material: string;
+  saldo_ontem: number;
+  entradas: number;
+  saldo_hoje: number;
+  consumo_real: number;
+  consumo_calculado: number;
+  desvio: number;
+  producao_t: number | null;
+};
+
 // ─────────────────────────────────────────────
 // NORMALIZAÇÃO CAP / OGR (front-end)
 // Enquanto o UPDATE no banco não roda, consolida aqui.
@@ -293,36 +311,10 @@ export default function MaterialDashboardPage() {
   const [loading,      setLoading]      = useState(true);
   const [activeTab, setActiveTab] = useState<"estoque"|"producao"|"entradas"|"saidas"|"pedidos"|"financeiro">("financeiro");
   const [reconcOpen,   setReconcOpen]   = useState(false);
+  const [invFisicoLatest, setInvFisicoLatest] = useState<InvFisicoRow[]>([]);
+  const [balancoDiario,   setBalancoDiario]   = useState<BalancoDiarioRow[]>([]);
 
-  // Inventário manual de 18/03 (snapshot físico)
-  const INVENTARIO_MANUAL: Record<string, number> = {
-    "PO BRITA":   104.980,
-    "BRITA ZERO":  69.200,
-    "BRITA 01":    51.380,
-    "CAP":         53.050,
-    "OGR":         17.202,
-  };
-  const DATA_INVENTARIO_MANUAL = "19/03/2026";
-  const DATA_INV_ISO = "2026-03-19";
-  const DATA_INV_ANTERIOR_ISO = "2026-03-19"; // mesma data — saldo já inclui o dia
-
-  // Calcula saldo do sistema até a data do inventário manual
-  // Fórmula: saldo_físico_16/03 + entradas(17→18/03) - consumo_traço(17→18/03)
-  const saldoSistemaAteInv = (material: string): number => {
-    const ajusteInv = ajustes.find(a =>
-      a.motivo === 'AJUSTE INVENTARIO' && normalizeMaterial(a.material) === material
-    );
-    const saldoBase = ajusteInv?.saldo_fisico_t ?? 0; // saldo físico de 16/03
-
-    // movimentos de 17/03 até 18/03
-    const movs = saldoPorData.filter(s =>
-      normalizeMaterial(s.material) === material &&
-      s.data > DATA_INV_ANTERIOR_ISO &&
-      s.data <= DATA_INV_ISO
-    );
-    const delta = movs.reduce((acc, m) => acc + m.movimento_t, 0);
-    return saldoBase + delta;
-  };
+  // Dados dinâmicos — derivados de invFisicoLatest e balancoDiario
 
   // ── Fetch — inalterado ───────────────────
   const fetchAll = useCallback(async () => {
@@ -370,6 +362,30 @@ export default function MaterialDashboardPage() {
       setAjustes((ajustesData as any[]) ?? []);
       setObras(Array.from(new Set(tks.map(t => t.obra).filter(Boolean))).sort());
       setMateriais(Array.from(new Set(tks.map(t => t.material).filter(Boolean))).sort());
+
+      // Fetch inventário físico mais recente (D-1)
+      const { data: latestDateData } = await supabase
+        .from("material_inventario_fisico")
+        .select("data")
+        .lt("data", isoToday())
+        .order("data", { ascending: false })
+        .limit(1);
+      const latestInvDate = (latestDateData as any[])?.[0]?.data ?? null;
+      if (latestInvDate) {
+        const [{ data: invData }, { data: balData }] = await Promise.all([
+          supabase.from("material_inventario_fisico")
+            .select("data,material,saldo_t")
+            .eq("data", latestInvDate),
+          supabase.from("material_balanco_diario_v")
+            .select("data,material,saldo_ontem,entradas,saldo_hoje,consumo_real,consumo_calculado,desvio,producao_t")
+            .eq("data", latestInvDate),
+        ]);
+        setInvFisicoLatest((invData as InvFisicoRow[]) ?? []);
+        setBalancoDiario((balData as BalancoDiarioRow[]) ?? []);
+      } else {
+        setInvFisicoLatest([]);
+        setBalancoDiario([]);
+      }
     } finally { setLoading(false); }
   }, [dateStart, dateEnd]);
 
@@ -712,61 +728,79 @@ export default function MaterialDashboardPage() {
 
             {/* Painel: sistema vs inventário manual */}
             <Card style={{ marginBottom: 16 }}>
-              <CardHeader
-                title={`Sistema vs inventário físico — ${DATA_INVENTARIO_MANUAL}`}
-                sub="Saldo calculado pelo sistema a partir de 16/03 comparado com medição manual"
-              />
-              <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
-                <thead>
-                  <tr>
-                    <th style={TH}>Material</th>
-                    <th style={THR}>Sistema (calc.)</th>
-                    <th style={THR}>Inventário físico</th>
-                    <th style={THR}>Diferença</th>
-                    <th style={TH}>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {saldos
-                    .filter(s_ => INVENTARIO_MANUAL[s_.material] != null)
-                    .map(s_ => {
-                      const fisico  = INVENTARIO_MANUAL[s_.material];
-                      const sistema = saldoSistemaAteInv(s_.material);
-                      const diff    = fisico - sistema;
-                      const pctDiff = sistema !== 0 ? (diff / sistema) * 100 : 0;
-                      const ok = Math.abs(diff) < 5;
-                      const cor = ok ? C.success : Math.abs(diff) < 15 ? C.warning : C.danger;
-                      return (
-                        <tr key={s_.material}>
-                          <td style={TD}><Tag label={s_.material} color={matColor(s_.material)} /></td>
-                          <td style={{ ...TDR, fontWeight: 600 }}>{fmtN(sistema, 1)}</td>
-                          <td style={{ ...TDR, fontWeight: 600, color: C.primary }}>{fmtN(fisico, 1)}</td>
-                          <td style={{ ...TDR, fontWeight: 700, color: cor }}>
-                            {diff >= 0 ? "+" : ""}{fmtN(diff, 1)}
-                            <span style={{ fontSize: 11, fontWeight: 400, color: C.textMute, marginLeft: 4 }}>
-                              ({pctDiff >= 0 ? "+" : ""}{pctDiff.toFixed(1)}%)
-                            </span>
-                          </td>
-                          <td style={TD}>
-                            <span style={{
-                              display: "inline-flex", alignItems: "center", gap: 4,
-                              padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
-                              background: ok ? "#ecfdf5" : Math.abs(diff) < 15 ? "#fffbeb" : "#fef2f2",
-                              color: cor,
-                            }}>
-                              <span style={{ width: 6, height: 6, borderRadius: "50%", background: cor, flexShrink: 0 }} />
-                              {ok ? "OK" : diff > 0 ? `Físico maior (+${fmtN(diff,1)}t)` : `Sistema maior (${fmtN(diff,1)}t)`}
-                            </span>
-                          </td>
+              {invFisicoLatest.length === 0 ? (
+                <div style={{ padding: 24, textAlign: "center", color: C.textMute, fontSize: 13 }}>
+                  Nenhum inventário físico registrado. Insira dados na tabela <code>material_inventario_fisico</code>.
+                </div>
+              ) : (() => {
+                const dataInv = invFisicoLatest[0].data;
+                const dataInvBR = dateBR(dataInv);
+                return (
+                  <>
+                    <CardHeader
+                      title={`Sistema vs inventário físico — ${dataInvBR}`}
+                      sub="Saldo calculado pelo traço comparado com medição manual (D-1)"
+                    />
+                    <table style={{ width: "100%", borderCollapse: "collapse" as const, fontSize: 13 }}>
+                      <thead>
+                        <tr>
+                          <th style={TH}>Material</th>
+                          <th style={THR}>Sistema (calc.)</th>
+                          <th style={THR}>Inventário físico</th>
+                          <th style={THR}>Diferença</th>
+                          <th style={TH}>Status</th>
                         </tr>
-                      );
-                    })}
-                </tbody>
-              </table>
-              <div style={{ padding: "10px 14px", fontSize: 11, color: C.textMute, borderTop: `1px solid ${C.border}` }}>
-                Diferença positiva = físico tem mais que o sistema calcula. Negativa = sistema calculou mais que o físico.
-                Tolerância verde: &lt;5t · Amarelo: 5–15t · Vermelho: &gt;15t
-              </div>
+                      </thead>
+                      <tbody>
+                        {invFisicoLatest.map(inv => {
+                          const bal = balancoDiario.find(b => b.material === inv.material);
+                          // sistema = saldo_ontem + entradas - consumo_calculado (o que o traço prevê)
+                          const sistema = bal
+                            ? bal.saldo_ontem + bal.entradas - bal.consumo_calculado
+                            : null;
+                          const fisico = inv.saldo_t;
+                          const diff = sistema != null ? fisico - sistema : null;
+                          const pctDiff = sistema && sistema !== 0 ? ((diff ?? 0) / sistema) * 100 : 0;
+                          const ok = diff != null && Math.abs(diff) < 5;
+                          const cor = diff == null ? C.textMute : ok ? C.success : Math.abs(diff) < 15 ? C.warning : C.danger;
+                          return (
+                            <tr key={inv.material}>
+                              <td style={TD}><Tag label={inv.material} color={matColor(inv.material)} /></td>
+                              <td style={{ ...TDR, fontWeight: 600 }}>
+                                {sistema != null ? fmtN(sistema, 1) : "—"}
+                              </td>
+                              <td style={{ ...TDR, fontWeight: 600, color: C.primary }}>{fmtN(fisico, 1)}</td>
+                              <td style={{ ...TDR, fontWeight: 700, color: cor }}>
+                                {diff != null ? `${diff >= 0 ? "+" : ""}${fmtN(diff, 1)}` : "—"}
+                                {diff != null && (
+                                  <span style={{ fontSize: 11, fontWeight: 400, color: C.textMute, marginLeft: 4 }}>
+                                    ({pctDiff >= 0 ? "+" : ""}{pctDiff.toFixed(1)}%)
+                                  </span>
+                                )}
+                              </td>
+                              <td style={TD}>
+                                <span style={{
+                                  display: "inline-flex", alignItems: "center", gap: 4,
+                                  padding: "2px 8px", borderRadius: 4, fontSize: 11, fontWeight: 600,
+                                  background: diff == null ? C.border : ok ? "#ecfdf5" : Math.abs(diff) < 15 ? "#fffbeb" : "#fef2f2",
+                                  color: cor,
+                                }}>
+                                  <span style={{ width: 6, height: 6, borderRadius: "50%", background: cor, flexShrink: 0 }} />
+                                  {diff == null ? "Sem dados" : ok ? "OK" : (diff > 0 ? `Físico maior (+${fmtN(diff,1)}t)` : `Sistema maior (${fmtN(diff,1)}t)`)}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    <div style={{ padding: "10px 14px", fontSize: 11, color: C.textMute, borderTop: `1px solid ${C.border}` }}>
+                      Diferença positiva = físico tem mais que o sistema calcula. Negativa = sistema calculou mais que o físico.
+                      Tolerância verde: &lt;5t · Amarelo: 5–15t · Vermelho: &gt;15t
+                    </div>
+                  </>
+                );
+              })()}
             </Card>
 
             {/* Reconciliação — colapsável */}
