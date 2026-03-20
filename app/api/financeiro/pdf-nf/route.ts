@@ -176,82 +176,63 @@ function parseNf(texto: string, pagina: number) {
       })();
 
   // ── Descrição dos produtos ────────────────────────────────────────
-  // O Vision OCR extrai colunas separadas. A descrição pode aparecer como:
-  // - linha solta "BRITA 01" entre cabeçalhos da tabela
-  // - bloco em "DADOS DO PRODUTO" com várias linhas de itens
-  // Estratégia: extrair TODAS as linhas de descrição e montar resumo
+  // Para Contas a Pagar (/bills), a descrição vai no campo "observation" — 
+  // basta o nome do produto principal, sem itens completos.
+  // O Vision OCR separa colunas, então "BRITA 01" aparece como linha isolada
+  // dentro do bloco de produtos.
 
-  // Linhas que são claramente cabeçalho/ruído de tabela
-  const LIXO_DESC = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|DADOS\s+DO|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORT|PESO\b|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|UNIDADE|ROLO\b|DATA\s+DA|DATA\s+DE|DATA\s+SAÍ|DATA\s+SAI|HORA\s+DE|INSCRI[ÇC]|MUNICÍ|MUNICI|ENDERE|BAIRRO|ESTADO|CEP\b|RAZÃO\s+SOC|NOME\s*\/|CNPJ|CPF|FONE|TEL\b|RUA\s+|AV\.\s+|ROD\.\s+|BR\s*\d|GO\s*\d|CHAVE\s+DE|PROTOCOLO|CONSULTA|SÉRIE\b|SERIE\b|FOLHA\b|EMISSÃO\s*:|SAÍDA\s*:|ENTRADA\s*:)/i;
+  // Palavras que NUNCA são produto — cabeçalhos, campos administrativos, transporte
+  const NUNCA_PRODUTO = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DADOS|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORTA|PESO\b|PLACA|VEICULO|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON\b|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|METRO\b|UNIDADE|ROLO\b|DATA\s+|HORA\s+|INSCRI[ÇC]|MUNICÍ|MUNICI|ENDERE|BAIRRO|CEP\b|RAZÃO|NOME\s*\/|CNPJ|CPF\b|FONE|TEL\b|RUA\s|AV\.\s|ROD\.\s|CHAVE\s|PROTOCOLO|CONSULTA|SÉRIE\b|SERIE\b|FOLHA\b|CODIGO\s+ANTT|CODIGO\s+AN|ANTT\b|REMETENTE|DESTINAT|EMIT|TRANSPORTA|MARCA\b|NUMER[AÇ]|ESPÉCIE|ESPECIE|QUANTIDADE|EMISSÃO\b|SAÍDA|ENTRADA\b|RECEBI|IDENTIF|ASSIN|DOCUMENT|AUXILIAR|ELETRÔN|ELETRONI|DANFE|SETOR\s|INDUST|COMERCI|SETOR\b|INDUSTRIAL\b|COMERCIAL\b)/i;
 
-  // Função para identificar se uma linha parece descrição de produto
-  function ehDescricao(l: string): boolean {
-    if (l.length < 3 || l.length > 100) return false;
-    if (/^\d+[,\.]?\d*$/.test(l)) return false;           // só número
-    if (/^\d{8}$/.test(l)) return false;                  // NCM
-    if (/^\d{5,}\/\d+/.test(l)) return false;             // lançamento
-    if (/^\d{2}\/\d{2}\/\d{4}/.test(l)) return false;    // data
-    if (/^[0-9\s,\.\/\-]+$/.test(l)) return false;        // só nums/pontuação
-    if (LIXO_DESC.test(l.trim())) return false;
-    if (/^(CST|IBS|CBS|IS|RT|Total\s+RT|UF\s+DE|CÓD\.|COD\.)/i.test(l)) return false;
-    // Deve ter ao menos uma letra maiúscula e parecer nome de produto
-    return /[A-ZÁÉÍÓÚ]{2,}/.test(l);
+  // Produto real: tem letras, não é só número, não é lixo acima, não é endereço/cidade
+  function ehProduto(l: string): boolean {
+    const s = l.trim();
+    if (s.length < 3 || s.length > 80) return false;
+    if (/^\d+$/.test(s)) return false;                     // só dígitos
+    if (/^\d{8}$/.test(s)) return false;                   // NCM
+    if (/^\d+[,\.]\d+$/.test(s)) return false;             // número decimal
+    if (/^\d{5,}\//.test(s)) return false;                 // lançamento
+    if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) return false;     // data
+    if (/^[0-9\s,\.\/\-\+]+$/.test(s)) return false;      // só nums/pontuação
+    if (NUNCA_PRODUTO.test(s)) return false;
+    if (/^(CST:|IBS:|CBS:|IS:|RT:|UF\s+DE|CÓD\.|COD\.|Cód\.|IS:R|Total\s+RT)/i.test(s)) return false;
+    // Cidade/estado isolado (2-3 letras maiúsculas ou nome de cidade comum)
+    if (/^[A-Z]{2}$/.test(s)) return false;               // sigla estado
+    return /[A-ZÁÉÍÓÚÂÊÔÀÃÕ]{2,}/.test(s);
   }
 
-  // Encontra o bloco de produtos no texto — começa APÓS os cabeçalhos das colunas
-  // e termina em DADOS ADICIONAIS ou CÁLCULO DO ISSQN
-  const idxDados = t.search(/DADOS\s+DO\s+PRODUTO/i);
-  const idxFim   = t.search(/DADOS\s+ADICIONAIS|CÁLCULO\s+DO\s+ISSQN|C[AÁ]LCULO\s+DO\s+ISSQN|INFORMAÇÕES\s+COMPLEMENTARES/i);
-
-  // Pula os cabeçalhos das colunas (CÓDIGO, DESCRIÇÃO, NCM, CST...) avançando até a 1ª linha de produto
-  let blocoInicio = idxDados >= 0 ? idxDados : 0;
-  if (idxDados >= 0) {
-    // Avança até passar a linha de cabeçalhos das colunas da tabela
-    const blocoCompleto = t.slice(idxDados, idxFim > idxDados ? idxFim : idxDados + 4000);
-    const linhasHeader  = blocoCompleto.split("\n");
-    let passouHeader = false;
-    for (let li = 0; li < linhasHeader.length && li < 20; li++) {
-      const l = linhasHeader[li].trim();
-      // Linha de cabeçalho tem múltiplas palavras-chave de tabela
-      if (/DESCRI[ÇC]|NCM|CFOP|QUANT|VALOR\s+UNIT/i.test(l)) { passouHeader = true; }
-      if (passouHeader && l.length > 3 && !/DESCRI[ÇC]|NCM|CFOP|QUANT|VALOR\s+UNIT|DATA\s+D[AE]|HORA\s+D[AE]/i.test(l)) {
-        blocoInicio = idxDados + blocoCompleto.indexOf(linhasHeader[li]);
-        break;
-      }
-    }
-  }
-
-  const bloco = t.slice(blocoInicio, idxFim > blocoInicio ? idxFim : blocoInicio + 3000);
-
-  // Extrai todas as linhas que parecem descrição de produto
-  const linhasBloco = bloco.split("\n").map(l => l.trim()).filter(Boolean);
-  const itens: string[] = [];
-  const vistos = new Set<string>();
-
-  for (const l of linhasBloco) {
-    if (!ehDescricao(l)) continue;
-    // Remove prefixos como "CST:000 cTrib..." que aparecem inline
-    const limpo = l.replace(/\s*CST:.*$/i,"").replace(/\s*IBS:.*$/i,"").trim();
-    if (limpo.length < 3) continue;
-    const norm = limpo.toUpperCase().slice(0,30);
-    if (vistos.has(norm)) continue;
-    vistos.add(norm);
-    itens.push(limpar(limpo));
-    if (itens.length >= 5) break; // máximo 5 itens distintos
-  }
-
-  // Monta descrição final
+  // Localiza estritamente o bloco DADOS DO PRODUTO → DADOS ADICIONAIS
+  // e busca só nessa faixa
+  const idxProd = t.search(/DADOS\s+DO\s+PRODUTO/i);
+  const idxAdc  = t.search(/DADOS\s+ADICIONAIS/i);
   let descricao = "";
-  if (itens.length === 0) {
-    // Fallback: qualquer produto típico no texto completo
-    const m = t.match(/\b(BRITA|TUBO|ASFALTO|CAP\b|CBUQ|AREIA|PEDRA|CIMENTO|DIESEL|GASOLINA|OLEO\s+\w|TINTA|PNEU|FILTRO|ROLAMENTO|PECA|PARAFUSO|MANGUEIRA|FUSIVEL|CHAVE\s+\w|AGREGADO|EMULSAO|CONCRETO)[^\n]{0,60}/i);
-    if (m) descricao = limpar(m[0].split("\n")[0]);
-  } else if (itens.length === 1) {
-    descricao = itens[0];
-  } else if (itens.length <= 3) {
-    descricao = itens.join(", ");
-  } else {
-    descricao = `${itens.slice(0,2).join(", ")} e mais ${itens.length - 2} itens`;
+
+  if (idxProd >= 0 && idxAdc > idxProd) {
+    const bloco = t.slice(idxProd, idxAdc);
+    const linhas = bloco.split("\n").map(l => l.trim()).filter(Boolean);
+    const itens: string[] = [];
+    const vistos = new Set<string>();
+
+    for (const l of linhas) {
+      if (!ehProduto(l)) continue;
+      const limpo = l.replace(/\s*CST:.*$/i,"").replace(/\s*IBS:.*$/i,"").trim();
+      if (limpo.length < 3 || !ehProduto(limpo)) continue;
+      const norm = limpo.toUpperCase().slice(0, 30);
+      if (vistos.has(norm)) continue;
+      vistos.add(norm);
+      itens.push(limpo);
+      if (itens.length >= 3) break;
+    }
+
+    if (itens.length === 1) descricao = itens[0];
+    else if (itens.length === 2) descricao = itens.join(", ");
+    else if (itens.length >= 3) descricao = `${itens[0]}, ${itens[1]} e outros`;
+  }
+
+  // Fallback se não achou nada — palavras-chave de produto típico
+  if (!descricao) {
+    const m = t.match(/\b(BRITA\s+\w+|TUBO\s+\w+|ASFALTO|CAP\s+\w+|CBUQ|AREIA\s+\w*|CIMENTO\s+\w*|DIESEL|GASOLINA|AGREGADO|EMULSÃO|IMPRIMAÇÃO|CONCRETO\s+\w*|PAVIMENTO\s+\w*|TINTA\s+\w+|PNEU\s+\w+|FILTRO\s+\w+)/i);
+    if (m) descricao = m[0].trim().slice(0, 60);
   }
 
   // ── Condição de pagamento ─────────────────────────────────────────
