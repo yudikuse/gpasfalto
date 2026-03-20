@@ -175,9 +175,6 @@ export async function POST(req: NextRequest) {
       credores,
       _debug:  { chars: todoTexto.length, preview: _debugTexto },
     });
-      total:   credores.length,
-      credores,
-    });
 
   } catch (e: any) {
     return jsonError("Erro interno: " + e.message, 500);
