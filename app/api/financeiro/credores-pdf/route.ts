@@ -166,8 +166,15 @@ export async function POST(req: NextRequest) {
 
     const credores = parsearCredores(todoTexto);
 
+    // Debug: primeiros 500 chars do texto extraído para diagnóstico
+    const _debugTexto = todoTexto.slice(0, 800).replace(/\n/g, "↵ ");
+
     return NextResponse.json({
       ok:      true,
+      total:   credores.length,
+      credores,
+      _debug:  { chars: todoTexto.length, preview: _debugTexto },
+    });
       total:   credores.length,
       credores,
     });
