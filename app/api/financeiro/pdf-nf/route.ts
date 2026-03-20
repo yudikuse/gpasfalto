@@ -182,7 +182,7 @@ function parseNf(texto: string, pagina: number) {
   // Estratégia: extrair TODAS as linhas de descrição e montar resumo
 
   // Linhas que são claramente cabeçalho/ruído de tabela
-  const LIXO_DESC = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|DADOS\s+DO|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORT|PESO\b|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|UNIDADE|ROLO\b)/i;
+  const LIXO_DESC = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|DADOS\s+DO|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORT|PESO\b|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|UNIDADE|ROLO\b|DATA\s+DA|DATA\s+DE|DATA\s+SAÍ|DATA\s+SAI|HORA\s+DE|INSCRI[ÇC]|MUNICÍ|MUNICI|ENDERE|BAIRRO|ESTADO|CEP\b|RAZÃO\s+SOC|NOME\s*\/|CNPJ|CPF|FONE|TEL\b|RUA\s+|AV\.\s+|ROD\.\s+|BR\s*\d|GO\s*\d|CHAVE\s+DE|PROTOCOLO|CONSULTA|SÉRIE\b|SERIE\b|FOLHA\b|EMISSÃO\s*:|SAÍDA\s*:|ENTRADA\s*:)/i;
 
   // Função para identificar se uma linha parece descrição de produto
   function ehDescricao(l: string): boolean {
@@ -198,12 +198,30 @@ function parseNf(texto: string, pagina: number) {
     return /[A-ZÁÉÍÓÚ]{2,}/.test(l);
   }
 
-  // Encontra o bloco de produtos no texto
+  // Encontra o bloco de produtos no texto — começa APÓS os cabeçalhos das colunas
+  // e termina em DADOS ADICIONAIS ou CÁLCULO DO ISSQN
   const idxDados = t.search(/DADOS\s+DO\s+PRODUTO/i);
-  const idxFim   = t.search(/DADOS\s+ADICIONAIS|CÁLCULO\s+DO\s+ISSQN|INFORMAÇÕES\s+COMPLEMENTARES/i);
-  const bloco    = idxDados >= 0
-    ? t.slice(idxDados, idxFim > idxDados ? idxFim : idxDados + 3000)
-    : t;
+  const idxFim   = t.search(/DADOS\s+ADICIONAIS|CÁLCULO\s+DO\s+ISSQN|C[AÁ]LCULO\s+DO\s+ISSQN|INFORMAÇÕES\s+COMPLEMENTARES/i);
+
+  // Pula os cabeçalhos das colunas (CÓDIGO, DESCRIÇÃO, NCM, CST...) avançando até a 1ª linha de produto
+  let blocoInicio = idxDados >= 0 ? idxDados : 0;
+  if (idxDados >= 0) {
+    // Avança até passar a linha de cabeçalhos das colunas da tabela
+    const blocoCompleto = t.slice(idxDados, idxFim > idxDados ? idxFim : idxDados + 4000);
+    const linhasHeader  = blocoCompleto.split("\n");
+    let passouHeader = false;
+    for (let li = 0; li < linhasHeader.length && li < 20; li++) {
+      const l = linhasHeader[li].trim();
+      // Linha de cabeçalho tem múltiplas palavras-chave de tabela
+      if (/DESCRI[ÇC]|NCM|CFOP|QUANT|VALOR\s+UNIT/i.test(l)) { passouHeader = true; }
+      if (passouHeader && l.length > 3 && !/DESCRI[ÇC]|NCM|CFOP|QUANT|VALOR\s+UNIT|DATA\s+D[AE]|HORA\s+D[AE]/i.test(l)) {
+        blocoInicio = idxDados + blocoCompleto.indexOf(linhasHeader[li]);
+        break;
+      }
+    }
+  }
+
+  const bloco = t.slice(blocoInicio, idxFim > blocoInicio ? idxFim : blocoInicio + 3000);
 
   // Extrai todas as linhas que parecem descrição de produto
   const linhasBloco = bloco.split("\n").map(l => l.trim()).filter(Boolean);
