@@ -105,6 +105,10 @@ export default function CreditoresPage() {
       await upsertCredores(data.credores);
       await carregar();
       ok(`✓ ${data.total} credores importados/atualizados no Supabase`);
+      // Debug: mostra preview do texto se extraiu 0
+      if (data.total === 0 && data._debug) {
+        setMsgErro(`Parser extraiu 0 credores. Texto OCR (${data._debug.chars} chars): ${data._debug.preview}`);
+      }
     } catch(e:any){ setMsgErro("Falha: "+e.message); }
     finally{ setUpando(false); }
   };
