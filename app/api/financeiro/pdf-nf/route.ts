@@ -176,40 +176,59 @@ function parseNf(texto: string, pagina: number) {
       })();
 
   // ── Descrição dos produtos ────────────────────────────────────────
-  // Para Contas a Pagar (/bills), a descrição vai no campo "observation" — 
-  // basta o nome do produto principal, sem itens completos.
-  // O Vision OCR separa colunas, então "BRITA 01" aparece como linha isolada
-  // dentro do bloco de produtos.
+  // O bloco DADOS DO PRODUTO começa com dados do transportador (CÓDIGO ANTT,
+  // OGY3120, PLACA...) e cabeçalhos de coluna (NCM, CST, CFOP, VALOR IP...).
+  // "BRITA 01" só aparece DEPOIS do último cabeçalho de coluna.
+  // Estratégia: dentro do bloco, pular tudo até após "VALOR IP" ou similar.
 
-  // Palavras que NUNCA são produto — cabeçalhos, campos administrativos, transporte
-  const NUNCA_PRODUTO = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DADOS|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORTA|PESO\b|PLACA|VEICULO|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON\b|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|METRO\b|UNIDADE|ROLO\b|DATA\s+|HORA\s+|INSCRI[ÇC]|MUNICÍ|MUNICI|ENDERE|BAIRRO|CEP\b|RAZÃO|NOME\s*\/|CNPJ|CPF\b|FONE|TEL\b|RUA\s|AV\.\s|ROD\.\s|CHAVE\s|PROTOCOLO|CONSULTA|SÉRIE\b|SERIE\b|FOLHA\b|CODIGO\s+ANTT|CODIGO\s+AN|ANTT\b|REMETENTE|DESTINAT|EMIT|TRANSPORTA|MARCA\b|NUMER[AÇ]|ESPÉCIE|ESPECIE|QUANTIDADE|EMISSÃO\b|SAÍDA|ENTRADA\b|RECEBI|IDENTIF|ASSIN|DOCUMENT|AUXILIAR|ELETRÔN|ELETRONI|DANFE|SETOR\s|INDUST|COMERCI|SETOR\b|INDUSTRIAL\b|COMERCIAL\b)/i;
-
-  // Produto real: tem letras, não é só número, não é lixo acima, não é endereço/cidade
-  function ehProduto(l: string): boolean {
-    const s = l.trim();
-    if (s.length < 3 || s.length > 80) return false;
-    if (/^\d+$/.test(s)) return false;                     // só dígitos
-    if (/^\d{8}$/.test(s)) return false;                   // NCM
-    if (/^\d+[,\.]\d+$/.test(s)) return false;             // número decimal
-    if (/^\d{5,}\//.test(s)) return false;                 // lançamento
-    if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) return false;     // data
-    if (/^[0-9\s,\.\/\-\+]+$/.test(s)) return false;      // só nums/pontuação
-    if (NUNCA_PRODUTO.test(s)) return false;
-    if (/^(CST:|IBS:|CBS:|IS:|RT:|UF\s+DE|CÓD\.|COD\.|Cód\.|IS:R|Total\s+RT)/i.test(s)) return false;
-    // Cidade/estado isolado (2-3 letras maiúsculas ou nome de cidade comum)
-    if (/^[A-Z]{2}$/.test(s)) return false;               // sigla estado
-    return /[A-ZÁÉÍÓÚÂÊÔÀÃÕ]{2,}/.test(s);
-  }
-
-  // Localiza estritamente o bloco DADOS DO PRODUTO → DADOS ADICIONAIS
-  // e busca só nessa faixa
   const idxProd = t.search(/DADOS\s+DO\s+PRODUTO/i);
-  const idxAdc  = t.search(/DADOS\s+ADICIONAIS/i);
+  const idxAdc  = t.search(/DADOS\s+ADICIONAIS|C[AÁ]LCULO\s+DO\s+ISSQN/i);
   let descricao = "";
 
-  if (idxProd >= 0 && idxAdc > idxProd) {
-    const bloco = t.slice(idxProd, idxAdc);
-    const linhas = bloco.split("\n").map(l => l.trim()).filter(Boolean);
+  if (idxProd >= 0) {
+    const blocoFull = t.slice(idxProd, idxAdc > idxProd ? idxAdc : idxProd + 3000);
+
+    // Encontra onde terminam os cabeçalhos de coluna da tabela de produtos.
+    // O último cabeçalho costuma ser "VALOR IPI", "VALOR IP", "IPI", "IMPOSTOS"
+    // seguido de uma quebra de linha — depois disso começam os itens reais.
+    const fimHeaderIdx = (() => {
+      const patterns = [
+        /VALOR\s+IP[I]?\s*\n/i,
+        /\bIPI\b\s*\n/i,
+        /VALOR\s+TOTAL\s*\n\s*IMPOSTOS/i,
+        /\bIMPOSTOS\b\s*\n/i,
+        /ALIQ[UÕ]OTAS\b.*\n/i,
+        /B\.\s*CALC\.\s*ICMS\b/i,
+      ];
+      for (const p of patterns) {
+        const m = blocoFull.search(p);
+        if (m > 0) {
+          // Avança até o próximo \n após o match
+          const nextNl = blocoFull.indexOf("\n", m);
+          return nextNl > 0 ? nextNl + 1 : m;
+        }
+      }
+      return -1;
+    })();
+
+    const subBloco = fimHeaderIdx > 0 ? blocoFull.slice(fimHeaderIdx) : blocoFull;
+
+    const NUNCA = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI\b|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DADOS|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORT|PESO\b|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON\b|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|METRO\b|ROLO\b|DATA\s|HORA\s|INSCRI[ÇC]|MUNIC|ENDERE|BAIRRO|CEP\b|RAZÃO|CNPJ|CPF\b|FONE|RUA\s|AV\.\s|CHAVE\s|PROTOCOLO|SÉRIE\b|FOLHA\b|CÓDIGO|CODIGO|ISENTO|NUMERAC|BRUTO|LIQUID|CÁLCULO|CALCULO|IMPOSTOS|IMPORT|MUNICIPAL|B\.\s*CALC|FRETE\s|REMETENTE|GO\b|UF\b)/i;
+
+    function ehProduto(l: string): boolean {
+      const s = l.trim();
+      if (s.length < 3 || s.length > 80) return false;
+      if (/^\d+([,\.]\d+)?$/.test(s)) return false;
+      if (/^\d{8}$/.test(s)) return false;
+      if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) return false;
+      if (/^[0-9\s,\.\/\-\+]+$/.test(s)) return false;
+      if (NUNCA.test(s)) return false;
+      if (/^(CST:|IBS:|CBS:|IS:|CÓD\.|COD\.|0\s+-|B\.\s)/i.test(s)) return false;
+      if (/^[A-Z]{1,2}$/.test(s)) return false;
+      return /[A-ZÁÉÍÓÚÂÊÔÀÃÕ]{2,}/.test(s);
+    }
+
+    const linhas = subBloco.split("\n").map(l => l.trim()).filter(Boolean);
     const itens: string[] = [];
     const vistos = new Set<string>();
 
@@ -229,9 +248,9 @@ function parseNf(texto: string, pagina: number) {
     else if (itens.length >= 3) descricao = `${itens[0]}, ${itens[1]} e outros`;
   }
 
-  // Fallback se não achou nada — palavras-chave de produto típico
+  // Fallback direto no texto completo
   if (!descricao) {
-    const m = t.match(/\b(BRITA\s+\w+|TUBO\s+\w+|ASFALTO|CAP\s+\w+|CBUQ|AREIA\s+\w*|CIMENTO\s+\w*|DIESEL|GASOLINA|AGREGADO|EMULSÃO|IMPRIMAÇÃO|CONCRETO\s+\w*|PAVIMENTO\s+\w*|TINTA\s+\w+|PNEU\s+\w+|FILTRO\s+\w+)/i);
+    const m = t.match(/\b(BRITA\s+\w+|TUBO\s+\w+|ASFALTO|CAP\s+\w+|CBUQ|AREIA|CIMENTO|DIESEL|GASOLINA|AGREGADO|EMULSÃO|CONCRETO|PAVIMENTO|TINTA\s+\w+|PNEU\s+\w+|FILTRO\s+\w+)/i);
     if (m) descricao = m[0].trim().slice(0, 60);
   }
 
