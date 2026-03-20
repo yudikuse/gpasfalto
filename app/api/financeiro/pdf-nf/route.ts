@@ -327,6 +327,19 @@ export async function POST(req: NextRequest) {
       .map(g  => parseNf(g.texto, g.pagina))
       .filter(n => n.cnpj_fornecedor || n.numero_nf || n.valor_total);
 
+    // Debug: bloco DADOS DO PRODUTO de cada página
+    const _debug = grupos.map(g => {
+      const t = g.texto;
+      const i1 = t.search(/DADOS\s+DO\s+PRODUTO/i);
+      const i2 = t.search(/DADOS\s+ADICIONAIS/i);
+      return {
+        pagina: g.pagina,
+        achouBloco: i1 >= 0,
+        bloco: i1 >= 0 ? t.slice(i1, i2 > i1 ? i2 : i1+600).replace(/\n/g,"↵") : "NÃO ENCONTROU DADOS DO PRODUTO",
+        inicio300: t.slice(0,300).replace(/\n/g,"↵"),
+      };
+    });
+
     if (notas.length === 0)
       return NextResponse.json({
         ok: false,
@@ -334,7 +347,7 @@ export async function POST(req: NextRequest) {
         _debug: todasPaginas.map(p => ({ pagina: p.pagina, preview: p.texto.slice(0, 200) })),
       }, { status: 422 });
 
-    return NextResponse.json({ ok: true, total: notas.length, paginas: todasPaginas.length, notas });
+    return NextResponse.json({ ok: true, total: notas.length, paginas: todasPaginas.length, notas, _debug });
 
   } catch (e: any) {
     return jsonError("Erro interno: " + e.message, 500);
