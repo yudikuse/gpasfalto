@@ -2,7 +2,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ChangeEvent } from "react";
-import { matchCredor, buscarTodosCredores, type Credor } from "@/app/financeiro/credores/page";
+import { matchCredor, buscarTodosCredores, upsertCredores, normalizar, type Credor } from "@/app/financeiro/credores/page";
 
 const SIENGE_TENANT = process.env.NEXT_PUBLIC_SIENGE_TENANT ?? "";
 const SIENGE_USER   = process.env.NEXT_PUBLIC_SIENGE_USER   ?? "";
@@ -82,6 +82,52 @@ export default function PdfNfPage() {
 
   const resumo = { total:notas.length, ok:notas.filter(n=>n._status==="ok").length, erro:notas.filter(n=>n._status==="erro").length };
 
+  // Busca credor no Sienge pelo CNPJ.
+  // Se achar → preenche o ID e salva no Supabase para próxima vez.
+  // Retorna o id encontrado ou null.
+  const buscarCredorNaSienge = async(cnpj:string): Promise<{id:number;nome:string}|null>=>{
+    const limpo=cnpj.replace(/\D/g,""); if(!limpo) return null;
+    try{
+      const auth=btoa(`${SIENGE_USER}:${SIENGE_PASS}`);
+      const r=await fetch(`${SIENGE_BASE}/creditors?cpfCnpj=${limpo}&limit=5`,{headers:{Authorization:`Basic ${auth}`,Accept:"application/json"}});
+      if(!r.ok) return null;
+      const d=await r.json(); const list=d.results??d.data??(Array.isArray(d)?d:[]);
+      if(!list.length) return null;
+      const credor={id:list[0].id as number, nome:(list[0].name??list[0].companyName??"") as string};
+      // Salva no Supabase para não precisar buscar da próxima vez
+      upsertCredores([{codigo:credor.id,nome:credor.nome}]).catch(()=>{});
+      setCredores(cs=>{ const exists=cs.find(c=>c.codigo===credor.id); if(exists)return cs; return [...cs,{codigo:credor.id,nome:credor.nome,nome_norm:normalizar(credor.nome)}]; });
+      return credor;
+    }catch{ return null; }
+  };
+
+  // Cria credor novo no Sienge (quando não existe em lugar nenhum)
+  const criarCredorNaSienge = async(nfId:string)=>{
+    const nf=notas.find(n=>n._id===nfId); if(!nf) return;
+    const cnpjLimpo=nf.cnpj_fornecedor.replace(/\D/g,"");
+    if(!nf.fornecedor||!cnpjLimpo){ alert("Preencha o nome e CNPJ do fornecedor antes de criar."); return; }
+    try{
+      const auth=btoa(`${SIENGE_USER}:${SIENGE_PASS}`);
+      const tipoDoc=cnpjLimpo.length===14?"J":"F"; // J=CNPJ F=CPF
+      const payload={
+        name:nf.fornecedor,
+        cpfCnpj:cnpjLimpo,
+        personType:tipoDoc,
+      };
+      const r=await fetch(`${SIENGE_BASE}/creditors`,{method:"POST",headers:{Authorization:`Basic ${auth}`,"Content-Type":"application/json",Accept:"application/json"},body:JSON.stringify(payload)});
+      const txt=await r.text(); let data:any={}; try{data=JSON.parse(txt);}catch{}
+      if(r.ok||r.status===201){
+        const novoId=String(data.id??data.creditorId??"");
+        setNotas(ns=>ns.map(n=>n._id===nfId?{...n,_creditorId:novoId,_creditorName:nf.fornecedor,_status:"pendente"}:n));
+        // Salva no Supabase
+        if(novoId) upsertCredores([{codigo:parseInt(novoId),nome:nf.fornecedor}]).catch(()=>{});
+        alert(`✓ Credor criado! ID Sienge: ${novoId}`);
+      } else {
+        alert(`Erro ao criar credor (${r.status}): ${txt.slice(0,200)}`);
+      }
+    }catch(e:any){ alert("Falha: "+e.message); }
+  };
+
   const processarPdf = async(file:File)=>{
     setFileName(file.name); setStep("lendo"); setErroLeitura("");
     const fd=new FormData(); fd.append("pdf",file);
@@ -90,24 +136,36 @@ export default function PdfNfPage() {
       const data=await res.json();
       if(!data.ok){ setErroLeitura(data.error??"Erro"); setStep("upload"); return; }
 
-      // Auto-match com tabela do Supabase
-      const lista:Nf[]=(data.notas as any[]).map(n=>{
+      // 1. Tenta match pelo nome na tabela Supabase
+      const lista:Nf[]=(data.notas as any[]).map((n:any)=>{
         const match=matchCredor(n.fornecedor,credores);
-        return {...n,_selected:true,_creditorId:match?String(match.codigo):"",_creditorName:match?.nome??""};
+        return {
+          ...n, _selected:true,
+          _creditorId:  match?String(match.codigo):"",
+          _creditorName:match?.nome??"",
+          _buscado:     !!match, // marca como já buscado se achou
+        };
       });
-      setNotas(lista); setStep("revisao");
+      setNotas(lista);
+      setStep("revisao");
+
+      // 2. Para os que não acharam → busca automaticamente no Sienge pelo CNPJ
+      const semCredor=lista.filter(n=>!n._creditorId&&n.cnpj_fornecedor);
+      if(semCredor.length>0){
+        for(const nf of semCredor){
+          const found=await buscarCredorNaSienge(nf.cnpj_fornecedor);
+          if(found){
+            setNotas(ns=>ns.map(n=>n._id===nf._id?{...n,_creditorId:String(found.id),_creditorName:found.nome}:n));
+          }
+        }
+      }
     }catch(e:any){ setErroLeitura("Falha: "+e.message); setStep("upload"); }
   };
 
   const buscarCredorCnpj = async(id:string,cnpj:string)=>{
-    const limpo=cnpj.replace(/\D/g,""); if(!limpo) return;
-    try{
-      const auth=btoa(`${SIENGE_USER}:${SIENGE_PASS}`);
-      const r=await fetch(`${SIENGE_BASE}/creditors?cpfCnpj=${limpo}&limit=5`,{headers:{Authorization:`Basic ${auth}`,Accept:"application/json"}});
-      if(!r.ok) return;
-      const d=await r.json(); const list=d.results??d.data??(Array.isArray(d)?d:[]);
-      if(list.length>0) setNotas(ns=>ns.map(n=>n._id===id?{...n,_creditorId:String(list[0].id),_creditorName:list[0].name??list[0].companyName??n.fornecedor}:n));
-    }catch{}
+    const found=await buscarCredorNaSienge(cnpj);
+    if(found) setNotas(ns=>ns.map(n=>n._id===id?{...n,_creditorId:String(found.id),_creditorName:found.nome}:n));
+    else alert("Credor não encontrado no Sienge. Use 'Criar Credor' para cadastrar.");
   };
 
   const buscarTodos = async()=>{ for(const n of selecionadas) if(!n._creditorId&&n.cnpj_fornecedor) await buscarCredorCnpj(n._id,n.cnpj_fornecedor); };
@@ -257,12 +315,15 @@ export default function PdfNfPage() {
                         <td style={td}><EditableCell value={n.valor_total}     onChange={v=>updNf(n._id,"valor_total",v)}     width={90}/></td>
                         <td style={td}><EditableCell value={n.descricao}       onChange={v=>updNf(n._id,"descricao",v)}       width={160}/></td>
                         <td style={td}>
-                          <div style={{display:"flex",flexDirection:"column",gap:2}}>
+                          <div style={{display:"flex",flexDirection:"column",gap:3}}>
                             <div style={{display:"flex",gap:4,alignItems:"center"}}>
-                              <EditableCell value={n._creditorId} onChange={v=>updNf(n._id,"_creditorId" as any,v)} width={72}/>
-                              <button type="button" title="Buscar pelo CNPJ" onClick={()=>buscarCredorCnpj(n._id,n.cnpj_fornecedor)} style={{height:28,width:28,border:`1px solid ${C.border}`,borderRadius:6,background:C.surface,cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center"}}>🔍</button>
+                              <EditableCell value={n._creditorId} onChange={v=>updNf(n._id,"_creditorId" as any,v)} width={66}/>
+                              <button type="button" title="Buscar pelo CNPJ no Sienge" onClick={()=>buscarCredorCnpj(n._id,n.cnpj_fornecedor)} style={{height:28,width:28,border:`1px solid ${C.border}`,borderRadius:6,background:C.surface,cursor:"pointer",fontSize:13,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>🔍</button>
                             </div>
-                            {n._creditorName&&<div style={{fontSize:10,color:C.success,maxWidth:110}}>{n._creditorName}</div>}
+                            {n._creditorName
+                              ? <div style={{fontSize:10,color:C.success,maxWidth:120}}>{n._creditorName}</div>
+                              : <button type="button" onClick={()=>criarCredorNaSienge(n._id)} style={{fontSize:10,color:C.accent,background:"none",border:"none",cursor:"pointer",padding:0,textAlign:"left" as any,textDecoration:"underline"}}>+ Criar credor</button>
+                            }
                           </div>
                         </td>
                         <td style={{...td,fontWeight:600,color:C.success}}>{n._siengeId||"—"}</td>
