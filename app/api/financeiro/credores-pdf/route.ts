@@ -80,43 +80,51 @@ function normalizar(s: string) {
 function parsearCredores(texto: string): Credor[] {
   const credores = new Map<number, string>();
 
-  // O relatório Contas Pagas tem linhas do tipo:
-  // NOME DO CREDOR  CODIGO  DOCUMENTO  LANÇAMENTO ...
-  // O código é um número inteiro de 1-5 dígitos logo após o nome.
-  // Estratégia: percorre linha a linha acumulando o nome até encontrar
-  // um padrão "NOME ... CODIGO DOC" onde DOC começa com letra+ponto.
+  // Relatório Contas Pagas do Sienge — duas situações:
+  // 1. Nome + código na mesma linha: "FETZ MINERADORA LTDA. 5197 NFEB.73354 ..."
+  // 2. Nome quebrado em várias linhas, código na última:
+  //      "AUTO PEÇAS"
+  //      "BANDEIRANTES LTDA"
+  //      "1201 NFEA.9664 ..."
+
+  // Regex 1: nome embutido na linha antes do código
+  const RE_COM_NOME = /^(.{3,60}?)\s{1,6}(\d{1,5})\s{1,6}[A-Z]{2,6}[.\-][A-Z0-9]/;
+  // Regex 2: linha começa direto com código (nome estava no buffer)
+  const RE_SEM_NOME = /^(\d{1,5})\s{1,6}[A-Z]{2,6}[.\-][A-Z0-9]/;
+
+  const IGNORAR = /^(Credor\b|Cd\.\s|Empresa\s|Per[íi]odo\s|Data\s+da\s+baixa|Total\s+d|20\/\d{2}\/|SIENGE|Contas\s+Pag)/i;
+
   const linhas = texto.split("\n").map(l => l.trim()).filter(Boolean);
-
-  // Padrão de linha de dados: termina com "CÓDIGO DOCUMENTO"
-  // Ex: "FETZ MINERADORA LTDA. 5197 NFEB.73354"
-  // Captura: nome + espaço + (1-5 dígitos) + espaço + DOC-prefix
-  const RE_LINHA = /^(.+?)\s+(\d{1,5})\s+[A-Z]{2,5}[.\-][A-Z0-9]/;
-  // Ignora linhas de cabeçalho/rodapé
-  const IGNORAR  = /^(Credor|Cd\.|Empresa|Per[íi]odo|Data\s+da\s+baixa|Total|20\/|SIENGE|Contas\s+Pag)/i;
-
-  let bufNome = "";
+  let buf = "";
 
   for (const linha of linhas) {
-    if (IGNORAR.test(linha)) { bufNome = ""; continue; }
+    if (IGNORAR.test(linha)) { buf = ""; continue; }
 
-    const m = RE_LINHA.exec(linha);
-    if (m) {
-      const nomeParcial = m[1].trim();
-      const codigo      = parseInt(m[2], 10);
-      // Combina com buffer acumulado de linha anterior (quebras de nome)
-      const nomeCompleto = bufNome ? `${bufNome} ${nomeParcial}` : nomeParcial;
-      if (!credores.has(codigo) && nomeCompleto.length >= 3) {
-        credores.set(codigo, nomeCompleto.replace(/\s+/g, " ").trim());
-      }
-      bufNome = "";
+    // Caso 1: nome inline
+    const m1 = RE_COM_NOME.exec(linha);
+    if (m1) {
+      const nome   = (buf ? `${buf} ${m1[1]}` : m1[1]).replace(/\s+/g, " ").trim();
+      const codigo = parseInt(m1[2], 10);
+      if (!credores.has(codigo) && nome.length >= 3) credores.set(codigo, nome);
+      buf = "";
+      continue;
+    }
+
+    // Caso 2: código no início, nome estava no buffer
+    const m2 = RE_SEM_NOME.exec(linha);
+    if (m2 && buf) {
+      const codigo = parseInt(m2[1], 10);
+      const nome   = buf.replace(/\s+/g, " ").trim();
+      if (!credores.has(codigo) && nome.length >= 3) credores.set(codigo, nome);
+      buf = "";
+      continue;
+    }
+
+    // Acumula no buffer se parece ser parte de um nome (não começa com número longo, não é rodapé)
+    if (linha.length >= 2 && linha.length <= 70 && !/^\d{4,}/.test(linha) && !IGNORAR.test(linha)) {
+      buf = buf ? `${buf} ${linha}` : linha;
     } else {
-      // Linha pode ser continuação do nome (wrapping do relatório)
-      // Só acumula se parecer nome (letras/espaços, sem números longos)
-      if (/^[A-ZÁÉÍÓÚÂÊÔÀÃÕ\s\.\-&\/]{3,}$/.test(linha) && linha.length < 80) {
-        bufNome = bufNome ? `${bufNome} ${linha}` : linha;
-      } else {
-        bufNome = "";
-      }
+      buf = "";
     }
   }
 
