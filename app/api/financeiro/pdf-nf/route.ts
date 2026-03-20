@@ -85,51 +85,120 @@ function limpar(s: string) { return (s ?? "").trim().replace(/\s+/g, " "); }
 function parseNf(texto: string, pagina: number) {
   const t = texto;
 
-  // Número e Série
-  const mNum = t.match(/N[°oº\.]\s*:?\s*([\d\.]+)\s*(?:Série|SÉRIE|Serie)\s*:?\s*(\d+)/i)
-            || t.match(/N[°oº\.]\s*([\d\.]+)/i);
-  const numero_nf = mNum ? mNum[1].replace(/\./g, "") : "";
-  const serie     = mNum?.[2]
-    ?? t.match(/[Ss][ée]rie\s*:?\s*(\d+)/)?.[1]
-    ?? t.match(/SÉRIE\s*(\d+)/i)?.[1]
-    ?? "";
+  // ── Número e Série ────────────────────────────────────────────────
+  let numero_nf = "";
+  let serie     = "";
+  const mNS = t.match(/N[°º]?\s*[:\.]?\s*([\d\.]{1,12})\s*(?:S[ée]rie|SÉRIE|SER\.?)\s*:?\s*(\d+)/i);
+  if (mNS) { numero_nf = mNS[1].replace(/\./g,""); serie = mNS[2]; }
+  else {
+    const mN = t.match(/N[°º]\s*([\d\.]+)/i);
+    if (mN) numero_nf = mN[1].replace(/\./g,"");
+    const mS = t.match(/S[ée]rie\s*:?\s*(\d+)/i) || t.match(/SÉRIE\s*(\d+)/i);
+    if (mS) serie = mS[1];
+  }
 
-  // Chave de acesso
-  const mChave = t.replace(/\s/g, "").match(/\d{44}/);
+  // ── Chave de acesso (44 dígitos) ─────────────────────────────────
+  const mChave = t.replace(/\s/g,"").match(/\d{44}/);
   const chave_acesso = mChave ? mChave[0] : "";
 
-  // CNPJs no documento
-  const cnpjs = [...t.matchAll(/\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/g)].map(m => m[0]);
+  // ── CNPJs ─────────────────────────────────────────────────────────
+  const cnpjs = [...t.matchAll(/\d{2}\.?\d{3}\.?\d{3}[\/]\d{4}[-]\d{2}/g)].map(m => m[0]);
 
-  // Emitente (razão social antes do primeiro CNPJ)
-  const mEmit = t.match(/IDENTIFICA[ÇC][ÃA]O\s+DO\s+EMITENTE[\s\S]{0,15}\n([^\n]{4,80})/i);
-  const fornecedor = mEmit ? limpar(mEmit[1]) : "";
+  // ── Fornecedor / Emitente ─────────────────────────────────────────
+  // Tenta múltiplas estratégias pois o Vision pode reordenar o layout
 
-  // Destinatário
-  const mDest = t.match(/DESTINAT[ÁA]RIO[\s\/]REMETENTE[\s\S]{0,20}\n([^\n]{4,80})/i);
-  const destinatario = mDest ? limpar(mDest[1]) : "";
+  // Estratégia 1: linha após "IDENTIFICAÇÃO DO EMITENTE"
+  let fornecedor =
+    t.match(/IDENTIFICA[ÇC][ÃA]O\s+DO\s+EMITENTE[\s\S]{0,40}\n\s*([^\n]{4,80})/i)?.[1]?.trim();
 
-  // Datas
-  const datas = [...t.matchAll(/(\d{2})\/(\d{2})\/(\d{4})/g)].map(m => m[0]);
-  const data_emissao = t.match(/DATA\s+DA\s+EMISS[ÃA]O\s*\n?\s*(\d{2}\/\d{2}\/\d{4})/i)?.[1]
-    ?? datas[0] ?? "";
+  // Estratégia 2: nome em caixa alta com sufixo empresarial próximo ao início do doc
+  if (!fornecedor || fornecedor.length < 4) {
+    const SUFIXOS = /LTDA|S\.?A\.?\s*$|ME\s*$|EPP|EIRELI|MINERADORA|TRANSPORTES|CONSTRUTORA|ENGENHARIA|INDUSTRIA|COMERCIO|DISTRIBUIDORA|SERVICOS/i;
+    const linhas = t.split("\n").map(l => l.trim()).filter(Boolean);
+    // Tenta as primeiras 30 linhas (emitente está sempre no topo do DANFE)
+    for (const l of linhas.slice(0, 30)) {
+      if (l.length >= 5 && l.length <= 80 && SUFIXOS.test(l) && !/RECEBEMOS|DANFE|DOCUMENTO|NATUREZA|DESTINAT/i.test(l)) {
+        fornecedor = l;
+        break;
+      }
+    }
+  }
 
-  // Vencimento
+  // Estratégia 3: trecho antes do primeiro CNPJ
+  if (!fornecedor || fornecedor.length < 4) {
+    const idx = t.search(/\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}/);
+    if (idx > 0) {
+      const trecho = t.slice(Math.max(0, idx - 300), idx);
+      const linhas = trecho.split("\n").map(l => l.trim()).filter(l => l.length > 3 && l.length < 80);
+      fornecedor = linhas.reverse().find(l =>
+        /LTDA|S\.?A\.|ME\b|EPP|EIRELI|MINERADORA|TRANSPORTES|CONSTRU|ENGENHARIA|IND[UÚ]|COMERCIO|DISTRIBUIDORA/i.test(l)
+      ) ?? "";
+    }
+  }
+
+  fornecedor = limpar(fornecedor ?? "");
+
+  // ── Destinatário ──────────────────────────────────────────────────
+  const destinatario = limpar(
+    t.match(/NOME\s*\/\s*RAZ[ÃA]O\s*SOCIAL\s*\n([^\n]{4,80})/i)?.[1]
+    ?? t.match(/DESTINAT[ÁA]RIO[\s\S]{0,40}\nNOME[\s\S]{0,10}\n([^\n]{4,80})/i)?.[1]
+    ?? ""
+  );
+
+  // ── Datas ─────────────────────────────────────────────────────────
+  const todasDatas = [...t.matchAll(/(\d{2})\/(\d{2})\/(\d{4})/g)].map(m => m[0]);
+
+  // Emissão: data que vem acompanhada de horário (ex: "18/02/2026 15:20") ou label
+  const data_emissao =
+    t.match(/DATA\s+DA\s+EMISS[ÃA]O[\s\S]{0,10}(\d{2}\/\d{2}\/\d{4})/i)?.[1]
+    ?? t.match(/(\d{2}\/\d{2}\/\d{4})\s+\d{2}:\d{2}/)?.[1]
+    ?? todasDatas[0] ?? "";
+
+  // Vencimento: label "DATA VCTO" ou seção DUPLICATA
   const data_vencimento =
-    t.match(/DATA\s+VCT[OO]\.?\s*(\d{2}\/\d{2}\/\d{4})/i)?.[1]
-    ?? t.match(/DUPLICATA[\s\S]{0,80}?(\d{2}\/\d{2}\/\d{4})/i)?.[1]
+    t.match(/DATA\s*VCT[OO]\.?\s*\n?\s*(\d{2}\/\d{2}\/\d{4})/i)?.[1]
+    ?? t.match(/VENCIMENTO\s*\n?\s*(\d{2}\/\d{2}\/\d{4})/i)?.[1]
+    ?? t.match(/DUPLICATA[\s\S]{0,120}?(\d{2}\/\d{2}\/\d{4})/i)?.[1]
     ?? "";
 
-  // Valor total
+  // ── Valor total ───────────────────────────────────────────────────
   const valor_total =
     t.match(/VALOR\s+TOTAL\s+DA\s+NOTA\s*\n?\s*([\d\.]+,\d{2})/i)?.[1]
-    ?? t.match(/VALOR\s+TOTAL\s+DOS\s+PRODUTOS\s*\n?\s*([\d\.]+,\d{2})/i)?.[1]
     ?? t.match(/TOTAL\s+DA\s+NOTA\s*\n?\s*([\d\.]+,\d{2})/i)?.[1]
+    ?? t.match(/VALOR\s+TOTAL\s+DOS\s+PRODUTOS\s*\n?\s*([\d\.]+,\d{2})/i)?.[1]
+    // Fallback: maior valor no documento
+    ?? (() => {
+        const vals = [...t.matchAll(/([\d]{1,9}\.[\d]{3},\d{2}|[\d]{1,6},\d{2})/g)]
+          .map(m => parseFloat(m[1].replace(/\./g,"").replace(",",".")))
+          .filter(v => v > 1);
+        if (!vals.length) return "";
+        return Math.max(...vals).toFixed(2).replace(".",",");
+      })();
+
+  // ── Descrição dos produtos ────────────────────────────────────────
+  // O Vision OCR do DANFE extrai os dados do produto em linhas da tabela.
+  // Estratégia 1: linha após o label da coluna de descrição
+  let descricao =
+    t.match(/DESCRI[ÇC][ÃA]O\s+DO\s+PRODUTO\s*[\/\s]\s*SERVI[ÇC]O[^\n]*\n([^\n]{3,120})/i)?.[1]
+    // Estratégia 2: linha após "DADOS DO PRODUTO/SERVIÇO"
+    ?? t.match(/DADOS\s+DO\s+PRODUTO[^\n]*\n(?:[^\n]{0,30}\n){1,3}([A-ZÁÉÍÓÚ][^\n]{3,80})/i)?.[1]
+    // Estratégia 3: linha não numérica que vem logo antes ou depois do NCM (8 dígitos)
+    ?? (() => {
+        const mNcm = t.match(/([A-ZÁÉÍÓÚA-Z][^\n]{3,60})\n[^\n]*\b\d{8}\b/i)
+                  || t.match(/\b\d{8}\b[^\n]*\n([A-ZÁÉÍÓÚ][^\n]{3,60})/i);
+        return mNcm?.[1] ?? "";
+      })()
+    // Estratégia 4: qualquer linha com produto típico (BRITA, TUBO, ASFALTO, etc.)
+    ?? t.match(/\b(BRITA|TUBO|ASFALTO|CAP|CBUQ|AREIA|PEDRA|CIMENTO|TINTA|DIESEL|GASOLINA|SERVICO|MANUTENCAO|LOCACAO)[^\n]{0,80}/i)?.[0]
     ?? "";
 
-  // Descrição primeiro produto
-  const descricao =
-    limpar(t.match(/DESCRI[ÇC][ÃA]O\s+DO\s+PRODUTO[^\n]*\n([^\n]{5,100})/i)?.[1] ?? "");
+  descricao = limpar(descricao.split("\n")[0]);
+  if (descricao.length < 3 || /^\d+$/.test(descricao)) descricao = "";
+
+  // ── Condição de pagamento ─────────────────────────────────────────
+  const condicao_pagamento =
+    t.match(/CONDI[ÇC][ÃA]O\s+DE\s+PAGAMENTO[^\n]*\n([^\n]{3,60})/i)?.[1]?.trim()
+    ?? "";
 
   return {
     _id:               `nf_p${pagina}_${Date.now()}`,
