@@ -167,21 +167,26 @@ export default function PdfNfPage() {
     const fila=selecionadas.filter(n=>n._creditorId);
     if(!fila.length){ alert("Informe o ID do credor para ao menos uma nota."); return; }
     setStep("enviando"); setProgresso({atual:0,total:fila.length});
-    const auth=btoa(`${SIENGE_USER}:${SIENGE_PASS}`);
     for(let i=0;i<fila.length;i++){
       const n=fila[i];
       setNotas(ns=>ns.map(x=>x._id===n._id?{...x,_status:"enviando"}:x));
       try{
         const payload:Record<string,any>={
-          creditorId:parseInt(n._creditorId,10),documentNumber:n.numero_nf||"SN",
-          issueDate:fmtDate(n.data_emissao),netValue:parseBRL(n.valor_total),
+          creditorId:parseInt(n._creditorId,10),
+          documentNumber:n.numero_nf||"SN",
+          issueDate:fmtDate(n.data_emissao),
+          netValue:parseBRL(n.valor_total),
           observation:n.descricao??"",
           installments:[{dueDate:fmtDate(n.data_vencimento)??fmtDate(n.data_emissao),value:parseBRL(n.valor_total)}],
         };
-        const r=await fetch(`${SIENGE_BASE}/bills`,{method:"POST",headers:{Authorization:`Basic ${auth}`,"Content-Type":"application/json",Accept:"application/json"},body:JSON.stringify(payload)});
-        const txt=await r.text(); let data:any={}; try{data=JSON.parse(txt);}catch{}
-        if(r.ok||r.status===201) setNotas(ns=>ns.map(x=>x._id===n._id?{...x,_status:"ok",_siengeId:String(data.id??"")}:x));
-        else setNotas(ns=>ns.map(x=>x._id===n._id?{...x,_status:"erro",_erro:`${r.status}: ${txt.slice(0,120)}`}:x));
+        const r=await fetch("/api/financeiro/criar-titulo",{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(payload),
+        });
+        const data=await r.json();
+        if(data.ok) setNotas(ns=>ns.map(x=>x._id===n._id?{...x,_status:"ok",_siengeId:String(data.id??"")}:x));
+        else setNotas(ns=>ns.map(x=>x._id===n._id?{...x,_status:"erro",_erro:`${data.status??r.status}: ${String(data.error??"").slice(0,120)}`}:x));
       }catch(e:any){ setNotas(ns=>ns.map(x=>x._id===n._id?{...x,_status:"erro",_erro:e.message}:x)); }
       setProgresso({atual:i+1,total:fila.length});
     }
