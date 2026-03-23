@@ -21,15 +21,17 @@
 //
 // PASSO 3 — Badge de status de confirmação para o encarregado
 //
-// PASSO 5 — Timezone uniforme (BRT -03:00)
+// PASSO 6 — Modal de visitante (substitui window.prompt)
 //
-//  Problema: buildCutoffAtISO() usava `new Date(y, m-1, d, hh, mm, ss)`
-//  que cria a data no timezone LOCAL do browser. Se o device estiver em
-//  UTC, -04:00 ou qualquer outro tz, o cutoff seria avaliado errado.
+//  Problema: addVisitor() usava window.prompt() — visual feio,
+//  não funciona em iOS PWA, sem validação, bloqueia a thread.
 //
-//  Correção: buildCutoffAtISO() agora monta a string ISO com offset
-//  fixo -03:00, igual ao que page_69 já fazia com buildCutoffISO_BRT().
-//  Nenhuma outra lógica foi alterada.
+//  Correção:
+//  1. Novo estado visitorModal { open, targetShift, name, error }
+//  2. addVisitor() agora abre o modal em vez do prompt nativo.
+//  3. handleVisitorConfirm() valida e adiciona o visitante.
+//  4. JSX — overlay + card modal renderizado na raiz do componente.
+// ─────────────────────────────────────────────────────────────
 //
 //  1. SavedSnapshot — novo campo:  confirmedAt: string | null
 //     → guarda o confirmed_at do pedido salvo no banco.
@@ -203,6 +205,14 @@ export default function RefeicoesPage() {
 
   // ── PASSO 2: guarda qual turno aguarda confirmação de cancelamento ──
   const [pendingCancelShift, setPendingCancelShift] = useState<Shift | null>(null);
+
+  // ── PASSO 6: estado do modal de visitante ──
+  const [visitorModal, setVisitorModal] = useState<{
+    open: boolean;
+    targetShift: Shift;
+    name: string;
+    error: string | null;
+  }>({ open: false, targetShift: "ALMOCO", name: "", error: null });
 
   const styles: Record<string, CSSProperties> = {
     label: { fontSize: 12, fontWeight: 800, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em", display: "block", marginBottom: 6 },
@@ -459,11 +469,23 @@ export default function RefeicoesPage() {
     } catch (e: any) { setError(e?.message || "Falha ao copiar ontem."); }
   }
 
-  async function addVisitor(targetShift: Shift) {
-    const name = window.prompt("Nome do visitante (sem cadastro):")?.trim();
-    if (!name) return;
-    if (targetShift === "ALMOCO") setVisitorsLunch((p) => uniq([...p, name]));
-    else setVisitorsDinner((p) => uniq([...p, name]));
+  // ── PASSO 6: abre o modal em vez do window.prompt ──
+  function addVisitor(targetShift: Shift) {
+    setVisitorModal({ open: true, targetShift, name: "", error: null });
+  }
+
+  function handleVisitorConfirm() {
+    const name = visitorModal.name.trim();
+    if (!name) {
+      setVisitorModal((p) => ({ ...p, error: "Informe o nome." }));
+      return;
+    }
+    if (visitorModal.targetShift === "ALMOCO") {
+      setVisitorsLunch((p) => uniq([...p, name]));
+    } else {
+      setVisitorsDinner((p) => uniq([...p, name]));
+    }
+    setVisitorModal({ open: false, targetShift: "ALMOCO", name: "", error: null });
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1080,6 +1102,57 @@ export default function RefeicoesPage() {
           </button>
         </div>
       </div>
+      {/* ── PASSO 6: Modal de visitante ── */}
+      {visitorModal.open ? (
+        <div
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
+          onClick={() => setVisitorModal((p) => ({ ...p, open: false }))}
+        >
+          <div
+            style={{ background: "#fff", borderRadius: 20, padding: 24, width: "100%", maxWidth: 380, boxShadow: "0 24px 48px rgba(0,0,0,0.18)" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={{ fontSize: 16, fontWeight: 900, color: "#0f172a", marginBottom: 4 }}>
+              + Pessoa sem cadastro
+            </div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
+              Turno: <b>{visitorModal.targetShift === "ALMOCO" ? "Almoço" : "Janta"}</b>
+            </div>
+
+            <label style={{ fontSize: 12, fontWeight: 800, color: "var(--gp-muted)", textTransform: "uppercase" as const, letterSpacing: "0.08em", display: "block", marginBottom: 6 }}>
+              Nome
+            </label>
+            <input
+              autoFocus
+              style={{ width: "100%", borderRadius: 14, border: `1px solid ${visitorModal.error ? "#fca5a5" : "#e5e7eb"}`, padding: "12px 12px", fontSize: 16, outline: "none", background: "#fff", color: "#0f172a" }}
+              placeholder="Nome completo..."
+              value={visitorModal.name}
+              onChange={(e) => setVisitorModal((p) => ({ ...p, name: e.target.value, error: null }))}
+              onKeyDown={(e) => { if (e.key === "Enter") handleVisitorConfirm(); if (e.key === "Escape") setVisitorModal((p) => ({ ...p, open: false })); }}
+            />
+            {visitorModal.error ? (
+              <div style={{ marginTop: 6, fontSize: 12, color: "#dc2626", fontWeight: 700 }}>{visitorModal.error}</div>
+            ) : null}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+              <button
+                type="button"
+                onClick={() => setVisitorModal((p) => ({ ...p, open: false }))}
+                style={{ flex: 1, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", padding: "12px", fontSize: 15, fontWeight: 900, cursor: "pointer" }}
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                onClick={handleVisitorConfirm}
+                style={{ flex: 1, borderRadius: 14, border: "1px solid #86efac", background: "#22c55e", color: "#fff", padding: "12px", fontSize: 15, fontWeight: 900, cursor: "pointer" }}
+              >
+                Adicionar
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
