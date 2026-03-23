@@ -1,34 +1,37 @@
 "use client";
 
 // ─────────────────────────────────────────────────────────────
+// PASSO 1 + PASSO 2
+//
 // PASSO 1 — Proteção contra edição/cancelamento de pedidos
 //           já confirmados pelo restaurante.
 //
-// MUDANÇAS neste arquivo vs. original:
-//
 //  1. Novo estado:  pendingReopenShift  (Shift | null)
-//     → guarda qual turno o usuário tentou re-salvar após confirmado.
-//
-//  2. saveShift()
-//     → agora busca também confirmed_at ao procurar o pedido existente.
-//     → se confirmed_at preenchido e forceReopen=false, para e exibe
-//       um card de aviso com botões "Cancelar" e "Sim, editar".
-//     → aceita parâmetro forceReopen=false (padrão) para o re-envio
-//       depois que o usuário confirmar conscientemente.
-//
-//  3. handleConfirmReopen()  ← NOVA função
-//     → chamada pelo botão "Sim, editar" do card de aviso.
-//     → fecha o card e chama saveShift(shift, true).
-//
-//  4. cancelShift()
-//     → antes de fazer DELETE, busca confirmed_at do pedido.
-//     → se já confirmado, exibe erro e retorna sem deletar.
-//
+//  2. saveShift()   → bloqueia se já confirmado (pede confirmação)
+//  3. handleConfirmReopen()  ← NOVA
+//  4. cancelShift() → bloqueia DELETE se já confirmado pelo restaurante
 //  5. JSX — card de aviso de reabertura
-//     → inserido logo acima dos botões de salvar nas seções
-//       de Almoço e Janta (veja comentários /* ⚠️ AVISO */ abaixo).
 //
-// Todo o resto do componente permanece igual ao original.
+// PASSO 2 — Dialog "Tem certeza?" antes de cancelar
+//
+//  1. Novo estado:  pendingCancelShift  (Shift | null)
+//  2. cancelShift() — dois estágios (confirmar antes de deletar)
+//  3. handleConfirmCancel()  ← NOVA
+//  4. JSX — card de confirmação de cancelamento
+//
+// PASSO 3 — Badge de status de confirmação para o encarregado
+//
+//  1. SavedSnapshot — novo campo:  confirmedAt: string | null
+//     → guarda o confirmed_at do pedido salvo no banco.
+//
+//  2. fetchSavedForShift()
+//     → agora seleciona também confirmed_at do meal_order.
+//     → retorna confirmedAt junto com orderId/employeeIds/visitors.
+//
+//  3. JSX — badge nos cards de totais (barra fixa inferior)
+//     → ✅ "Confirmado pelo restaurante às HH:MM"  (se confirmado)
+//     → ⏳ "Aguardando confirmação"                (se salvo, sem confirmação)
+//     → (nada)                                     (se não há pedido salvo)
 // ─────────────────────────────────────────────────────────────
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
@@ -69,6 +72,7 @@ type SavedSnapshot = {
   orderId: string | null;
   employeeIds: string[];
   visitors: string[];
+  confirmedAt: string | null; // ── PASSO 3
 };
 
 function pad2(n: number) {
@@ -174,8 +178,8 @@ export default function RefeicoesPage() {
   const [visitorsDinner, setVisitorsDinner] = useState<string[]>([]);
 
   const [saved, setSaved] = useState<Record<Shift, SavedSnapshot>>({
-    ALMOCO: { orderId: null, employeeIds: [], visitors: [] },
-    JANTA: { orderId: null, employeeIds: [], visitors: [] },
+    ALMOCO: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null },
+    JANTA: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null },
   });
 
   const [loading, setLoading] = useState(false);
@@ -185,8 +189,11 @@ export default function RefeicoesPage() {
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
-  // ── NOVO: guarda qual turno aguarda confirmação de reabertura ──
+  // ── PASSO 1: guarda qual turno aguarda confirmação de reabertura ──
   const [pendingReopenShift, setPendingReopenShift] = useState<Shift | null>(null);
+
+  // ── PASSO 2: guarda qual turno aguarda confirmação de cancelamento ──
+  const [pendingCancelShift, setPendingCancelShift] = useState<Shift | null>(null);
 
   const styles: Record<string, CSSProperties> = {
     label: { fontSize: 12, fontWeight: 800, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em", display: "block", marginBottom: 6 },
@@ -313,7 +320,7 @@ export default function RefeicoesPage() {
   async function fetchSavedForShift(wid: string, rid: string, dateISO: string, shift: Shift): Promise<SavedSnapshot> {
     const { data: order, error: e1 } = await supabase
       .from("meal_orders")
-      .select("id")
+      .select("id, confirmed_at")           // ── PASSO 3: adicionado confirmed_at
       .eq("worksite_id", wid)
       .eq("restaurant_id", rid)
       .eq("meal_date", dateISO)
@@ -322,7 +329,8 @@ export default function RefeicoesPage() {
       .maybeSingle();
     if (e1) throw e1;
     const orderId = (order as any)?.id ? String((order as any).id) : null;
-    if (!orderId) return { orderId: null, employeeIds: [], visitors: [] };
+    const confirmedAt = (order as any)?.confirmed_at ? String((order as any).confirmed_at) : null; // ── PASSO 3
+    if (!orderId) return { orderId: null, employeeIds: [], visitors: [], confirmedAt: null };
     const { data: lines, error: e2 } = await supabase
       .from("meal_order_lines")
       .select("employee_id,visitor_name,included")
@@ -331,14 +339,14 @@ export default function RefeicoesPage() {
     if (e2) throw e2;
     const empIds = uniq((lines || []).map((r: any) => (r.employee_id ? String(r.employee_id) : "")).filter(Boolean));
     const visitors = uniq((lines || []).map((r: any) => (r.visitor_name ? String(r.visitor_name) : "")).filter(Boolean));
-    return { orderId, employeeIds: empIds, visitors };
+    return { orderId, employeeIds: empIds, visitors, confirmedAt }; // ── PASSO 3
   }
 
   async function refreshSaved() {
     setError(null);
     setOkMsg(null);
     if (!worksiteId || !contract?.restaurant_id) {
-      setSaved({ ALMOCO: { orderId: null, employeeIds: [], visitors: [] }, JANTA: { orderId: null, employeeIds: [], visitors: [] } });
+      setSaved({ ALMOCO: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null }, JANTA: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null } });
       return;
     }
     const rid = contract.restaurant_id;
@@ -387,7 +395,7 @@ export default function RefeicoesPage() {
         if (c?.restaurant_id) {
           await refreshSaved();
         } else {
-          setSaved({ ALMOCO: { orderId: null, employeeIds: [], visitors: [] }, JANTA: { orderId: null, employeeIds: [], visitors: [] } });
+          setSaved({ ALMOCO: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null }, JANTA: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null } });
         }
       } catch (e: any) {
         setError(e?.message || "Falha ao carregar dados.");
@@ -584,11 +592,15 @@ export default function RefeicoesPage() {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // cancelShift — MODIFICADO
+  // cancelShift — PASSO 1 + PASSO 2
   //
-  // Diferença do original:
-  //   • Antes de fazer DELETE, busca confirmed_at do pedido.
-  //   • Se já confirmado, exibe mensagem de erro e retorna sem deletar.
+  // Estágio 1 (chamada pelo botão):
+  //   • Busca o pedido e verifica confirmed_at.
+  //   • Se já confirmado → exibe erro e para (Passo 1).
+  //   • Se não confirmado → seta pendingCancelShift e mostra
+  //     o card "Tem certeza?" sem deletar nada (Passo 2).
+  //
+  // Estágio 2 — handleConfirmCancel() executa o DELETE de fato.
   // ─────────────────────────────────────────────────────────────
   async function cancelShift(shift: Shift) {
     setError(null);
@@ -613,7 +625,7 @@ export default function RefeicoesPage() {
         return;
       }
 
-      // ── NOVO: verifica se o pedido já foi confirmado ──
+      // Passo 1: bloqueia se já confirmado
       const { data: orderCheck, error: checkErr } = await supabase
         .from("meal_orders")
         .select("confirmed_at")
@@ -631,7 +643,39 @@ export default function RefeicoesPage() {
         return;
       }
 
-      // Sem confirmação: pode deletar normalmente
+      // Passo 2: pedido existe mas não confirmado → pede confirmação
+      setPendingCancelShift(shift);
+    } catch (e: any) {
+      setError(e?.message || "Erro ao cancelar.");
+    } finally {
+      setCanceling((p) => ({ ...p, [shift]: false }));
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // handleConfirmCancel — NOVA (Passo 2)
+  // Chamada pelo botão "Sim, cancelar" do card de confirmação.
+  // Executa o DELETE de fato.
+  // ─────────────────────────────────────────────────────────────
+  async function handleConfirmCancel() {
+    const shift = pendingCancelShift;
+    if (!shift || !worksiteId || !contract?.restaurant_id) return;
+
+    setPendingCancelShift(null);
+    setError(null);
+    setOkMsg(null);
+
+    const rid = contract.restaurant_id;
+    setCanceling((p) => ({ ...p, [shift]: true }));
+
+    try {
+      let orderId = saved[shift]?.orderId || null;
+      if (!orderId) {
+        const snap = await fetchSavedForShift(worksiteId, rid, mealDate, shift);
+        orderId = snap.orderId;
+      }
+      if (!orderId) { setOkMsg("Nada salvo para cancelar."); return; }
+
       const delLines = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
       if (delLines.error) throw delLines.error;
 
@@ -795,6 +839,34 @@ export default function RefeicoesPage() {
           {error ? <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>{error}</div> : null}
           {okMsg ? <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>{okMsg}</div> : null}
 
+          {/* ⚠️ PASSO 2 — Card "Tem certeza?" antes de cancelar */}
+          {pendingCancelShift ? (
+            <div style={{ borderRadius: 14, padding: "14px 14px", border: "1px solid #fecaca", background: "#fef2f2", marginBottom: 12 }}>
+              <div style={{ fontWeight: 900, fontSize: 14, color: "#991b1b", marginBottom: 6 }}>
+                🗑️ Cancelar {pendingCancelShift === "ALMOCO" ? "Almoço" : "Janta"}?
+              </div>
+              <div style={{ fontSize: 13, color: "#7f1d1d", marginBottom: 12 }}>
+                O pedido será <b>apagado do banco</b> e não poderá ser recuperado. Tem certeza?
+              </div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setPendingCancelShift(null)}
+                  style={{ flex: 1, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}
+                >
+                  Não, voltar
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmCancel}
+                  style={{ flex: 1, borderRadius: 12, border: "1px solid #fecaca", background: "#dc2626", color: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}
+                >
+                  Sim, cancelar pedido
+                </button>
+              </div>
+            </div>
+          ) : null}
+
           {/* ⚠️ AVISO DE REABERTURA — aparece quando o usuário tenta re-salvar um pedido já confirmado */}
           {pendingReopenShift ? (
             <div style={{ borderRadius: 14, padding: "14px 14px", border: "1px solid #fde68a", background: "#fffbeb", marginBottom: 12 }}>
@@ -952,15 +1024,38 @@ export default function RefeicoesPage() {
       <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, padding: "12px 12px calc(12px + env(safe-area-inset-bottom))", background: "rgba(255,255,255,0.92)", borderTop: "1px solid #eef2f7", backdropFilter: "blur(10px)" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto" }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+            {/* ── PASSO 3: badge de status de confirmação ── */}
             <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
               <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
               <div style={{ fontSize: 12, color: "#166534" }}>salvo: {savedCounts.lunch} • limite {limits.lunch}</div>
+              {saved.ALMOCO.orderId ? (
+                saved.ALMOCO.confirmedAt ? (
+                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#15803d", background: "#dcfce7", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
+                    ✅ Confirmado às {new Date(saved.ALMOCO.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#92400e", background: "#fef9c3", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
+                    ⏳ Aguardando confirmação
+                  </div>
+                )
+              ) : null}
             </div>
             <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
               <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
               <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
               <div style={{ fontSize: 12, color: "#1d4ed8" }}>salvo: {savedCounts.dinner} • limite {limits.dinner}</div>
+              {saved.JANTA.orderId ? (
+                saved.JANTA.confirmedAt ? (
+                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#15803d", background: "#dcfce7", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
+                    ✅ Confirmado às {new Date(saved.JANTA.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#92400e", background: "#fef9c3", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
+                    ⏳ Aguardando confirmação
+                  </div>
+                )
+              ) : null}
             </div>
           </div>
           <button type="button" style={mode === "JANTA" ? bigBtnStyle("primaryDinner", bottomSaveDisabled) : bigBtnStyle("primaryLunch", bottomSaveDisabled)} onClick={handleBottomSave} disabled={bottomSaveDisabled || !contract}>
