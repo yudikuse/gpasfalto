@@ -21,6 +21,16 @@
 //
 // PASSO 3 — Badge de status de confirmação para o encarregado
 //
+// PASSO 5 — Timezone uniforme (BRT -03:00)
+//
+//  Problema: buildCutoffAtISO() usava `new Date(y, m-1, d, hh, mm, ss)`
+//  que cria a data no timezone LOCAL do browser. Se o device estiver em
+//  UTC, -04:00 ou qualquer outro tz, o cutoff seria avaliado errado.
+//
+//  Correção: buildCutoffAtISO() agora monta a string ISO com offset
+//  fixo -03:00, igual ao que page_69 já fazia com buildCutoffISO_BRT().
+//  Nenhuma outra lógica foi alterada.
+//
 //  1. SavedSnapshot — novo campo:  confirmedAt: string | null
 //     → guarda o confirmed_at do pedido salvo no banco.
 //
@@ -103,13 +113,12 @@ function timeHHMM(t: string | null) {
 }
 function buildCutoffAtISO(mealDateISO: string, cutoffTime: string | null) {
   if (!cutoffTime) return null;
-  const [y, m, d] = mealDateISO.split("-").map(Number);
   const parts = String(cutoffTime).split(":").map((x) => Number(x));
-  const hh = parts[0] ?? 0;
-  const mm = parts[1] ?? 0;
-  const ss = parts[2] ?? 0;
-  const dt = new Date(y, m - 1, d, hh, mm, ss);
-  return dt.toISOString();
+  const hh = pad2(parts[0] ?? 0);
+  const mm = pad2(parts[1] ?? 0);
+  const ss = pad2(parts[2] ?? 0);
+  // ── PASSO 5: offset fixo -03:00 (BRT), igual ao page_69 ──
+  return `${mealDateISO}T${hh}:${mm}:${ss}-03:00`;
 }
 function uniq(arr: string[]) {
   return Array.from(new Set(arr));
