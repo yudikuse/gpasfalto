@@ -107,17 +107,21 @@ function parseNf(texto: string, pagina: number) {
   // ── Fornecedor / Emitente ─────────────────────────────────────────
   // Tenta múltiplas estratégias pois o Vision pode reordenar o layout
 
-  // Estratégia 1: linha após "IDENTIFICAÇÃO DO EMITENTE"
+  // Estratégia 0: cabeçalho "RECEBEMOS DE <NOME> OS PRODUTOS..." (padrão recibo)
   let fornecedor =
-    t.match(/IDENTIFICA[ÇC][ÃA]O\s+DO\s+EMITENTE[\s\S]{0,40}\n\s*([^\n]{4,80})/i)?.[1]?.trim();
+    t.match(/RECEBEMOS\s+DE\s+([A-ZÁÉÍÓÚÂÊÔÀÃÕA-Za-z][^\n]{4,80}?)\s+(?:OS\s+PRODUTOS|OS\s+SERVICOS|DA\s+NOTA)/i)?.[1]?.trim();
+
+  // Estratégia 1: linha após "IDENTIFICAÇÃO DO EMITENTE"
+  if (!fornecedor || fornecedor.length < 4) {
+    fornecedor = t.match(/IDENTIFICA[ÇC][ÃA]O\s+DO\s+EMITENTE[\s\S]{0,40}\n\s*([^\n]{4,80})/i)?.[1]?.trim();
+  }
 
   // Estratégia 2: nome em caixa alta com sufixo empresarial próximo ao início do doc
   if (!fornecedor || fornecedor.length < 4) {
     const SUFIXOS = /LTDA|S\.?A\.?\s*$|ME\s*$|EPP|EIRELI|MINERADORA|TRANSPORTES|CONSTRUTORA|ENGENHARIA|INDUSTRIA|COMERCIO|DISTRIBUIDORA|SERVICOS/i;
     const linhas = t.split("\n").map(l => l.trim()).filter(Boolean);
-    // Tenta as primeiras 30 linhas (emitente está sempre no topo do DANFE)
     for (const l of linhas.slice(0, 30)) {
-      if (l.length >= 5 && l.length <= 80 && SUFIXOS.test(l) && !/RECEBEMOS|DANFE|DOCUMENTO|NATUREZA|DESTINAT/i.test(l)) {
+      if (l.length >= 5 && l.length <= 80 && SUFIXOS.test(l) && !/RECEBEMOS|DANFE|DOCUMENTO|NATUREZA|DESTINAT|RUA\s|AV\.\s|ROD\.\s/i.test(l)) {
         fornecedor = l;
         break;
       }
@@ -132,6 +136,7 @@ function parseNf(texto: string, pagina: number) {
       const linhas = trecho.split("\n").map(l => l.trim()).filter(l => l.length > 3 && l.length < 80);
       fornecedor = linhas.reverse().find(l =>
         /LTDA|S\.?A\.|ME\b|EPP|EIRELI|MINERADORA|TRANSPORTES|CONSTRU|ENGENHARIA|IND[UÚ]|COMERCIO|DISTRIBUIDORA/i.test(l)
+        && !/RUA\s|AV\.\s|ROD\.\s|CEP|FONE|TEL\b/i.test(l)
       ) ?? "";
     }
   }
@@ -162,16 +167,29 @@ function parseNf(texto: string, pagina: number) {
     ?? "";
 
   // ── Valor total ───────────────────────────────────────────────────
+  // O OCR pode separar o label do valor em linhas diferentes
   const valor_total =
+    // Label + valor na mesma linha ou linha seguinte
     t.match(/VALOR\s+TOTAL\s+DA\s+NOTA\s*\n?\s*([\d\.]+,\d{2})/i)?.[1]
     ?? t.match(/TOTAL\s+DA\s+NOTA\s*\n?\s*([\d\.]+,\d{2})/i)?.[1]
     ?? t.match(/VALOR\s+TOTAL\s+DOS\s+PRODUTOS\s*\n?\s*([\d\.]+,\d{2})/i)?.[1]
-    // Fallback: maior valor no documento
+    // Cabeçalho do recibo: "VALOR TOTAL: R$ 3.304,88"
+    ?? t.match(/VALOR\s+TOTAL\s*:\s*R?\$?\s*([\d\.]+,\d{2})/i)?.[1]
+    // Linha de duplicata: "001  30/03/2026  3.304,88"
+    ?? t.match(/DUPLICATA[\s\S]{0,30}\n\s*001\s+[\d\/]+\s+([\d\.]+,\d{2})/i)?.[1]
+    // Fallback: maior valor monetário com formato X.XXX,XX (evita valores pequenos)
     ?? (() => {
-        const vals = [...t.matchAll(/([\d]{1,9}\.[\d]{3},\d{2}|[\d]{1,6},\d{2})/g)]
+        const vals = [...t.matchAll(/\b([\d]{1,3}(?:\.[\d]{3})+,\d{2})\b/g)]
           .map(m => parseFloat(m[1].replace(/\./g,"").replace(",",".")))
-          .filter(v => v > 1);
-        if (!vals.length) return "";
+          .filter(v => v > 10);
+        if (!vals.length) {
+          // Tenta valores sem milhar
+          const vals2 = [...t.matchAll(/\b([\d]{2,6},\d{2})\b/g)]
+            .map(m => parseFloat(m[1].replace(",",".")))
+            .filter(v => v > 10);
+          if (!vals2.length) return "";
+          return Math.max(...vals2).toFixed(2).replace(".",",");
+        }
         return Math.max(...vals).toFixed(2).replace(".",",");
       })();
 
@@ -181,7 +199,7 @@ function parseNf(texto: string, pagina: number) {
   // "BRITA 01" só aparece DEPOIS do último cabeçalho de coluna.
   // Estratégia: dentro do bloco, pular tudo até após "VALOR IP" ou similar.
 
-  const idxProd = t.search(/DADOS\s+DO\s+PRODUTO/i);
+  const idxProd = t.search(/DADOS\s+DOS?\s+PRODUTO/i);  // aceita "DADOS DO" e "DADOS DOS"
   const idxAdc  = t.search(/DADOS\s+ADICIONAIS|C[AÁ]LCULO\s+DO\s+ISSQN/i);
   let descricao = "";
 
@@ -213,7 +231,7 @@ function parseNf(texto: string, pagina: number) {
 
     const subBloco = fimHeaderIdx > 0 ? blocoFull.slice(fimHeaderIdx) : blocoFull;
 
-    const NUNCA = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI\b|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DADOS|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORT|PESO\b|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON\b|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|METRO\b|ROLO\b|DATA\s|HORA\s|INSCRI[ÇC]|MUNIC|ENDERE|BAIRRO|CEP\b|RAZÃO|CNPJ|CPF\b|FONE|RUA\s|AV\.\s|CHAVE\s|PROTOCOLO|SÉRIE\b|FOLHA\b|CÓDIGO|CODIGO|ISENTO|NUMERAC|BRUTO|LIQUID|CÁLCULO|CALCULO|IMPOSTOS|IMPORT|MUNICIPAL|B\.\s*CALC|FRETE\s|REMETENTE|GO\b|UF\b)/i;
+    const NUNCA = /^(NCM|CST|CFOP|UN\b|QTD|QUANT|VALOR|UNIT|TOTAL\b|ICMS|IPI\b|PIS|COFINS|ALIQ|BASE\b|BC\b|PROD\b|COD\b|SH\b|CEST|DADOS|DESCRI[ÇC]|SERVI[ÇC]|PRODUTO\b|NATUREZA|INFORMAC|FATURA|DUPLICATA|TRANSPORT|PESO\b|PLACA|VEICULO|FRETE|SEGURO|DESCONTO|PARCELAS|OBSERV|UNID|PC\b|TON\b|KG\b|MT\b|LT\b|BALDE\b|LITRO\b|METRO\b|ROLO\b|DATA\s|HORA\s|INSCRI[ÇC]|MUNIC|ENDERE|BAIRRO|CEP\b|RAZÃO|CNPJ|CPF\b|FONE|RUA\s|AV\.\s|CHAVE\s|PROTOCOLO|SÉRIE\b|FOLHA\b|CÓDIGO|CODIGO|ISENTO|NUMERAC|BRUTO|LIQUID|CÁLCULO|CALCULO|IMPOSTOS|IMPORT|MUNICIPAL|B\.\s*CALC|FRETE\s|REMETENTE|GO\b|UF\b|^EST\b|^FOB\b|^CIF\b|^ANP\b|^ISS\b|^BC\s|^FOL|ALÍQUOTA|ALIQUOTA|CÓDIGO\s+DO|DESCRIÇÃO\s+DO|PROD\.?\s*SERV)/i;
 
     function ehProduto(l: string): boolean {
       const s = l.trim();
@@ -222,10 +240,12 @@ function parseNf(texto: string, pagina: number) {
       if (/^\d{8}$/.test(s)) return false;
       if (/^\d{2}\/\d{2}\/\d{4}/.test(s)) return false;
       if (/^[0-9\s,\.\/\-\+]+$/.test(s)) return false;
+      if (/^\d{6,}/.test(s)) return false;           // linha começando com NCM/código longo
       if (NUNCA.test(s)) return false;
-      if (/^(CST:|IBS:|CBS:|IS:|CÓD\.|COD\.|0\s+-|B\.\s)/i.test(s)) return false;
-      if (/^[A-Z]{1,2}$/.test(s)) return false;
-      return /[A-ZÁÉÍÓÚÂÊÔÀÃÕ]{2,}/.test(s);
+      if (/^(CST:|IBS:|CBS:|IS:|CÓD\.|COD\.|0\s+-|B\.\s|CEST:|COD\.\s+PRODUTO|UF\s+DE\s+CONS)/i.test(s)) return false;
+      if (/^[A-Z]{1,3}$/.test(s)) return false;     // siglas curtas: GO, UF, EST, FOB
+      if (/^[A-Z]{1,3}\s+\d/.test(s)) return false; // "EST 27101932..." ou "NCM SI"
+      return /[A-ZÁÉÍÓÚÂÊÔÀÃÕ]{3,}/.test(s);        // exige ao menos 3 letras seguidas
     }
 
     const linhas = subBloco.split("\n").map(l => l.trim()).filter(Boolean);
@@ -248,10 +268,18 @@ function parseNf(texto: string, pagina: number) {
     else if (itens.length >= 3) descricao = `${itens[0]}, ${itens[1]} e outros`;
   }
 
-  // Fallback direto no texto completo
+  // Fallback direto no texto completo (ex: NFs onde o OCR não extraiu a seção de produtos)
   if (!descricao) {
-    const m = t.match(/\b(BRITA\s+\w+|TUBO\s+\w+|ASFALTO|CAP\s+\w+|CBUQ|AREIA|CIMENTO|DIESEL|GASOLINA|AGREGADO|EMULSÃO|CONCRETO|PAVIMENTO|TINTA\s+\w+|PNEU\s+\w+|FILTRO\s+\w+)/i);
+    // Tenta produto típico em qualquer parte do texto
+    const m = t.match(/\b(BRITA\s+\w+|TUBO\s+(?:PVC|CPVC|FERRO|ACO)\s*\w*|ASFALTO|CAP\s+\w+|CBUQ|AREIA|CIMENTO|DIESEL|GASOLINA|AGREGADO|EMULSÃO|EMULSAO|CONCRETO|PAVIMENTO|TINTA\s+\w+|PNEU\s+\w+|FILTRO\s+\w+|OLEO\s+\w+|MANGUEIRA\s+\w+|PARAFUSO\s+\w+|ROLAMENTO\s+\w+|CHAVE\s+\w+)/i);
     if (m) descricao = m[0].trim().slice(0, 60);
+  }
+
+  // Fallback 2: tenta extrair da linha de descrição do produto na tabela (formato diferente)
+  if (!descricao) {
+    // Padrão: CÓDIGO PRODUTO + DESCRIÇÃO DO PRODUTO / SERVIÇO (coluna única)
+    const mDesc = t.match(/DESCRI[ÇC][ÃA]O\s+DO\s+PRODUTO\s*[\/\s]\s*SERVI[ÇC]O[^\n]*\n([^\n]{3,80})/i);
+    if (mDesc) descricao = limpar(mDesc[1]);
   }
 
   // ── Condição de pagamento ─────────────────────────────────────────
