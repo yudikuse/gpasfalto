@@ -49,7 +49,7 @@ async function extrairNfsComGemini(base64Pdf: string): Promise<any[]> {
   const apiKey = process.env.GEMINI_API_KEY || "";
   if (!apiKey) throw new Error("Configure a variável GEMINI_API_KEY no Vercel.");
 
-  const MODEL    = "gemini-2.5-flash-preview-04-17";
+  const MODEL    = "gemini-2.5-flash";
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
 
   const body = {
