@@ -13,8 +13,6 @@ const supabase = createClient(
 type PosRow = {
   pos_equip_id: string;
   pos_placa: string | null;
-  pos_equip_modelo: string | null;
-  pos_nome_motorista: string | null;
   gps_at: string | null;
   receb_at: string | null;
   ingested_at: string | null;
@@ -54,11 +52,22 @@ type EquipSummary = {
 function pad2(n: number) { return String(n).padStart(2, "0"); }
 
 function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+  // Hoje no fuso BRT (UTC-3)
+  const now = new Date();
+  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
+  return `${brt.getUTCFullYear()}-${pad2(brt.getUTCMonth() + 1)}-${pad2(brt.getUTCDate())}`;
+}
+
+/** Janela UTC para um dia em BRT: 00:00 BRT = 03:00 UTC do mesmo dia */
+function dayWindowUTC(dateStr: string): { from: string; to: string } {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const from = new Date(Date.UTC(y, m - 1, d,  3,  0,  0, 0));   // 00:00 BRT
+  const to   = new Date(Date.UTC(y, m - 1, d + 1, 2, 59, 59, 999)); // 23:59:59 BRT
+  return { from: from.toISOString(), to: to.toISOString() };
 }
 
 function getBestTs(row: PosRow): Date | null {
+  // Para exibição: prefere gps_at (hora real do veículo), senão ingested_at
   const s = row.gps_at || row.receb_at || row.ingested_at;
   if (!s) return null;
   try { return new Date(s); } catch { return null; }
@@ -78,16 +87,19 @@ function fmtKm(km: number) {
 }
 
 function fmtHora(d: Date) {
-  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  // Converte UTC → BRT para exibição
+  const brt = new Date(d.getTime() - 3 * 60 * 60 * 1000);
+  return brt.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", timeZone: "UTC" });
 }
 
 function calcSessions(rows: PosRow[]): {
   sessions: { start: Date; end: Date; moving: boolean }[];
   totalSec: number;
 } {
+  // Usa gps_at para calcular sessões (hora real do veículo)
   const pts = rows
     .filter((r) => r.pos_ignicao === true)
-    .map((r) => ({ ts: getBestTs(r), speed: r.pos_velocidade ?? 0 }))
+    .map((r) => ({ ts: r.gps_at ? new Date(r.gps_at) : null, speed: r.pos_velocidade ?? 0 }))
     .filter((r): r is { ts: Date; speed: number } => r.ts !== null)
     .sort((a, b) => a.ts.getTime() - b.ts.getTime());
 
@@ -125,15 +137,18 @@ function calcKm(rows: PosRow[]): number {
   return Math.max(0, Math.max(...vals) - Math.min(...vals));
 }
 
-// ─── UI Components ────────────────────────────────────────────────────────────
+// ─── Componentes ──────────────────────────────────────────────────────────────
 
 function ActivityBar({ sessions, date }: {
   sessions: { start: Date; end: Date; moving: boolean }[];
   date: string;
 }) {
+  // Barra relativa ao dia BRT
   const [y, m, d] = date.split("-").map(Number);
-  const dayStart = new Date(y, m - 1, d, 0, 0, 0).getTime();
+  // 00:00 BRT em UTC
+  const dayStart = Date.UTC(y, m - 1, d, 3, 0, 0);
   const total = 24 * 3600 * 1000;
+
   return (
     <div style={{ position: "relative", height: 6, borderRadius: 3, background: "#f1f5f9", overflow: "hidden" }}>
       {sessions.map((s, i) => {
@@ -169,6 +184,7 @@ function EquipCard({ eq, date }: { eq: EquipSummary; date: string }) {
   const onlineL = eq.online === true ? "ONLINE"  : eq.online === false ? "OFFLINE" : "—";
   const igC     = eq.ignicaoAtual === true ? "#16a34a" : eq.ignicaoAtual === false ? "#64748b" : "#94a3b8";
   const igL     = eq.ignicaoAtual === true ? "LIGADO"  : eq.ignicaoAtual === false ? "DESLIGADO" : "—";
+
   return (
     <div style={{ background: "#fff", border: "1px solid #e2e8f0", borderLeft: `4px solid ${ligado ? "#2563eb" : "#cbd5e1"}`, borderRadius: 12, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -219,7 +235,7 @@ export default function SigasulPage() {
   const [devices, setDevices]       = useState<DeviceRow[]>([]);
   const [positions, setPositions]   = useState<PosRow[]>([]);
 
-  // Tenta carregar device_map mas não bloqueia se falhar
+  // device_map é opcional — enriquece nome/obra mas não bloqueia
   useEffect(() => {
     supabase
       .from("sigasul_device_map")
@@ -231,58 +247,33 @@ export default function SigasulPage() {
     setLoading(true);
     setErr(null);
 
-    const [y, m, d] = date.split("-").map(Number);
-
-    // Janela do dia em BRT (UTC-3) → em UTC fica +3h
-    // Ex: 24/03 00:00 BRT = 24/03 03:00 UTC → 24/03 03:00Z até 25/03 02:59Z
-    const fromBRT = new Date(Date.UTC(y, m - 1, d,  3,  0,  0));  // 00:00 BRT
-    const toBRT   = new Date(Date.UTC(y, m - 1, d, 26, 59, 59));  // 23:59 BRT (d+1 03:00 UTC)
-
-    const fromISO = fromBRT.toISOString();
-    const toISO   = toBRT.toISOString();
+    const { from, to } = dayWindowUTC(date);
 
     const PAGE = 5000;
     let all: PosRow[] = [];
-    let hasError = false;
 
+    // Filtra por ingested_at (quando foi salvo no banco hoje)
+    // Isso funciona independente do GPS estar desatualizado
     for (let offset = 0; ; offset += PAGE) {
       const { data, error } = await supabase
         .from("sigasul_positions_raw")
-        .select("pos_equip_id,pos_placa,pos_equip_modelo,pos_nome_motorista,gps_at,receb_at,ingested_at,pos_ignicao,pos_online,pos_velocidade,pos_odometro_calc,pos_odometro,obra,cerca_nome_ativa")
-        .gte("ingested_at", fromISO)
-        .lte("ingested_at", toISO)
+        .select("pos_equip_id,pos_placa,gps_at,receb_at,ingested_at,pos_ignicao,pos_online,pos_velocidade,pos_odometro_calc,pos_odometro,obra,cerca_nome_ativa")
+        .gte("ingested_at", from)
+        .lte("ingested_at", to)
         .order("ingested_at", { ascending: true })
         .range(offset, offset + PAGE - 1);
 
       if (error) {
-        // Se ingested_at não existe, tenta gps_at
-        const { data: data2, error: error2 } = await supabase
-          .from("sigasul_positions_raw")
-          .select("pos_equip_id,pos_placa,pos_equip_modelo,pos_nome_motorista,gps_at,receb_at,ingested_at,pos_ignicao,pos_online,pos_velocidade,pos_odometro_calc,pos_odometro,obra,cerca_nome_ativa")
-          .gte("gps_at", fromISO)
-          .lte("gps_at", toISO)
-          .order("gps_at", { ascending: true })
-          .range(offset, offset + PAGE - 1);
-
-        if (error2) {
-          setErr(`Erro ao carregar posições: ${error2.message}`);
-          hasError = true;
-          break;
-        }
-        if (!data2 || data2.length === 0) break;
-        all = all.concat(data2 as PosRow[]);
-        if (data2.length < PAGE) break;
-      } else {
-        if (!data || data.length === 0) break;
-        all = all.concat(data as PosRow[]);
-        if (data.length < PAGE) break;
+        setErr(`Erro: ${error.message}`);
+        break;
       }
+      if (!data || data.length === 0) break;
+      all = all.concat(data as PosRow[]);
+      if (data.length < PAGE) break;
     }
 
-    if (!hasError) {
-      setPositions(all);
-      setLastUpdate(new Date());
-    }
+    setPositions(all);
+    setLastUpdate(new Date());
     setLoading(false);
   }
 
@@ -294,15 +285,14 @@ export default function SigasulPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [date]);
 
-  // Mapa device_map por equip_id
   const equipMap = useMemo(() => {
     const m = new Map<string, DeviceRow>();
     for (const d of devices) m.set(d.pos_equip_id, d);
     return m;
   }, [devices]);
 
-  // Agrega por equipamento
   const summaries = useMemo((): EquipSummary[] => {
+    // Agrupa por equip — pega a posição mais recente de cada um
     const byEquip = new Map<string, PosRow[]>();
     for (const p of positions) {
       if (!p.pos_equip_id) continue;
@@ -314,32 +304,26 @@ export default function SigasulPage() {
 
     return Array.from(byEquip.entries())
       .map(([id, rows]) => {
-        const dev = equipMap.get(id);
-
-        // Nome: preferir device_map, senão identificação no mapa (pos_equip_modelo não é o nome)
-        // A placa é o melhor identificador disponível na raw
+        const dev   = equipMap.get(id);
         const placa = dev?.placa || rows[0]?.pos_placa || id;
         const nome  = dev?.codigo_equipamento || placa;
+        const obra  = dev?.obra || rows.find((r) => r.obra)?.obra || rows.find((r) => r.cerca_nome_ativa)?.cerca_nome_ativa || "SEM OBRA";
 
-        // Obra: device_map > campo obra da posição > cerca > SEM OBRA
-        const obra =
-          dev?.obra ||
-          rows.find((r) => r.obra)?.obra ||
-          rows.find((r) => r.cerca_nome_ativa)?.cerca_nome_ativa ||
-          "SEM OBRA";
-
-        // Ordena por timestamp
+        // Ordena por gps_at para sessões e primeira ignição
         const sorted = [...rows].sort((a, b) => {
-          const ta = getBestTs(a)?.getTime() ?? 0;
-          const tb = getBestTs(b)?.getTime() ?? 0;
+          const ta = a.gps_at ? new Date(a.gps_at).getTime() : 0;
+          const tb = b.gps_at ? new Date(b.gps_at).getTime() : 0;
           return ta - tb;
         });
 
         const ligadas = sorted.filter((r) => r.pos_ignicao === true);
-        const primeiraIgnicao = ligadas.length > 0 ? getBestTs(ligadas[0]) : null;
+        const primeiraIgnicao = ligadas.length > 0 && ligadas[0].gps_at ? new Date(ligadas[0].gps_at) : null;
         const kmTotal = calcKm(sorted);
         const { sessions, totalSec } = calcSessions(sorted);
-        const ultima = sorted[sorted.length - 1] ?? null;
+
+        // Status atual = última linha salva (ingested_at mais recente)
+        const ultima = rows[rows.length - 1];
+        const ultimaTs = ultima?.ingested_at ? new Date(ultima.ingested_at) : getBestTs(ultima);
 
         return {
           pos_equip_id:    id,
@@ -350,7 +334,7 @@ export default function SigasulPage() {
           online:          ultima?.pos_online     ?? null,
           ignicaoAtual:    ultima?.pos_ignicao    ?? null,
           velocidadeAtual: ultima?.pos_velocidade ?? null,
-          ultimaPos:       ultima ? getBestTs(ultima) : null,
+          ultimaPos:       ultimaTs,
           sessions,
         } satisfies EquipSummary;
       })
@@ -368,8 +352,7 @@ export default function SigasulPage() {
 
   const filtered = useMemo(() =>
     obraFiltro === "TODAS" ? summaries : summaries.filter((e) => e.obra === obraFiltro),
-    [summaries, obraFiltro]
-  );
+    [summaries, obraFiltro]);
 
   const groups = useMemo(() => {
     const m = new Map<string, EquipSummary[]>();
@@ -394,14 +377,13 @@ export default function SigasulPage() {
       <style>{`* { box-sizing: border-box; }`}</style>
       <div style={{ minHeight: "100vh", background: "#f1f5f9", fontFamily: "system-ui,-apple-system,sans-serif" }}>
 
-        {/* Top Bar */}
         <div style={{ background: "#0f172a", color: "white", padding: "12px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, position: "sticky", top: 0, zIndex: 100, borderBottom: "1px solid #1e293b" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <div style={{ width: 34, height: 34, borderRadius: 9, background: "linear-gradient(135deg,#2563eb,#0ea5e9)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 900, fontSize: 12 }}>GP</div>
             <div>
               <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: "-0.02em", lineHeight: 1 }}>GP Asfalto — Monitoramento</div>
               <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-                {isToday ? "Hoje" : date} · {positions.length.toLocaleString("pt-BR")} posições{isToday && " · auto-refresh 1min"}
+                {isToday ? "Hoje" : date} · {summaries.length} equipamentos · {positions.length.toLocaleString("pt-BR")} posições{isToday && " · auto-refresh 1min"}
               </div>
             </div>
           </div>
@@ -419,16 +401,13 @@ export default function SigasulPage() {
           </div>
         </div>
 
-        {/* Conteúdo */}
         <div style={{ padding: "20px 24px", maxWidth: 1400, margin: "0 auto" }}>
-
           {err && (
             <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "12px 16px", color: "#991b1b", marginBottom: 16, fontSize: 13 }}>
               <strong>Erro:</strong> {err}
             </div>
           )}
 
-          {/* Resumo */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
             <SummaryCard icon="🚛" label="Equipamentos"     value={String(totals.total)}   color="#0f172a" />
             <SummaryCard icon="📡" label="Online agora"     value={String(totals.online)}  color="#2563eb" />
@@ -436,7 +415,6 @@ export default function SigasulPage() {
             <SummaryCard icon="🛣️" label="KM total frota"   value={totals.km > 0 ? fmtKm(totals.km) : "—"} color="#d97706" />
           </div>
 
-          {/* Legenda */}
           <div style={{ display: "flex", gap: 16, marginBottom: 16, fontSize: 12, color: "#64748b", alignItems: "center" }}>
             <span style={{ fontWeight: 700, color: "#374151" }}>Barra:</span>
             {[["#16a34a","Deslocando"],["#f59e0b","Parado (motor on)"]].map(([c,l]) => (
@@ -448,17 +426,13 @@ export default function SigasulPage() {
             {lastUpdate && <span style={{ marginLeft: "auto" }}>Atualizado às {lastUpdate.toLocaleTimeString("pt-BR")}</span>}
           </div>
 
-          {/* Grupos */}
           {loading && positions.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "80px 0", color: "#94a3b8", fontSize: 15 }}>Carregando…</div>
+            <div style={{ textAlign: "center", padding: "80px 0", color: "#94a3b8" }}>Carregando…</div>
           ) : summaries.length === 0 ? (
             <div style={{ background: "#fefce8", border: "1px solid #fde68a", borderRadius: 10, padding: "16px 20px", color: "#92400e", fontSize: 14 }}>
-              <strong>Nenhuma posição encontrada para {date}.</strong><br />
-              Verifique se o cron <code>/api/cron/sigasul</code> está rodando e se a tabela <code>sigasul_positions_raw</code> tem dados para este dia.
-              <br /><br />
-              <span style={{ fontSize: 12, color: "#78716c" }}>
-                Dica: acesse <code>/api/cron/sigasul?debug=1</code> no navegador para ver o status do cron.
-              </span>
+              <strong>Nenhuma posição encontrada para {date}.</strong><br /><br />
+              O cron <code>/api/cron/sigasul</code> precisa rodar ao menos uma vez para popular os dados.
+              Verifique se o <code>vercel.json</code> tem o cron configurado e se o deploy foi feito.
             </div>
           ) : (
             [...groups.entries()].map(([obraName, equips]) => (
