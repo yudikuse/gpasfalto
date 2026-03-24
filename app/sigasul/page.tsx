@@ -104,15 +104,22 @@ function fmtKm(metros: number) {
   return `${metros.toFixed(0)} m`;
 }
 
-function fmtHoraFromStr(dt: string) {
-  try {
-    return new Date(dt.replace(" ", "T")).toLocaleTimeString("pt-BR", {
-      hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo",
-    });
-  } catch { return "—"; }
+/**
+ * Sigasul retorna datas já em BRT ("2026-03-24 07:57:11").
+ * Extraímos só a parte HH:MM diretamente — sem conversão de fuso.
+ */
+function fmtHoraFromStr(dt: string): string {
+  if (!dt) return "—";
+  // Formato "YYYY-MM-DD HH:MM:SS" ou "YYYY-MM-DDTHH:MM:SS"
+  const match = dt.match(/[T ](\d{2}:\d{2})/);
+  return match ? match[1] : "—";
 }
 
-function fmtHoraFromISO(iso: string | null) {
+/**
+ * Datas do Supabase chegam como ISO UTC (timestamptz).
+ * Converte corretamente para BRT.
+ */
+function fmtHoraFromISO(iso: string | null): string {
   if (!iso) return "—";
   try {
     return new Date(iso).toLocaleTimeString("pt-BR", {
