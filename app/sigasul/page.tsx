@@ -8,8 +8,6 @@ const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// ─── Design tokens (mesmo padrão do dash de materiais) ────────────────────────
-
 const C = {
   bg:       "#f4f5f7",
   surface:  "#ffffff",
@@ -35,13 +33,16 @@ type LatestRow = {
   pos_ignicao: boolean | null;
   pos_online: boolean | null;
   pos_velocidade: number | null;
+  pos_tensao: number | null;
+  pos_nome_motorista: string | null;
 };
 
 type SigasulEvento = {
   data_hora_inicial: string;
   data_hora_final: string;
   distancia: number;
-  tempoLigado: string; // "HH:MM:SS"
+  tempoLigado: string;
+  motorista: string | null;
 };
 
 type SigasulVeiculo = {
@@ -57,6 +58,8 @@ type SigasulPosition = {
   pos_online: boolean;
   pos_velocidade: number;
   pos_data_hora_gps: string;
+  pos_tensao: number | null;
+  pos_nome_motorista: string | null;
 };
 
 type EquipRow = {
@@ -67,11 +70,12 @@ type EquipRow = {
   online: boolean | null;
   ignicao: boolean | null;
   velocidade: number | null;
+  tensao: number | null;
+  motorista: string | null;
   ultimaPos: string | null;
   primeiraIgnicao: string | null;
   kmTotal: number;
   tempoLigadoSec: number;
-  eventos: SigasulEvento[];
 };
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -104,28 +108,34 @@ function fmtKm(metros: number) {
   return `${metros.toFixed(0)} m`;
 }
 
-/**
- * Sigasul retorna datas já em BRT ("2026-03-24 07:57:11").
- * Extraímos só a parte HH:MM diretamente — sem conversão de fuso.
- */
-function fmtHoraFromStr(dt: string): string {
+// Sigasul já retorna BRT — extrai HH:MM direto
+function fmtHoraBRT(dt: string | null): string {
   if (!dt) return "—";
-  // Formato "YYYY-MM-DD HH:MM:SS" ou "YYYY-MM-DDTHH:MM:SS"
   const match = dt.match(/[T ](\d{2}:\d{2})/);
   return match ? match[1] : "—";
 }
 
-/**
- * Datas do Supabase chegam como ISO UTC (timestamptz).
- * Converte corretamente para BRT.
- */
-function fmtHoraFromISO(iso: string | null): string {
+// Supabase retorna UTC — converte para BRT
+function fmtHoraUTC(iso: string | null): string {
   if (!iso) return "—";
   try {
     return new Date(iso).toLocaleTimeString("pt-BR", {
-      hour: "2-digit", minute: "2-digit", timeZone: "America/Sao_Paulo",
+      hour: "2-digit", minute: "2-digit",
+      timeZone: "America/Sao_Paulo",
     });
   } catch { return "—"; }
+}
+
+function tensaoColor(v: number | null): string {
+  if (v == null) return C.textMute;
+  if (v >= 13.0) return C.success;
+  if (v >= 12.0) return C.warning;
+  return C.danger;
+}
+
+function tensaoLabel(v: number | null): string {
+  if (v == null) return "—";
+  return `${v.toFixed(1)}V`;
 }
 
 // ─── Componentes ──────────────────────────────────────────────────────────────
@@ -141,37 +151,12 @@ function StatusDot({ online, ignicao }: { online: boolean | null; ignicao: boole
   );
 }
 
-function MiniBar({ eventos, date }: { eventos: SigasulEvento[]; date: string }) {
-  if (eventos.length === 0) return <div style={{ height: 4, background: C.border, borderRadius: 2 }} />;
-  const [y, m, d] = date.split("-").map(Number);
-  const dayStart = new Date(y, m - 1, d, 0, 0, 0).getTime();
-  const total = 24 * 3600 * 1000;
-  return (
-    <div style={{ position: "relative", height: 4, background: C.border, borderRadius: 2, overflow: "hidden" }}>
-      {eventos.map((ev, i) => {
-        const s = new Date(ev.data_hora_inicial.replace(" ", "T")).getTime() - dayStart;
-        const e = new Date(ev.data_hora_final.replace(" ", "T")).getTime() - dayStart;
-        const left  = Math.max(0, (s / total) * 100);
-        const width = Math.max(0.5, ((e - s) / total) * 100);
-        return (
-          <div key={i} style={{
-            position: "absolute", top: 0, bottom: 0,
-            left: `${left}%`, width: `${width}%`,
-            background: ev.distancia > 50 ? C.success : C.warning,
-          }} />
-        );
-      })}
-    </div>
-  );
-}
-
-// Card compacto — estilo tabela/lista como no materiais
-function EquipRow({ eq, date }: { eq: EquipRow; date: string }) {
+function EquipRowItem({ eq }: { eq: EquipRow }) {
   const ligado = eq.tempoLigadoSec > 0;
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "180px 1fr 90px 90px 80px 80px",
+      gridTemplateColumns: "170px 80px 80px 90px 90px 80px 1fr",
       alignItems: "center",
       gap: 12,
       padding: "10px 16px",
@@ -181,17 +166,17 @@ function EquipRow({ eq, date }: { eq: EquipRow; date: string }) {
     }}>
       {/* Nome + placa */}
       <div>
-        <div style={{ fontWeight: 700, color: C.text, fontSize: 13 }}>{eq.nome}</div>
+        <div style={{ fontWeight: 700, color: C.text }}>{eq.nome}</div>
         <div style={{ fontSize: 11, color: C.textMute, marginTop: 1 }}>{eq.placa}</div>
+        {eq.motorista && (
+          <div style={{ fontSize: 11, color: C.primary, marginTop: 2 }}>👤 {eq.motorista}</div>
+        )}
       </div>
-
-      {/* Barra de atividade */}
-      <MiniBar eventos={eq.eventos} date={date} />
 
       {/* Ligou às */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Ligou às</div>
-        <div style={{ fontWeight: 700, color: ligado ? C.primary : C.textMute, fontSize: 13 }}>
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Ligou</div>
+        <div style={{ fontWeight: 700, color: ligado ? C.primary : C.textMute }}>
           {eq.primeiraIgnicao ?? "—"}
         </div>
       </div>
@@ -199,7 +184,7 @@ function EquipRow({ eq, date }: { eq: EquipRow; date: string }) {
       {/* KM */}
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>KM</div>
-        <div style={{ fontWeight: 700, color: eq.kmTotal > 0 ? C.success : C.textMute, fontSize: 13 }}>
+        <div style={{ fontWeight: 700, color: eq.kmTotal > 0 ? C.success : C.textMute }}>
           {eq.kmTotal > 0 ? fmtKm(eq.kmTotal) : "—"}
         </div>
       </div>
@@ -207,35 +192,46 @@ function EquipRow({ eq, date }: { eq: EquipRow; date: string }) {
       {/* Tempo ligado */}
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Tempo</div>
-        <div style={{ fontWeight: 700, color: ligado ? C.warning : C.textMute, fontSize: 13 }}>
+        <div style={{ fontWeight: 700, color: ligado ? C.warning : C.textMute }}>
           {ligado ? secToLabel(eq.tempoLigadoSec) : "—"}
         </div>
       </div>
 
-      {/* Status */}
+      {/* Bateria */}
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Bateria</div>
+        <div style={{ fontWeight: 700, color: tensaoColor(eq.tensao) }}>
+          {tensaoLabel(eq.tensao)}
+        </div>
+      </div>
+
+      {/* Velocidade atual */}
+      <div style={{ textAlign: "center" }}>
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Agora</div>
+        <div style={{ fontWeight: 700, color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute }}>
+          {eq.velocidade && eq.velocidade > 0 ? `${eq.velocidade} km/h` : "—"}
+        </div>
+      </div>
+
+      {/* Status + última pos */}
       <div style={{ textAlign: "right" }}>
         <StatusDot online={eq.online} ignicao={eq.ignicao} />
-        {eq.velocidade != null && eq.velocidade > 0 && (
-          <div style={{ fontSize: 10, color: C.success, marginTop: 2, fontWeight: 600 }}>🚀 {eq.velocidade} km/h</div>
-        )}
         {eq.ultimaPos && (
-          <div style={{ fontSize: 10, color: C.textMute, marginTop: 1 }}>{eq.ultimaPos}</div>
+          <div style={{ fontSize: 10, color: C.textMute, marginTop: 2 }}>{eq.ultimaPos}</div>
         )}
       </div>
     </div>
   );
 }
 
-function ObraSection({ obra, equips, date }: { obra: string; equips: EquipRow[]; date: string }) {
+function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
   const trabalhando = equips.filter((e) => e.tempoLigadoSec > 0).length;
   const online      = equips.filter((e) => e.online === true).length;
-
   return (
     <div style={{ marginBottom: 20 }}>
-      {/* Cabeçalho da obra */}
       <div style={{
         display: "flex", alignItems: "center", gap: 10,
-        padding: "8px 16px",
+        padding: "7px 16px",
         background: "#f8f9fb",
         border: `1px solid ${C.border}`,
         borderBottom: "none",
@@ -247,33 +243,26 @@ function ObraSection({ obra, equips, date }: { obra: string; equips: EquipRow[];
         <span style={{ fontSize: 12, color: C.success, fontWeight: 600 }}>{trabalhando} trabalhando</span>
         <span style={{ fontSize: 12, color: C.primary, fontWeight: 600, marginLeft: "auto" }}>{online} online</span>
       </div>
-
-      {/* Header das colunas */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: "180px 1fr 90px 90px 80px 80px",
-        gap: 12,
-        padding: "6px 16px",
+        gridTemplateColumns: "170px 80px 80px 90px 90px 80px 1fr",
+        gap: 12, padding: "5px 16px",
         background: "#fafafa",
         border: `1px solid ${C.border}`,
         borderBottom: "none",
-        fontSize: 10,
-        color: C.textMute,
-        fontWeight: 600,
-        textTransform: "uppercase",
-        letterSpacing: "0.05em",
+        fontSize: 10, color: C.textMute, fontWeight: 600,
+        textTransform: "uppercase", letterSpacing: "0.05em",
       }}>
         <div>Equipamento</div>
-        <div>Atividade do dia</div>
-        <div style={{ textAlign: "center" }}>Ligou às</div>
+        <div style={{ textAlign: "center" }}>Ligou</div>
         <div style={{ textAlign: "center" }}>KM</div>
         <div style={{ textAlign: "center" }}>Tempo</div>
+        <div style={{ textAlign: "center" }}>Bateria</div>
+        <div style={{ textAlign: "center" }}>Agora</div>
         <div style={{ textAlign: "right" }}>Status</div>
       </div>
-
-      {/* Linhas */}
       <div style={{ border: `1px solid ${C.border}`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
-        {equips.map((eq) => <EquipRow key={eq.pos_equip_id} eq={eq} date={date} />)}
+        {equips.map((eq) => <EquipRowItem key={eq.pos_equip_id} eq={eq} />)}
       </div>
     </div>
   );
@@ -292,15 +281,14 @@ function StatBox({ label, value, color }: { label: string; value: string; color:
 
 export default function SigasulPage() {
   const TODAY = useMemo(todayBRT, []);
-
-  const [date, setDate]               = useState(TODAY);
-  const [obraFiltro, setObraFiltro]   = useState("TODAS");
-  const [loading, setLoading]         = useState(true);
-  const [err, setErr]                 = useState<string | null>(null);
-  const [lastUpdate, setLastUpdate]   = useState<Date | null>(null);
-  const [latest, setLatest]           = useState<LatestRow[]>([]);
+  const [date, setDate]             = useState(TODAY);
+  const [obraFiltro, setObraFiltro] = useState("TODAS");
+  const [loading, setLoading]       = useState(true);
+  const [err, setErr]               = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [latest, setLatest]         = useState<LatestRow[]>([]);
   const [simplificada, setSimplificada] = useState<SigasulVeiculo[]>([]);
-  const [positions, setPositions]     = useState<SigasulPosition[]>([]);
+  const [positions, setPositions]   = useState<SigasulPosition[]>([]);
 
   async function load() {
     setLoading(true);
@@ -308,7 +296,7 @@ export default function SigasulPage() {
 
     const { data, error } = await supabase
       .from("sigasul_dashboard_latest")
-      .select("pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,pos_ignicao,pos_online,pos_velocidade");
+      .select("pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,pos_ignicao,pos_online,pos_velocidade,pos_tensao,pos_nome_motorista");
 
     if (error) { setErr(error.message); setLoading(false); return; }
     setLatest((data ?? []) as LatestRow[]);
@@ -352,24 +340,37 @@ export default function SigasulPage() {
         const nome  = row.codigo_equipamento || row.pos_placa || row.pos_equip_id;
         const placa = row.pos_placa || "—";
         const obra  = row.obra_final && row.obra_final !== "SEM_OBRA" ? row.obra_final : "SEM OBRA";
+        const key   = placa.replace(/\W/g, "").toUpperCase();
+        const simp  = simpMap.get(key);
+        const pos   = posMap.get(key);
 
-        const key  = placa.replace(/\W/g, "").toUpperCase();
-        const simp = simpMap.get(key);
-        const pos  = posMap.get(key);
+        const eventos        = simp?.eventos ?? [];
+        const kmTotal        = eventos.reduce((a, e) => a + (e.distancia ?? 0), 0);
+        const tempoLigadoSec = eventos.reduce((a, e) => a + hhmmssToSec(e.tempoLigado), 0);
+        const primeiraIgnicao = eventos.length > 0 ? fmtHoraBRT(eventos[0].data_hora_inicial) : null;
 
-        const eventos         = simp?.eventos ?? [];
-        const kmTotal         = eventos.reduce((a, e) => a + (e.distancia ?? 0), 0);
-        const tempoLigadoSec  = eventos.reduce((a, e) => a + hhmmssToSec(e.tempoLigado), 0);
-        const primeiraIgnicao = eventos.length > 0 ? fmtHoraFromStr(eventos[0].data_hora_inicial) : null;
+        // Motorista: da simplificada (quem operou hoje) ou do latest (último registrado)
+        const motorista = eventos.find((e) => e.motorista)?.motorista
+          || pos?.pos_nome_motorista
+          || row.pos_nome_motorista
+          || null;
 
-        const online    = pos ? pos.pos_online    : row.pos_online;
-        const ignicao   = pos ? pos.pos_ignicao   : row.pos_ignicao;
-        const velocidade = pos ? pos.pos_velocidade : row.pos_velocidade;
-        const ultimaPos = pos
-          ? fmtHoraFromStr(pos.pos_data_hora_gps)
-          : fmtHoraFromISO(row.gps_at ?? row.ingested_at);
+        // Status em tempo real (positions) ou fallback para latest
+        const online    = pos?.pos_online    ?? row.pos_online;
+        const ignicao   = pos?.pos_ignicao   ?? row.pos_ignicao;
+        const velocidade = pos?.pos_velocidade ?? row.pos_velocidade;
+        const tensao    = pos?.pos_tensao    ?? row.pos_tensao;
 
-        return { pos_equip_id: row.pos_equip_id, nome, placa, obra, online, ignicao, velocidade, ultimaPos, primeiraIgnicao, kmTotal, tempoLigadoSec, eventos };
+        // Última posição: ingested_at (hora que chegou no banco hoje) — sempre correto
+        const ultimaPos = fmtHoraUTC(row.ingested_at);
+
+        return {
+          pos_equip_id: row.pos_equip_id,
+          nome, placa, obra,
+          online, ignicao, velocidade, tensao,
+          motorista, ultimaPos, primeiraIgnicao,
+          kmTotal, tempoLigadoSec,
+        };
       })
       .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
   }, [latest, simpMap, posMap]);
@@ -407,13 +408,11 @@ export default function SigasulPage() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "system-ui,-apple-system,sans-serif" }}>
-
-      {/* Topbar compacta */}
+      {/* Topbar */}
       <div style={{
-        background: C.surface,
-        borderBottom: `1px solid ${C.border}`,
-        padding: "10px 24px",
-        display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+        background: C.surface, borderBottom: `1px solid ${C.border}`,
+        padding: "10px 24px", display: "flex", alignItems: "center",
+        justifyContent: "space-between", gap: 12,
         position: "sticky", top: 0, zIndex: 100,
       }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -442,7 +441,6 @@ export default function SigasulPage() {
       </div>
 
       <div style={{ padding: "16px 24px", maxWidth: 1400, margin: "0 auto" }}>
-
         {err && (
           <div style={{ background: "#fef2f2", border: `1px solid #fecaca`, borderRadius: 8, padding: "10px 14px", color: C.danger, marginBottom: 12, fontSize: 13 }}>
             <strong>Erro:</strong> {err}
@@ -457,16 +455,16 @@ export default function SigasulPage() {
           <StatBox label="KM total frota"   value={totals.km > 0 ? fmtKm(totals.km) : "—"} color={C.warning} />
         </div>
 
-        {/* Legenda */}
-        <div style={{ display: "flex", gap: 14, marginBottom: 12, fontSize: 11, color: C.textMute, alignItems: "center" }}>
-          {[["#0d9f6e","Deslocando"],["#d97706","Parado (motor on)"]].map(([c, l]) => (
-            <span key={l} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span style={{ width: 16, height: 4, borderRadius: 2, background: c, display: "inline-block" }} />{l}
+        {/* Legenda tensão */}
+        <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 11, color: C.textMute, alignItems: "center" }}>
+          <span style={{ fontWeight: 700, color: C.textMid }}>Bateria:</span>
+          {[[C.success,"≥13V normal"],[C.warning,"12–13V atenção"],[C.danger,"<12V crítico"]].map(([c,l]) => (
+            <span key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />{l}
             </span>
           ))}
         </div>
 
-        {/* Conteúdo */}
         {loading && equips.length === 0 ? (
           <div style={{ textAlign: "center", padding: "60px 0", color: C.textMute }}>Carregando…</div>
         ) : equips.length === 0 ? (
@@ -475,7 +473,7 @@ export default function SigasulPage() {
           </div>
         ) : (
           [...groups.entries()].map(([obra, rows]) => (
-            <ObraSection key={obra} obra={obra} equips={rows} date={date} />
+            <ObraSection key={obra} obra={obra} equips={rows} />
           ))
         )}
       </div>
