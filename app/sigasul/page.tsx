@@ -3,232 +3,180 @@
 import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@supabase/supabase-js";
 
-// ─── Tipos (mantidos idênticos ao original) ───────────────────────────────────
-
-type IntervalRow = {
-  pos_equip_id: string;
-  codigo_equipamento: string | null;
-  pos_placa: string | null;
-  obra: string | null;
-  ts_start: string;
-  ts_end: string;
-  dt_sec: number;
-  status_operacao: "DESLIGADO" | "DESLOCANDO" | "PARADO" | "DESCONHECIDO" | string;
-};
-
-type LatestRow = {
-  pos_equip_id: string;
-  status_comunicacao: string | null;
-  status_operacao: string | null;
-  obra_final: string | null;
-  data_ts: string | null;
-};
-
-type ObraRow = { obra: string };
-type DeviceRow = {
-  pos_equip_id: string;
-  codigo_equipamento: string | null;
-  placa: string | null;
-  ativo: boolean;
-};
+// ─── Supabase ─────────────────────────────────────────────────────────────────
 
 const supabase = createClient(
   process.env.NEXT_PUBLIC_SUPABASE_URL!,
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
 );
 
-// ─── Utilitários ──────────────────────────────────────────────────────────────
+// ─── Tipos ────────────────────────────────────────────────────────────────────
 
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
+type PosRow = {
+  pos_equip_id: string;
+  pos_placa: string | null;
+  gps_at: string | null;
+  pos_ignicao: boolean | null;
+  pos_online: boolean | null;
+  pos_velocidade: number | null;
+  pos_odometro_calc: number | null;
+  pos_odometro: number | null;
+  obra: string | null;
+};
+
+type DeviceRow = {
+  pos_equip_id: string;
+  codigo_equipamento: string | null;
+  placa: string | null;
+  obra: string | null;
+  ativo: boolean;
+};
+
+type EquipSummary = {
+  pos_equip_id: string;
+  nome: string;
+  placa: string;
+  obra: string;
+  primeiraIgnicao: Date | null;
+  kmTotal: number;
+  tempoLigadoSec: number;
+  online: boolean | null;
+  ignicaoAtual: boolean | null;
+  velocidadeAtual: number | null;
+  ultimaPos: Date | null;
+  sessions: { start: Date; end: Date; moving: boolean }[];
+};
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function pad2(n: number) { return String(n).padStart(2, "0"); }
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 
-function secondsToHHMM(sec: number) {
+function secToLabel(sec: number) {
   const s = Math.max(0, Math.round(sec));
   const m = Math.floor(s / 60);
   const h = Math.floor(m / 60);
-  return `${pad2(h)}h ${pad2(m % 60)}min`;
+  if (h > 0) return `${h}h ${pad2(m % 60)}min`;
+  return `${m}min`;
 }
 
-function getWindow(dateStr: string) {
-  const [y, mo, d] = dateStr.split("-").map((x) => parseInt(x, 10));
-  return {
-    w0: new Date(y, mo - 1, d, 0, 0, 0, 0),
-    w1: new Date(y, mo - 1, d, 23, 59, 59, 999),
-  };
+function fmtKm(km: number) {
+  if (km >= 1) return `${km.toFixed(1).replace(".", ",")} km`;
+  return `${(km * 1000).toFixed(0)} m`;
 }
 
-function formatKm(meters: number) {
-  if (meters >= 1000) return `${(meters / 1000).toFixed(2).replace(".", ",")} km`;
-  return `${meters.toFixed(0)} m`;
+function fmtHora(d: Date) {
+  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
 
-// ─── Componentes de status ─────────────────────────────────────────────────────
+/**
+ * Agrupa posições consecutivas com ignição ligada em sessões.
+ * Gap > 10min = nova sessão.
+ */
+function calcSessions(ligadas: PosRow[]): {
+  sessions: { start: Date; end: Date; moving: boolean }[];
+  totalSec: number;
+} {
+  if (ligadas.length === 0) return { sessions: [], totalSec: 0 };
 
-function ComDot({ status }: { status: string | null }) {
-  const t = (status || "").toUpperCase();
-  const map: Record<string, [string, string]> = {
-    ONLINE: ["#16a34a", "ONLINE"],
-    OFFLINE: ["#dc2626", "OFFLINE"],
-    SINCRONIZANDO: ["#d97706", "SYNC"],
-  };
-  const [color, label] = map[t] ?? ["#9ca3af", "—"];
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 5,
-        padding: "2px 8px",
-        borderRadius: 999,
-        background: color + "18",
-        border: `1px solid ${color}40`,
-        fontSize: 11,
-        fontWeight: 700,
-        color,
-        letterSpacing: "0.04em",
-      }}
-    >
-      <span
-        style={{
-          width: 7,
-          height: 7,
-          borderRadius: "50%",
-          background: color,
-          display: "inline-block",
-          boxShadow: t === "ONLINE" ? `0 0 0 2px ${color}40` : undefined,
-        }}
-      />
-      {label}
-    </span>
-  );
+  const GAP_MS = 10 * 60 * 1000;
+  const sessions: { start: Date; end: Date; moving: boolean }[] = [];
+  let totalSec = 0;
+
+  let sesStart    = new Date(ligadas[0].gps_at!);
+  let sesPrev     = sesStart;
+  let sesMaxSpeed = ligadas[0].pos_velocidade ?? 0;
+
+  for (let i = 1; i < ligadas.length; i++) {
+    const cur = new Date(ligadas[i].gps_at!);
+    const gap = cur.getTime() - sesPrev.getTime();
+
+    if (gap > GAP_MS) {
+      const dur = (sesPrev.getTime() - sesStart.getTime()) / 1000;
+      sessions.push({ start: sesStart, end: sesPrev, moving: sesMaxSpeed > 2 });
+      totalSec += dur;
+      sesStart    = cur;
+      sesMaxSpeed = ligadas[i].pos_velocidade ?? 0;
+    } else {
+      sesMaxSpeed = Math.max(sesMaxSpeed, ligadas[i].pos_velocidade ?? 0);
+    }
+    sesPrev = cur;
+  }
+
+  const dur = (sesPrev.getTime() - sesStart.getTime()) / 1000;
+  sessions.push({ start: sesStart, end: sesPrev, moving: sesMaxSpeed > 2 });
+  totalSec += dur;
+
+  return { sessions, totalSec };
 }
 
-function OpBadge({ status }: { status: string | null }) {
-  const t = (status || "").toUpperCase();
-  const map: Record<string, [string, string]> = {
-    DESLOCANDO: ["#16a34a", "DESLOCANDO"],
-    PARADO: ["#dc2626", "PARADO"],
-    DESLIGADO: ["#6b7280", "DESLIGADO"],
-  };
-  const [color, label] = map[t] ?? ["#a855f7", t || "—"];
-  return (
-    <span
-      style={{
-        display: "inline-block",
-        padding: "2px 8px",
-        borderRadius: 6,
-        fontSize: 11,
-        fontWeight: 700,
-        color,
-        background: color + "14",
-        letterSpacing: "0.03em",
-      }}
-    >
-      {label}
-    </span>
-  );
+/**
+ * KM rodado = diferença de odômetro no dia.
+ */
+function calcKm(rows: PosRow[]): number {
+  const vals = rows
+    .map((p) => p.pos_odometro_calc ?? p.pos_odometro ?? null)
+    .filter((v): v is number => v !== null && v > 0);
+  if (vals.length < 2) return 0;
+  const diff = Math.max(...vals) - Math.min(...vals);
+  return diff > 0 ? diff : 0;
 }
 
-// ─── Card de Equipamento ───────────────────────────────────────────────────────
+// ─── Componentes ──────────────────────────────────────────────────────────────
 
-interface EquipStats {
-  device: DeviceRow;
-  segs: IntervalRow[];
-  secDesloc: number;
-  secParado: number;
-  kmTotal: number;
-  primeiraIgnicao: string | null;
-  latest: LatestRow | undefined;
-}
-
-function EquipCard({ stats }: { stats: EquipStats }) {
-  const { device, segs, secDesloc, secParado, kmTotal, primeiraIgnicao, latest } = stats;
-
-  const nome = device.codigo_equipamento || device.placa || device.pos_equip_id;
-  const placa = device.placa || "—";
-  const ligado = secDesloc + secParado > 0;
-  const tempoLigado = secDesloc + secParado;
-  const lastSeen = latest?.data_ts ? new Date(latest.data_ts).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }) : null;
+function ActivityBar({ sessions, date }: {
+  sessions: { start: Date; end: Date; moving: boolean }[];
+  date: string;
+}) {
+  const [y, m, d] = date.split("-").map(Number);
+  const dayStart = new Date(y, m - 1, d, 0, 0, 0).getTime();
+  const total    = 24 * 3600 * 1000;
 
   return (
-    <div
-      style={{
-        background: "#fff",
-        border: "1px solid #e5e7eb",
-        borderRadius: 12,
-        padding: "16px 18px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
-        transition: "box-shadow 0.15s",
-        borderLeft: `4px solid ${ligado ? "#16a34a" : "#d1d5db"}`,
-      }}
-    >
-      {/* Cabeçalho */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <div style={{ fontWeight: 800, fontSize: 15, color: "#111827", letterSpacing: "-0.01em" }}>
-            {nome}
-          </div>
-          <div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{placa}</div>
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
-          <ComDot status={latest?.status_comunicacao ?? null} />
-          <OpBadge status={latest?.status_operacao ?? null} />
-        </div>
-      </div>
-
-      {/* Métricas */}
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 1fr 1fr",
-          gap: 8,
-          paddingTop: 6,
-          borderTop: "1px solid #f3f4f6",
-        }}
-      >
-        <Metric
-          label="Ligou às"
-          value={primeiraIgnicao ?? "—"}
-          color="#2563eb"
-          icon="🕐"
-        />
-        <Metric
-          label="KM Rodado"
-          value={ligado ? formatKm(kmTotal) : "—"}
-          color="#16a34a"
-          icon="📍"
-        />
-        <Metric
-          label="Tempo Ligado"
-          value={ligado ? secondsToHHMM(tempoLigado) : "—"}
-          color="#d97706"
-          icon="⏱"
-        />
-      </div>
-
-      {/* Barra de atividade mini */}
-      {segs.length > 0 && (
-        <ActivityBar segs={segs} />
-      )}
-
-      {/* Rodapé */}
-      {lastSeen && (
-        <div style={{ fontSize: 11, color: "#9ca3af", textAlign: "right", marginTop: -4 }}>
-          Última pos.: {lastSeen}
-        </div>
-      )}
+    <div style={{ position: "relative", height: 6, borderRadius: 3, background: "#f1f5f9", overflow: "hidden" }}>
+      {sessions.map((s, i) => {
+        const left  = ((s.start.getTime() - dayStart) / total) * 100;
+        const width = Math.max(((s.end.getTime() - s.start.getTime()) / total) * 100, 0.4);
+        return (
+          <div key={i} style={{
+            position: "absolute", top: 0, bottom: 0,
+            left: `${left}%`, width: `${width}%`,
+            background: s.moving ? "#16a34a" : "#f59e0b",
+            borderRadius: 2,
+          }} />
+        );
+      })}
     </div>
   );
 }
 
-function Metric({ label, value, color, icon }: { label: string; value: string; color: string; icon: string }) {
+function Pill({ label, color }: { label: string; color: string }) {
   return (
-    <div style={{ background: "#f9fafb", borderRadius: 8, padding: "8px 10px" }}>
-      <div style={{ fontSize: 10, color: "#9ca3af", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 5,
+      padding: "2px 8px", borderRadius: 999,
+      background: color + "18", border: `1px solid ${color}40`,
+      fontSize: 11, fontWeight: 700, color,
+    }}>
+      <span style={{
+        width: 7, height: 7, borderRadius: "50%", background: color,
+        display: "inline-block",
+      }} />
+      {label}
+    </span>
+  );
+}
+
+function Metric({ icon, label, value, color }: {
+  icon: string; label: string; value: string; color: string;
+}) {
+  return (
+    <div style={{ background: "#f8fafc", borderRadius: 8, padding: "8px 10px" }}>
+      <div style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 3 }}>
         {icon} {label}
       </div>
       <div style={{ fontSize: 14, fontWeight: 800, color, lineHeight: 1 }}>{value}</div>
@@ -236,579 +184,334 @@ function Metric({ label, value, color, icon }: { label: string; value: string; c
   );
 }
 
-function ActivityBar({ segs }: { segs: IntervalRow[] }) {
-  const sorted = [...segs].sort((a, b) => new Date(a.ts_start).getTime() - new Date(b.ts_start).getTime());
-  const dayStart = new Date(sorted[0].ts_start);
-  dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart);
-  dayEnd.setHours(23, 59, 59, 999);
-  const total = dayEnd.getTime() - dayStart.getTime();
-
-  const colorMap: Record<string, string> = {
-    DESLOCANDO: "#16a34a",
-    PARADO: "#ef4444",
-    DESLIGADO: "#e5e7eb",
-    DESCONHECIDO: "#a855f7",
-  };
+function EquipCard({ eq, date }: { eq: EquipSummary; date: string }) {
+  const ligado  = eq.tempoLigadoSec > 0;
+  const onlineC = eq.online === true ? "#16a34a" : eq.online === false ? "#dc2626" : "#94a3b8";
+  const onlineL = eq.online === true ? "ONLINE"  : eq.online === false ? "OFFLINE" : "—";
+  const igC     = eq.ignicaoAtual === true ? "#16a34a" : eq.ignicaoAtual === false ? "#64748b" : "#94a3b8";
+  const igL     = eq.ignicaoAtual === true ? "LIGADO"  : eq.ignicaoAtual === false ? "DESLIGADO" : "—";
 
   return (
-    <div style={{ position: "relative", height: 6, borderRadius: 4, background: "#f3f4f6", overflow: "hidden" }}>
-      {sorted.map((seg, i) => {
-        const s = Math.max(new Date(seg.ts_start).getTime(), dayStart.getTime());
-        const e = Math.min(new Date(seg.ts_end).getTime(), dayEnd.getTime());
-        if (e <= s) return null;
-        const left = ((s - dayStart.getTime()) / total) * 100;
-        const width = ((e - s) / total) * 100;
-        const color = colorMap[(seg.status_operacao || "").toUpperCase()] ?? "#a855f7";
-        return (
-          <div
-            key={i}
-            style={{
-              position: "absolute",
-              top: 0, bottom: 0,
-              left: `${left}%`,
-              width: `${Math.max(width, 0.3)}%`,
-              background: color,
-            }}
-          />
-        );
-      })}
+    <div style={{
+      background: "#fff",
+      border: "1px solid #e2e8f0",
+      borderLeft: `4px solid ${ligado ? "#2563eb" : "#cbd5e1"}`,
+      borderRadius: 12,
+      padding: "14px 16px",
+      display: "flex", flexDirection: "column", gap: 10,
+      boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
+    }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontWeight: 800, fontSize: 15, color: "#0f172a", letterSpacing: "-0.01em" }}>
+            {eq.nome}
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{eq.placa}</div>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+          <Pill color={onlineC} label={onlineL} />
+          <Pill color={igC}     label={igL} />
+        </div>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+        <Metric icon="🕐" label="Ligou às"   value={eq.primeiraIgnicao ? fmtHora(eq.primeiraIgnicao) : "—"} color="#2563eb" />
+        <Metric icon="📍" label="KM Rodado"  value={ligado ? fmtKm(eq.kmTotal) : "—"}                       color="#16a34a" />
+        <Metric icon="⏱"  label="Tempo Lig." value={ligado ? secToLabel(eq.tempoLigadoSec) : "—"}            color="#d97706" />
+      </div>
+
+      {eq.sessions.length > 0 && <ActivityBar sessions={eq.sessions} date={date} />}
+
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, color: "#94a3b8" }}>
+        {eq.velocidadeAtual != null && eq.velocidadeAtual > 0
+          ? <span style={{ color: "#16a34a", fontWeight: 700 }}>🚀 {eq.velocidadeAtual} km/h</span>
+          : <span />
+        }
+        {eq.ultimaPos && <span>Última pos.: {fmtHora(eq.ultimaPos)}</span>}
+      </div>
     </div>
   );
 }
 
-// ─── Página Principal ──────────────────────────────────────────────────────────
+function SummaryCard({ icon, label, value, color }: {
+  icon: string; label: string; value: string; color: string;
+}) {
+  return (
+    <div style={{ background: "white", border: "1px solid #e2e8f0", borderRadius: 12, padding: "14px 16px", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+      <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600, marginBottom: 4 }}>{icon} {label}</div>
+      <div style={{ fontSize: 26, fontWeight: 900, color, letterSpacing: "-0.03em", lineHeight: 1 }}>{value}</div>
+    </div>
+  );
+}
 
-export default function GPAsfaltoMovimentosPage() {
-  const todayStr = useMemo(() => {
-    const d = new Date();
-    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+// ─── Página ───────────────────────────────────────────────────────────────────
+
+export default function SigasulPage() {
+  const TODAY = useMemo(todayStr, []);
+
+  const [date, setDate]             = useState(TODAY);
+  const [obraFiltro, setObraFiltro] = useState("TODAS");
+  const [loading, setLoading]       = useState(true);
+  const [err, setErr]               = useState<string | null>(null);
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+  const [devices, setDevices]       = useState<DeviceRow[]>([]);
+  const [positions, setPositions]   = useState<PosRow[]>([]);
+
+  // Carrega device_map uma vez
+  useEffect(() => {
+    supabase
+      .from("sigasul_device_map")
+      .select("pos_equip_id,codigo_equipamento,placa,obra,ativo")
+      .eq("ativo", true)
+      .then(({ data }) => { if (data) setDevices(data as DeviceRow[]); });
   }, []);
 
-  const [dateStr, setDateStr] = useState(todayStr);
-  const [obraFiltro, setObraFiltro] = useState<string>("TODAS");
-  const [obras, setObras] = useState<string[]>(["TODAS"]);
-  const [loading, setLoading] = useState(true);
-  const [err, setErr] = useState<string | null>(null);
-  const [intervals, setIntervals] = useState<IntervalRow[]>([]);
-  const [latest, setLatest] = useState<Record<string, LatestRow>>({});
-  const [devices, setDevices] = useState<DeviceRow[]>([]);
-  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-
-  const { w0, w1 } = useMemo(() => getWindow(dateStr), [dateStr]);
-
-  async function loadObras() {
-    const { data, error } = await supabase.from("obras").select("obra").eq("ativo", true).order("obra");
-    if (!error) {
-      const list = ["TODAS", ...((data ?? []) as ObraRow[]).map((x) => x.obra)];
-      setObras(list);
-      if (!list.includes(obraFiltro)) setObraFiltro("TODAS");
-    }
-  }
-
-  async function loadDevices() {
-    const { data, error } = await supabase
-      .from("sigasul_device_map")
-      .select("pos_equip_id,codigo_equipamento,placa,ativo")
-      .eq("ativo", true)
-      .order("codigo_equipamento");
-    if (!error) setDevices((data ?? []) as unknown as DeviceRow[]);
-  }
-
-  async function fetchIntervalsPaged() {
-    const pageSize = 1000;
-    const w0iso = w0.toISOString();
-    const w1iso = w1.toISOString();
-    let out: IntervalRow[] = [];
-
-    for (let from = 0; from < 50000; from += pageSize) {
-      let q = supabase
-        .from("sigasul_intervals")
-        .select("pos_equip_id,codigo_equipamento,pos_placa,obra,ts_start,ts_end,dt_sec,status_operacao")
-        .lte("ts_start", w1iso)
-        .gte("ts_end", w0iso)
-        .order("ts_start", { ascending: true })
-        .range(from, from + pageSize - 1);
-
-      if (obraFiltro !== "TODAS") q = q.eq("obra", obraFiltro);
-
-      const { data, error } = await q;
-      if (error) throw error;
-
-      const batch = (data ?? []) as unknown as IntervalRow[];
-      out = out.concat(batch);
-      if (batch.length < pageSize) break;
-    }
-
-    return out;
-  }
-
+  // Carrega posições do dia
   async function load() {
-    setErr(null);
     setLoading(true);
+    setErr(null);
 
-    const { data: sess } = await supabase.auth.getSession();
-    if (!sess.session) {
-      setLoading(false);
-      setErr("Sem sessão. Faça login no app.");
-      return;
+    const [y, m, d] = date.split("-").map(Number);
+    const from = new Date(y, m - 1, d,  0,  0,  0).toISOString();
+    const to   = new Date(y, m - 1, d, 23, 59, 59).toISOString();
+
+    const PAGE = 5000;
+    let all: PosRow[] = [];
+
+    for (let offset = 0; ; offset += PAGE) {
+      const { data, error } = await supabase
+        .from("sigasul_positions_raw")
+        .select("pos_equip_id,pos_placa,gps_at,pos_ignicao,pos_online,pos_velocidade,pos_odometro_calc,pos_odometro,obra")
+        .gte("gps_at", from)
+        .lte("gps_at", to)
+        .order("gps_at", { ascending: true })
+        .range(offset, offset + PAGE - 1);
+
+      if (error) { setErr(error.message); break; }
+      if (!data || data.length === 0) break;
+      all = all.concat(data as PosRow[]);
+      if (data.length < PAGE) break;
     }
 
-    try {
-      const rows = await fetchIntervalsPaged();
-      setIntervals(rows);
-    } catch (e: any) {
-      setIntervals([]);
-      setErr(e?.message || String(e));
-      setLoading(false);
-      return;
-    }
-
-    const ids = devices.map((d) => d.pos_equip_id).filter(Boolean);
-    if (ids.length > 0) {
-      const { data: latestRows, error } = await supabase
-        .from("sigasul_dashboard_latest")
-        .select("pos_equip_id,status_comunicacao,status_operacao,obra_final,data_ts")
-        .in("pos_equip_id", ids);
-
-      if (!error) {
-        const map: Record<string, LatestRow> = {};
-        for (const r of (latestRows ?? []) as unknown as LatestRow[]) map[r.pos_equip_id] = r;
-        setLatest(map);
-      }
-    }
-
+    setPositions(all);
     setLastUpdate(new Date());
     setLoading(false);
   }
 
   useEffect(() => {
-    loadObras();
-    loadDevices();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  useEffect(() => {
-    if (devices.length === 0) return;
     load();
-    if (dateStr !== todayStr) return;
-    const t = setInterval(load, 30000);
+    if (date !== TODAY) return;
+    const t = setInterval(load, 60_000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dateStr, obraFiltro, devices.length, todayStr]);
+  }, [date]);
 
-  // ─── Cálculo por equipamento ──────────────────────────────────────────────
-
-  const byEquip = useMemo(() => {
-    const m = new Map<string, IntervalRow[]>();
-    for (const r of intervals) {
-      if (!m.has(r.pos_equip_id)) m.set(r.pos_equip_id, []);
-      m.get(r.pos_equip_id)!.push(r);
-    }
+  // Agrega por equipamento
+  const equipMap = useMemo(() => {
+    const m = new Map<string, DeviceRow>();
+    for (const d of devices) m.set(d.pos_equip_id, d);
     return m;
-  }, [intervals]);
+  }, [devices]);
 
-  const equipStats: EquipStats[] = useMemo(() => {
-    return devices
-      .map((d) => {
-        const segs = byEquip.get(d.pos_equip_id) ?? [];
-        let secDesloc = 0;
-        let secParado = 0;
-        let kmTotal = 0;
-        let primeiraIgnicao: string | null = null;
+  const summaries = useMemo((): EquipSummary[] => {
+    const byEquip = new Map<string, PosRow[]>();
+    for (const p of positions) {
+      if (!byEquip.has(p.pos_equip_id)) byEquip.set(p.pos_equip_id, []);
+      byEquip.get(p.pos_equip_id)!.push(p);
+    }
 
-        // Ordena por ts_start
-        const sorted = [...segs].sort(
-          (a, b) => new Date(a.ts_start).getTime() - new Date(b.ts_start).getTime()
-        );
+    const allIds = new Set([
+      ...devices.map((d) => d.pos_equip_id),
+      ...byEquip.keys(),
+    ]);
 
-        for (const x of sorted) {
-          const sMs = new Date(x.ts_start).getTime();
-          const eMs = new Date(x.ts_end).getTime();
-          const start = Math.max(sMs, w0.getTime());
-          const end = Math.min(eMs, w1.getTime());
-          if (end <= start) continue;
+    return Array.from(allIds)
+      .map((id) => {
+        const dev  = equipMap.get(id);
+        const rows = byEquip.get(id) ?? [];
 
-          const sec = Math.round((end - start) / 1000);
-          const st = (x.status_operacao || "").toUpperCase();
+        const nome  = dev?.codigo_equipamento || rows[0]?.pos_placa || id;
+        const placa = dev?.placa || rows[0]?.pos_placa || "—";
+        const obra  = dev?.obra  || rows.find((r) => r.obra)?.obra || "SEM OBRA";
 
-          if (st === "DESLOCANDO") {
-            secDesloc += sec;
-            // Distância proporcional (usando dt_sec original)
-            const totalSec = Math.max(1, (eMs - sMs) / 1000);
-            kmTotal += (x.dt_sec > 0 ? (sec / totalSec) : 0);
-          }
-          if (st === "PARADO") secParado += sec;
-
-          // Primeira vez ligado no dia
-          if ((st === "DESLOCANDO" || st === "PARADO") && !primeiraIgnicao) {
-            primeiraIgnicao = new Date(x.ts_start).toLocaleTimeString("pt-BR", {
-              hour: "2-digit",
-              minute: "2-digit",
-            });
-          }
-        }
-
-        // KM vem do campo dt_sec quando status=DESLOCANDO (distância em metros por segundo?)
-        // Ou soma direta de dt_sec filtrado
-        const kmMetros = sorted
-          .filter((x) => (x.status_operacao || "").toUpperCase() === "DESLOCANDO")
-          .reduce((acc, x) => {
-            const sMs = new Date(x.ts_start).getTime();
-            const eMs = new Date(x.ts_end).getTime();
-            const start = Math.max(sMs, w0.getTime());
-            const end = Math.min(eMs, w1.getTime());
-            if (end <= start) return acc;
-            const frac = (end - start) / Math.max(1, eMs - sMs);
-            return acc + x.dt_sec * frac;
-          }, 0);
+        const ligadas = rows.filter((r) => r.pos_ignicao === true);
+        const primeiraIgnicao = ligadas.length > 0 ? new Date(ligadas[0].gps_at!) : null;
+        const kmTotal = calcKm(rows);
+        const { sessions, totalSec } = calcSessions(ligadas);
+        const ultima = rows[rows.length - 1] ?? null;
 
         return {
-          device: d,
-          segs: sorted,
-          secDesloc,
-          secParado,
-          kmTotal: kmMetros,
+          pos_equip_id:    id,
+          nome, placa, obra,
           primeiraIgnicao,
-          latest: latest[d.pos_equip_id],
-        };
+          kmTotal,
+          tempoLigadoSec:  totalSec,
+          online:          ultima?.pos_online     ?? null,
+          ignicaoAtual:    ultima?.pos_ignicao    ?? null,
+          velocidadeAtual: ultima?.pos_velocidade ?? null,
+          ultimaPos:       ultima?.gps_at ? new Date(ultima.gps_at) : null,
+          sessions,
+        } satisfies EquipSummary;
       })
-      .sort((a, b) =>
-        String(a.device.codigo_equipamento ?? a.device.placa ?? "").localeCompare(
-          String(b.device.codigo_equipamento ?? b.device.placa ?? ""),
-          "pt-BR"
-        )
-      );
-  }, [devices, byEquip, w0, w1, latest]);
+      .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
+  }, [positions, devices, equipMap]);
 
-  // ─── Agrupar por obra ─────────────────────────────────────────────────────
+  const obras = useMemo(() => {
+    const s = new Set(summaries.map((e) => e.obra));
+    return ["TODAS", ...Array.from(s).sort((a, b) => {
+      if (a === "SEM OBRA") return 1;
+      if (b === "SEM OBRA") return -1;
+      return a.localeCompare(b, "pt-BR");
+    })];
+  }, [summaries]);
 
-  const obraGroups = useMemo(() => {
-    if (obraFiltro !== "TODAS") {
-      return new Map([[obraFiltro, equipStats]]);
+  const filtered = useMemo(() =>
+    obraFiltro === "TODAS" ? summaries : summaries.filter((e) => e.obra === obraFiltro),
+    [summaries, obraFiltro]
+  );
+
+  const groups = useMemo(() => {
+    const m = new Map<string, EquipSummary[]>();
+    for (const e of filtered) {
+      if (!m.has(e.obra)) m.set(e.obra, []);
+      m.get(e.obra)!.push(e);
     }
+    return m;
+  }, [filtered]);
 
-    const map = new Map<string, EquipStats[]>();
+  const totals = useMemo(() => ({
+    total:   summaries.length,
+    online:  summaries.filter((e) => e.online === true).length,
+    ligados: summaries.filter((e) => e.tempoLigadoSec > 0).length,
+    km:      summaries.reduce((a, e) => a + e.kmTotal, 0),
+  }), [summaries]);
 
-    for (const stat of equipStats) {
-      // Obra do latest ou do primeiro intervalo
-      const obraName =
-        stat.latest?.obra_final ||
-        stat.segs[0]?.obra ||
-        "SEM OBRA";
-      if (!map.has(obraName)) map.set(obraName, []);
-      map.get(obraName)!.push(stat);
-    }
-
-    // Ordena: obras com nome antes de "SEM OBRA"
-    const sorted = new Map(
-      [...map.entries()].sort(([a], [b]) => {
-        if (a === "SEM OBRA") return 1;
-        if (b === "SEM OBRA") return -1;
-        return a.localeCompare(b, "pt-BR");
-      })
-    );
-    return sorted;
-  }, [equipStats, obraFiltro]);
-
-  // ─── Totais globais ───────────────────────────────────────────────────────
-
-  const totals = useMemo(() => {
-    const online = equipStats.filter(
-      (e) => (e.latest?.status_comunicacao || "").toUpperCase() === "ONLINE"
-    ).length;
-    const ligados = equipStats.filter((e) => e.secDesloc + e.secParado > 0).length;
-    const kmTotal = equipStats.reduce((a, e) => a + e.kmTotal, 0);
-    return { online, ligados, total: equipStats.length, kmTotal };
-  }, [equipStats]);
-
-  // ─── Render ───────────────────────────────────────────────────────────────
-
-  const isToday = dateStr === todayStr;
+  const isToday = date === TODAY;
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: "#f1f5f9",
-        fontFamily: "'DM Sans', system-ui, -apple-system, sans-serif",
-      }}
-    >
-      {/* ── Top Bar ── */}
-      <div
-        style={{
-          background: "#0f172a",
-          color: "white",
-          padding: "14px 24px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 16,
-          position: "sticky",
-          top: 0,
-          zIndex: 100,
+    <>
+      <style>{`* { box-sizing: border-box; }`}</style>
+      <div style={{ minHeight: "100vh", background: "#f1f5f9", fontFamily: "system-ui,-apple-system,sans-serif" }}>
+
+        {/* Top Bar */}
+        <div style={{
+          background: "#0f172a", color: "white",
+          padding: "12px 24px",
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12,
+          position: "sticky", top: 0, zIndex: 100,
           borderBottom: "1px solid #1e293b",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 10,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{
+              width: 34, height: 34, borderRadius: 9,
               background: "linear-gradient(135deg,#2563eb,#0ea5e9)",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontWeight: 900,
-              fontSize: 13,
-              letterSpacing: "-0.02em",
-            }}
-          >
-            GP
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontWeight: 900, fontSize: 12,
+            }}>GP</div>
+            <div>
+              <div style={{ fontWeight: 800, fontSize: 15, letterSpacing: "-0.02em", lineHeight: 1 }}>
+                GP Asfalto — Monitoramento
+              </div>
+              <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+                {isToday ? "Hoje" : date} · {positions.length.toLocaleString("pt-BR")} posições
+                {isToday && " · auto-refresh 1min"}
+              </div>
+            </div>
           </div>
-          <div>
-            <div style={{ fontWeight: 800, fontSize: 16, letterSpacing: "-0.02em", lineHeight: 1 }}>
-              GP Asfalto — Monitoramento
-            </div>
-            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-              Frota em tempo real · {isToday ? "Hoje" : dateStr}
-            </div>
+
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <input
+              type="date" value={date}
+              onChange={(e) => setDate(e.target.value)}
+              style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "6px 10px", fontSize: 13, color: "white" }}
+            />
+            <select
+              value={obraFiltro}
+              onChange={(e) => setObraFiltro(e.target.value)}
+              style={{ background: "#1e293b", border: "1px solid #334155", borderRadius: 8, padding: "6px 10px", fontSize: 13, color: "white", minWidth: 140 }}
+            >
+              {obras.map((o) => <option key={o} value={o}>{o}</option>)}
+            </select>
+            <button
+              onClick={load} disabled={loading}
+              style={{
+                background: loading ? "#1e293b" : "#2563eb",
+                border: "none", borderRadius: 8, padding: "7px 14px",
+                fontSize: 13, fontWeight: 700,
+                color: loading ? "#64748b" : "white",
+                cursor: loading ? "not-allowed" : "pointer",
+              }}
+            >
+              {loading ? "Atualizando…" : "↺ Atualizar"}
+            </button>
           </div>
         </div>
 
-        {/* Filtros */}
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input
-            type="date"
-            value={dateStr}
-            onChange={(e) => setDateStr(e.target.value)}
-            style={{
-              background: "#1e293b",
-              border: "1px solid #334155",
-              borderRadius: 8,
-              padding: "7px 10px",
-              fontSize: 13,
-              color: "white",
-              cursor: "pointer",
-            }}
-          />
-          <select
-            value={obraFiltro}
-            onChange={(e) => setObraFiltro(e.target.value)}
-            style={{
-              background: "#1e293b",
-              border: "1px solid #334155",
-              borderRadius: 8,
-              padding: "7px 10px",
-              fontSize: 13,
-              color: "white",
-              cursor: "pointer",
-              minWidth: 140,
-            }}
-          >
-            {obras.map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
+        {/* Conteúdo */}
+        <div style={{ padding: "20px 24px", maxWidth: 1400, margin: "0 auto" }}>
+
+          {err && (
+            <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "12px 16px", color: "#991b1b", marginBottom: 16, fontSize: 14 }}>
+              <strong>Erro:</strong> {err}
+            </div>
+          )}
+
+          {/* Resumo */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
+            <SummaryCard icon="🚛" label="Equipamentos"     value={String(totals.total)}   color="#0f172a" />
+            <SummaryCard icon="📡" label="Online agora"     value={String(totals.online)}  color="#2563eb" />
+            <SummaryCard icon="⚙️" label="Trabalharam hoje" value={String(totals.ligados)} color="#16a34a" />
+            <SummaryCard icon="🛣️" label="KM total frota"   value={fmtKm(totals.km)}       color="#d97706" />
+          </div>
+
+          {/* Legenda */}
+          <div style={{ display: "flex", gap: 16, marginBottom: 16, fontSize: 12, color: "#64748b", alignItems: "center" }}>
+            <span style={{ fontWeight: 700, color: "#374151" }}>Barra:</span>
+            {[["#16a34a","Deslocando"],["#f59e0b","Parado (motor on)"]].map(([c,l]) => (
+              <span key={l} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+                <span style={{ width: 12, height: 6, borderRadius: 2, background: c, display: "inline-block" }} />
+                {l}
+              </span>
             ))}
-          </select>
-          <button
-            onClick={load}
-            disabled={loading}
-            style={{
-              background: loading ? "#1e293b" : "#2563eb",
-              border: "none",
-              borderRadius: 8,
-              padding: "8px 14px",
-              fontSize: 13,
-              fontWeight: 700,
-              color: loading ? "#64748b" : "white",
-              cursor: loading ? "not-allowed" : "pointer",
-              transition: "background 0.15s",
-            }}
-          >
-            {loading ? "Atualizando…" : "↺ Atualizar"}
-          </button>
-        </div>
-      </div>
-
-      {/* ── Conteúdo ── */}
-      <div style={{ padding: "20px 24px", maxWidth: 1400, margin: "0 auto" }}>
-
-        {/* Erro */}
-        {err && (
-          <div
-            style={{
-              background: "#fef2f2",
-              border: "1px solid #fecaca",
-              borderRadius: 10,
-              padding: "12px 16px",
-              color: "#991b1b",
-              marginBottom: 16,
-              fontSize: 14,
-            }}
-          >
-            <strong>Erro ao carregar dados:</strong> {err}
+            {lastUpdate && (
+              <span style={{ marginLeft: "auto" }}>
+                Atualizado às {lastUpdate.toLocaleTimeString("pt-BR")}
+              </span>
+            )}
           </div>
-        )}
 
-        {/* ── Cards de resumo ── */}
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(4, 1fr)",
-            gap: 12,
-            marginBottom: 20,
-          }}
-        >
-          <SummaryCard label="Total de Equipamentos" value={String(totals.total)} icon="🚛" color="#0f172a" />
-          <SummaryCard label="Online agora" value={String(totals.online)} icon="📡" color="#2563eb" />
-          <SummaryCard label="Trabalhando hoje" value={String(totals.ligados)} icon="⚙️" color="#16a34a" />
-          <SummaryCard label="KM total da frota" value={formatKm(totals.kmTotal)} icon="🛣️" color="#d97706" />
-        </div>
-
-        {/* Legenda */}
-        <div
-          style={{
-            display: "flex",
-            gap: 16,
-            marginBottom: 16,
-            fontSize: 12,
-            color: "#6b7280",
-            alignItems: "center",
-          }}
-        >
-          <span style={{ fontWeight: 700, color: "#374151" }}>Legenda:</span>
-          {[
-            ["#16a34a", "Deslocando"],
-            ["#ef4444", "Parado (motor on)"],
-            ["#e5e7eb", "Desligado"],
-            ["#a855f7", "Desconhecido"],
-          ].map(([color, label]) => (
-            <span key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-              <span
-                style={{
-                  width: 12,
-                  height: 12,
-                  borderRadius: 3,
-                  background: color,
-                  display: "inline-block",
-                  border: "1px solid #e5e7eb",
-                }}
-              />
-              {label}
-            </span>
-          ))}
-          {lastUpdate && (
-            <span style={{ marginLeft: "auto" }}>
-              Atualizado às {lastUpdate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-              {isToday && " · auto-refresh 30s"}
-            </span>
+          {/* Grupos */}
+          {loading && positions.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "80px 0", color: "#94a3b8", fontSize: 15 }}>
+              Carregando posições…
+            </div>
+          ) : filtered.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "80px 0", color: "#94a3b8", fontSize: 15 }}>
+              Nenhum equipamento encontrado.
+            </div>
+          ) : (
+            [...groups.entries()].map(([obraName, equips]) => (
+              <div key={obraName} style={{ marginBottom: 28 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                  <div style={{ width: 4, height: 22, borderRadius: 2, background: obraName === "SEM OBRA" ? "#94a3b8" : "#2563eb" }} />
+                  <h2 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: "#0f172a", letterSpacing: "-0.02em" }}>
+                    {obraName}
+                  </h2>
+                  <span style={{ fontSize: 12, color: "#64748b", background: "#e2e8f0", borderRadius: 20, padding: "2px 8px", fontWeight: 600 }}>
+                    {equips.length} equip.
+                  </span>
+                  <span style={{ fontSize: 12, color: "#16a34a", background: "#dcfce7", borderRadius: 20, padding: "2px 8px", fontWeight: 600 }}>
+                    {equips.filter((e) => e.tempoLigadoSec > 0).length} trabalhando
+                  </span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill,minmax(280px,1fr))", gap: 12 }}>
+                  {equips.map((eq) => <EquipCard key={eq.pos_equip_id} eq={eq} date={date} />)}
+                </div>
+              </div>
+            ))
           )}
         </div>
-
-        {/* ── Grupos por obra ── */}
-        {loading && equipStats.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px 0", color: "#9ca3af", fontSize: 15 }}>
-            Carregando dados…
-          </div>
-        ) : (
-          [...obraGroups.entries()].map(([obraName, stats]) => (
-            <div key={obraName} style={{ marginBottom: 28 }}>
-              {/* Cabeçalho da obra */}
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 10,
-                  marginBottom: 12,
-                }}
-              >
-                <div
-                  style={{
-                    width: 4,
-                    height: 22,
-                    borderRadius: 2,
-                    background: obraName === "SEM OBRA" ? "#9ca3af" : "#2563eb",
-                  }}
-                />
-                <h2
-                  style={{
-                    margin: 0,
-                    fontSize: 16,
-                    fontWeight: 800,
-                    color: "#0f172a",
-                    letterSpacing: "-0.02em",
-                  }}
-                >
-                  {obraName}
-                </h2>
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "#6b7280",
-                    background: "#e5e7eb",
-                    borderRadius: 20,
-                    padding: "2px 8px",
-                    fontWeight: 600,
-                  }}
-                >
-                  {stats.length} equipamento{stats.length !== 1 ? "s" : ""}
-                </span>
-                <span
-                  style={{
-                    fontSize: 12,
-                    color: "#16a34a",
-                    background: "#dcfce7",
-                    borderRadius: 20,
-                    padding: "2px 8px",
-                    fontWeight: 600,
-                  }}
-                >
-                  {stats.filter((s) => s.secDesloc + s.secParado > 0).length} trabalhando
-                </span>
-              </div>
-
-              {/* Grid de cards */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-                  gap: 12,
-                }}
-              >
-                {stats.map((s) => (
-                  <EquipCard key={s.device.pos_equip_id} stats={s} />
-                ))}
-              </div>
-            </div>
-          ))
-        )}
       </div>
-    </div>
-  );
-}
-
-// ─── Summary Card ─────────────────────────────────────────────────────────────
-
-function SummaryCard({ label, value, icon, color }: { label: string; value: string; icon: string; color: string }) {
-  return (
-    <div
-      style={{
-        background: "white",
-        border: "1px solid #e5e7eb",
-        borderRadius: 12,
-        padding: "14px 16px",
-        boxShadow: "0 1px 3px rgba(0,0,0,0.04)",
-      }}
-    >
-      <div style={{ fontSize: 12, color: "#6b7280", fontWeight: 600, marginBottom: 4 }}>
-        {icon} {label}
-      </div>
-      <div style={{ fontSize: 26, fontWeight: 900, color, letterSpacing: "-0.03em", lineHeight: 1 }}>
-        {value}
-      </div>
-    </div>
+    </>
   );
 }
