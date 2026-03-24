@@ -1,8 +1,9 @@
 {
   "crons": [
+    { "path": "/api/cron/sigasul",             "schedule": "* * * * *"    },
     { "path": "/api/cron/horimetros",          "schedule": "0 19 * * 1-6" },
     { "path": "/api/cron/horimetros",          "schedule": "0 21 * * 1-6" },
     { "path": "/api/cron/horimetros",          "schedule": "0 22 * * 1-6" },
-    { "path": "/api/cron/horimetros-backfill", "schedule": "59 2 * * *"  }
+    { "path": "/api/cron/horimetros-backfill", "schedule": "59 2 * * *"   }
   ]
 }
