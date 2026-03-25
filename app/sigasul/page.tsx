@@ -92,7 +92,7 @@ function todayBRT() {
 }
 
 function hhmmssToSec(s: string) {
-  if (!s) return 0;
+  if (!s || !s.match(/^\d{2}:\d{2}:\d{2}$/)) return 0; // ignora "--" ou inválidos
   const [h, m, sec] = s.split(":").map(Number);
   return (h || 0) * 3600 + (m || 0) * 60 + (sec || 0);
 }
