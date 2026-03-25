@@ -361,15 +361,17 @@ export default function SigasulPage() {
           || row.pos_nome_motorista
           || null;
 
-        // Status em tempo real (controls/all) — confiável, acabou de chegar
-        // Se não veio do controls, usa o ignicao_atual da view (que expira em 10min)
-        const online         = pos?.pos_online    ?? row.online_atual;
-        const ignicao        = pos?.pos_ignicao   ?? row.ignicao_atual;
-        const velocidade     = pos?.pos_velocidade ?? row.pos_velocidade;
-        const tensao         = pos?.pos_tensao     ?? row.pos_tensao;
-
-        // Status expirado = não chegou no controls E ignicao_atual é false (expirado pela view)
+        // Status expirado = last_seen_at > 10min (view retorna ignicao_atual=false)
         const statusExpirado = !pos && row.ignicao_atual === false && row.pos_ignicao === true;
+
+        // OFFLINE real = pos_online=false e dado recente
+        // SEM SINAL = expirado (ignicao sumiu, mas era true antes)
+        const online     = pos?.pos_online    ?? (statusExpirado ? null : row.online_atual);
+        const ignicao    = pos?.pos_ignicao   ?? row.ignicao_atual;
+
+        // velocidade: só mostra se dado recente (não expirado)
+        const velocidade = pos?.pos_velocidade ?? (statusExpirado ? null : row.pos_velocidade);
+        const tensao     = pos?.pos_tensao     ?? row.pos_tensao;
 
         const ultimaPos = fmtHoraUTC(row.ingested_at);
 
