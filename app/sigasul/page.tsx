@@ -72,10 +72,13 @@ type EquipRow = {
   online: boolean | null;
   ignicao: boolean | null;
   statusExpirado: boolean;
+  semComunicacao: boolean;  // sem sinal há mais de 7 dias
+  diasSemSinal: number;
   velocidade: number | null;
   tensao: number | null;
   motorista: string | null;
-  ultimaPos: string | null;
+  ultimaPos: string | null;     // HH:MM
+  ultimaPosISO: string | null;  // ISO completo para calcular dias
   primeiraIgnicao: string | null;
   kmTotal: number;
   tempoLigadoSec: number;
@@ -373,14 +376,21 @@ export default function SigasulPage() {
         const velocidade = pos?.pos_velocidade ?? (statusExpirado ? null : row.pos_velocidade);
         const tensao     = pos?.pos_tensao     ?? row.pos_tensao;
 
-        const ultimaPos = fmtHoraUTC(row.ingested_at);
+        const ultimaPosISO = row.ingested_at;
+        const ultimaPos    = fmtHoraUTC(row.ingested_at);
+
+        // Sem comunicação = sem sinal há mais de 7 dias
+        const diasSemSinal = ultimaPosISO
+          ? Math.floor((Date.now() - new Date(ultimaPosISO).getTime()) / (1000 * 60 * 60 * 24))
+          : 999;
+        const semComunicacao = diasSemSinal >= 7;
 
         return {
           pos_equip_id: row.pos_equip_id,
           nome, placa, obra,
-          online, ignicao, statusExpirado,
+          online, ignicao, statusExpirado, semComunicacao, diasSemSinal,
           velocidade, tensao, motorista,
-          ultimaPos, primeiraIgnicao,
+          ultimaPos, ultimaPosISO, primeiraIgnicao,
           kmTotal, tempoLigadoSec,
         };
       })
@@ -388,7 +398,7 @@ export default function SigasulPage() {
   }, [latest, simpMap, posMap]);
 
   const obras = useMemo(() => {
-    const s = new Set(equips.map((e) => e.obra));
+    const s = new Set(ativos.map((e) => e.obra));
     return ["TODAS", ...Array.from(s).sort((a, b) => {
       if (a === "SEM OBRA") return 1;
       if (b === "SEM OBRA") return -1;
@@ -396,9 +406,13 @@ export default function SigasulPage() {
     })];
   }, [equips]);
 
+  // Separa ativos (comunicaram nos últimos 7 dias) dos sem comunicação
+  const ativos          = useMemo(() => equips.filter((e) => !e.semComunicacao), [equips]);
+  const semComunicacao  = useMemo(() => equips.filter((e) =>  e.semComunicacao), [equips]);
+
   const filtered = useMemo(() =>
-    obraFiltro === "TODAS" ? equips : equips.filter((e) => e.obra === obraFiltro),
-    [equips, obraFiltro]);
+    obraFiltro === "TODAS" ? ativos : ativos.filter((e) => e.obra === obraFiltro),
+    [ativos, obraFiltro]);
 
   const groups = useMemo(() => {
     const m = new Map<string, EquipRow[]>();
@@ -410,11 +424,11 @@ export default function SigasulPage() {
   }, [filtered]);
 
   const totals = useMemo(() => ({
-    total:   equips.length,
-    online:  equips.filter((e) => e.online === true && !e.statusExpirado).length,
-    ligados: equips.filter((e) => e.tempoLigadoSec > 0).length,
-    km:      equips.reduce((a, e) => a + e.kmTotal, 0),
-  }), [equips]);
+    total:   ativos.length,
+    online:  ativos.filter((e) => e.online === true && !e.statusExpirado).length,
+    ligados: ativos.filter((e) => e.tempoLigadoSec > 0).length,
+    km:      ativos.reduce((a, e) => a + e.kmTotal, 0),
+  }), [ativos]);
 
   const isToday = date === TODAY;
 
@@ -487,6 +501,67 @@ export default function SigasulPage() {
           [...groups.entries()].map(([obra, rows]) => (
             <ObraSection key={obra} obra={obra} equips={rows} />
           ))
+        }
+
+        {/* Seção sem comunicação */}
+        {semComunicacao.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10,
+              padding: "7px 16px",
+              background: "#fefce8", border: `1px solid #fde68a`,
+              borderBottom: "none", borderRadius: "8px 8px 0 0",
+            }}>
+              <div style={{ width: 3, height: 16, borderRadius: 2, background: "#d97706" }} />
+              <span style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>
+                ⚠️ Sem Comunicação
+              </span>
+              <span style={{ fontSize: 12, color: "#b45309" }}>
+                {semComunicacao.length} equipamentos sem sinal há mais de 7 dias
+              </span>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px", gap: 12, padding: "5px 16px", background: "#fffbeb", border: `1px solid #fde68a`, borderBottom: "none", fontSize: 10, color: "#b45309", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+              <div>Equipamento</div>
+              <div style={{ textAlign: "center" }}>Dias</div>
+              <div style={{ textAlign: "center" }}>Obra</div>
+              <div style={{ textAlign: "center" }}>Bateria</div>
+              <div style={{ textAlign: "center" }}></div>
+              <div style={{ textAlign: "center" }}></div>
+              <div style={{ textAlign: "right" }}>Último sinal</div>
+            </div>
+            <div style={{ border: `1px solid #fde68a`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
+              {semComunicacao
+                .sort((a, b) => b.diasSemSinal - a.diasSemSinal)
+                .map((eq) => (
+                <div key={eq.pos_equip_id} style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
+                  alignItems: "center", gap: 12,
+                  padding: "8px 16px",
+                  borderBottom: `1px solid #fef3c7`,
+                  background: "#fffdf0",
+                  fontSize: 13,
+                }}>
+                  <div>
+                    <div style={{ fontWeight: 700, color: C.text }}>{eq.nome}</div>
+                    <div style={{ fontSize: 11, color: C.textMute }}>{eq.placa}</div>
+                  </div>
+                  <div style={{ textAlign: "center", fontWeight: 700, color: eq.diasSemSinal > 30 ? C.danger : "#d97706" }}>
+                    {eq.diasSemSinal}d
+                  </div>
+                  <div style={{ textAlign: "center", fontSize: 12, color: C.textMid }}>{eq.obra}</div>
+                  <div style={{ textAlign: "center", fontWeight: 700, color: tensaoColor(eq.tensao) }}>
+                    {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
+                  </div>
+                  <div />
+                  <div />
+                  <div style={{ textAlign: "right", fontSize: 11, color: C.textMute }}>
+                    {eq.ultimaPosISO ? new Date(eq.ultimaPosISO).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "2-digit" }) : "—"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </div>
