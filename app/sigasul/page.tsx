@@ -145,6 +145,9 @@ function tensaoColor(v: number | null) {
   return C.danger;
 }
 
+const MAIN_GRID = "minmax(190px, 260px) 72px 80px 88px 78px 82px 96px";
+const COMPACT_GAP = 6;
+
 // ─── Componentes ──────────────────────────────────────────────────────────────
 
 function StatusBadge({
@@ -175,19 +178,51 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
+        gridTemplateColumns: MAIN_GRID,
         alignItems: "center",
-        gap: 8,
+        gap: COMPACT_GAP,
         padding: "9px 16px",
         borderBottom: `1px solid ${C.border}`,
         background: C.surface,
       }}
     >
-      <div>
-        <div style={{ fontWeight: 700, color: C.text, fontSize: 13 }}>{eq.nome}</div>
-        <div style={{ fontSize: 11, color: C.textMute }}>{eq.placa}</div>
+      <div style={{ minWidth: 0 }}>
+        <div
+          style={{
+            fontWeight: 700,
+            color: C.text,
+            fontSize: 13,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {eq.nome}
+        </div>
+        <div
+          style={{
+            fontSize: 11,
+            color: C.textMute,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+        >
+          {eq.placa}
+        </div>
         {eq.motorista && (
-          <div style={{ fontSize: 11, color: C.primary, marginTop: 1 }}>👤 {eq.motorista}</div>
+          <div
+            style={{
+              fontSize: 11,
+              color: C.primary,
+              marginTop: 1,
+              whiteSpace: "nowrap",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+            }}
+          >
+            👤 {eq.motorista}
+          </div>
         )}
       </div>
 
@@ -328,41 +363,45 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
         </span>
       </div>
 
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
-          gap: 8,
-          padding: "5px 16px",
-          background: "#fafafa",
-          border: `1px solid ${C.border}`,
-          borderBottom: "none",
-          fontSize: 10,
-          color: C.textMute,
-          fontWeight: 600,
-          textTransform: "uppercase",
-          letterSpacing: "0.05em",
-        }}
-      >
-        <div>Equipamento</div>
-        <div style={{ textAlign: "center" }}>Ligou</div>
-        <div style={{ textAlign: "center" }}>KM</div>
-        <div style={{ textAlign: "center" }}>Tempo</div>
-        <div style={{ textAlign: "center" }}>Bateria</div>
-        <div style={{ textAlign: "center" }}>Agora</div>
-        <div style={{ textAlign: "right" }}>Status</div>
-      </div>
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ minWidth: 920 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: MAIN_GRID,
+              gap: COMPACT_GAP,
+              padding: "5px 16px",
+              background: "#fafafa",
+              border: `1px solid ${C.border}`,
+              borderBottom: "none",
+              fontSize: 10,
+              color: C.textMute,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+            }}
+          >
+            <div>Equipamento</div>
+            <div style={{ textAlign: "center" }}>Ligou</div>
+            <div style={{ textAlign: "center" }}>KM</div>
+            <div style={{ textAlign: "center" }}>Tempo</div>
+            <div style={{ textAlign: "center" }}>Bateria</div>
+            <div style={{ textAlign: "center" }}>Agora</div>
+            <div style={{ textAlign: "right" }}>Status</div>
+          </div>
 
-      <div
-        style={{
-          border: `1px solid ${C.border}`,
-          borderRadius: "0 0 8px 8px",
-          overflow: "hidden",
-        }}
-      >
-        {equips.map((eq) => (
-          <EquipRowItem key={eq.pos_equip_id} eq={eq} />
-        ))}
+          <div
+            style={{
+              border: `1px solid ${C.border}`,
+              borderRadius: "0 0 8px 8px",
+              overflow: "hidden",
+            }}
+          >
+            {equips.map((eq) => (
+              <EquipRowItem key={eq.pos_equip_id} eq={eq} />
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -528,7 +567,6 @@ export default function SigasulPage() {
       .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
   }, [latest, simpMap, posMap]);
 
-  // Separa ativos (comunicaram nos últimos 7 dias) dos sem comunicação
   const ativos = useMemo(() => equips.filter((e) => !e.semComunicacao), [equips]);
   const semComunicacao = useMemo(() => equips.filter((e) => e.semComunicacao), [equips]);
 
@@ -781,98 +819,131 @@ export default function SigasulPage() {
               </span>
             </div>
 
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
-                gap: 12,
-                padding: "5px 16px",
-                background: "#fffbeb",
-                border: `1px solid #fde68a`,
-                borderBottom: "none",
-                fontSize: 10,
-                color: "#b45309",
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: "0.05em",
-              }}
-            >
-              <div>Equipamento</div>
-              <div style={{ textAlign: "center" }}>Dias</div>
-              <div style={{ textAlign: "center" }}>Obra</div>
-              <div style={{ textAlign: "center" }}>Bateria</div>
-              <div style={{ textAlign: "center" }}></div>
-              <div style={{ textAlign: "center" }}></div>
-              <div style={{ textAlign: "right" }}>Último sinal</div>
-            </div>
+            <div style={{ overflowX: "auto" }}>
+              <div style={{ minWidth: 920 }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: MAIN_GRID,
+                    gap: COMPACT_GAP,
+                    padding: "5px 16px",
+                    background: "#fffbeb",
+                    border: `1px solid #fde68a`,
+                    borderBottom: "none",
+                    fontSize: 10,
+                    color: "#b45309",
+                    fontWeight: 600,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                  }}
+                >
+                  <div>Equipamento</div>
+                  <div style={{ textAlign: "center" }}>Dias</div>
+                  <div style={{ textAlign: "center" }}>Obra</div>
+                  <div style={{ textAlign: "center" }}>Bateria</div>
+                  <div style={{ textAlign: "center" }}></div>
+                  <div style={{ textAlign: "center" }}></div>
+                  <div style={{ textAlign: "right" }}>Último sinal</div>
+                </div>
 
-            <div
-              style={{
-                border: `1px solid #fde68a`,
-                borderRadius: "0 0 8px 8px",
-                overflow: "hidden",
-              }}
-            >
-              {semComunicacao
-                .sort((a, b) => b.diasSemSinal - a.diasSemSinal)
-                .map((eq) => (
-                  <div
-                    key={eq.pos_equip_id}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
-                      alignItems: "center",
-                      gap: 12,
-                      padding: "8px 16px",
-                      borderBottom: `1px solid #fef3c7`,
-                      background: "#fffdf0",
-                      fontSize: 13,
-                    }}
-                  >
-                    <div>
-                      <div style={{ fontWeight: 700, color: C.text }}>{eq.nome}</div>
-                      <div style={{ fontSize: 11, color: C.textMute }}>{eq.placa}</div>
-                    </div>
+                <div
+                  style={{
+                    border: `1px solid #fde68a`,
+                    borderRadius: "0 0 8px 8px",
+                    overflow: "hidden",
+                  }}
+                >
+                  {semComunicacao
+                    .sort((a, b) => b.diasSemSinal - a.diasSemSinal)
+                    .map((eq) => (
+                      <div
+                        key={eq.pos_equip_id}
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: MAIN_GRID,
+                          alignItems: "center",
+                          gap: COMPACT_GAP,
+                          padding: "8px 16px",
+                          borderBottom: `1px solid #fef3c7`,
+                          background: "#fffdf0",
+                          fontSize: 13,
+                        }}
+                      >
+                        <div style={{ minWidth: 0 }}>
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              color: C.text,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {eq.nome}
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: C.textMute,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {eq.placa}
+                          </div>
+                        </div>
 
-                    <div
-                      style={{
-                        textAlign: "center",
-                        fontWeight: 700,
-                        color: eq.diasSemSinal > 30 ? C.danger : "#d97706",
-                      }}
-                    >
-                      {eq.diasSemSinal}d
-                    </div>
+                        <div
+                          style={{
+                            textAlign: "center",
+                            fontWeight: 700,
+                            color: eq.diasSemSinal > 30 ? C.danger : "#d97706",
+                          }}
+                        >
+                          {eq.diasSemSinal}d
+                        </div>
 
-                    <div style={{ textAlign: "center", fontSize: 12, color: C.textMid }}>
-                      {eq.obra}
-                    </div>
+                        <div
+                          style={{
+                            textAlign: "center",
+                            fontSize: 12,
+                            color: C.textMid,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
+                          {eq.obra}
+                        </div>
 
-                    <div
-                      style={{
-                        textAlign: "center",
-                        fontWeight: 700,
-                        color: tensaoColor(eq.tensao),
-                      }}
-                    >
-                      {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
-                    </div>
+                        <div
+                          style={{
+                            textAlign: "center",
+                            fontWeight: 700,
+                            color: tensaoColor(eq.tensao),
+                          }}
+                        >
+                          {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
+                        </div>
 
-                    <div />
-                    <div />
+                        <div />
+                        <div />
 
-                    <div style={{ textAlign: "right", fontSize: 11, color: C.textMute }}>
-                      {eq.ultimaPosISO
-                        ? new Date(eq.ultimaPosISO).toLocaleDateString("pt-BR", {
-                            timeZone: "America/Sao_Paulo",
-                            day: "2-digit",
-                            month: "2-digit",
-                            year: "2-digit",
-                          })
-                        : "—"}
-                    </div>
-                  </div>
-                ))}
+                        <div style={{ textAlign: "right", fontSize: 11, color: C.textMute }}>
+                          {eq.ultimaPosISO
+                            ? new Date(eq.ultimaPosISO).toLocaleDateString("pt-BR", {
+                                timeZone: "America/Sao_Paulo",
+                                day: "2-digit",
+                                month: "2-digit",
+                                year: "2-digit",
+                              })
+                            : "—"}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
             </div>
           </div>
         )}
