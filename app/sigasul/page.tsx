@@ -504,7 +504,7 @@ export default function SigasulPage() {
           [...groups.entries()].map(([obra, rows]) => (
             <ObraSection key={obra} obra={obra} equips={rows} />
           ))
-        }
+        )}
 
         {/* Seção sem comunicação */}
         {semComunicacao.length > 0 && (
