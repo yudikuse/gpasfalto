@@ -21,8 +21,6 @@ const C = {
   warning: "#d97706",
 };
 
-// ─── Tipos ────────────────────────────────────────────────────────────────────
-
 type LatestRow = {
   pos_equip_id: string;
   codigo_equipamento: string | null;
@@ -32,7 +30,7 @@ type LatestRow = {
   ingested_at: string | null;
   pos_ignicao: boolean | null;
   pos_online: boolean | null;
-  ignicao_atual: boolean | null; // null se expirado
+  ignicao_atual: boolean | null;
   online_atual: boolean | null;
   pos_velocidade: number | null;
   pos_tensao: number | null;
@@ -73,19 +71,17 @@ type EquipRow = {
   online: boolean | null;
   ignicao: boolean | null;
   statusExpirado: boolean;
-  semComunicacao: boolean; // sem sinal há mais de 7 dias
+  semComunicacao: boolean;
   diasSemSinal: number;
   velocidade: number | null;
   tensao: number | null;
   motorista: string | null;
-  ultimaPos: string | null; // HH:MM
-  ultimaPosISO: string | null; // ISO completo para calcular dias
+  ultimaPos: string | null;
+  ultimaPosISO: string | null;
   primeiraIgnicao: string | null;
   kmTotal: number;
   tempoLigadoSec: number;
 };
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -117,14 +113,12 @@ function fmtKm(metros: number) {
   return `${metros.toFixed(0)} m`;
 }
 
-// Sigasul já retorna BRT — extrai HH:MM direto da string
 function fmtHoraBRT(dt: string | null): string {
   if (!dt) return "—";
   const match = dt.match(/[T ](\d{2}:\d{2})/);
   return match ? match[1] : "—";
 }
 
-// Supabase retorna UTC — converte para BRT
 function fmtHoraUTC(iso: string | null): string {
   if (!iso) return "—";
   try {
@@ -145,10 +139,9 @@ function tensaoColor(v: number | null) {
   return C.danger;
 }
 
-const MAIN_GRID = "minmax(190px, 260px) 72px 80px 88px 78px 82px 96px";
-const COMPACT_GAP = 6;
-
-// ─── Componentes ──────────────────────────────────────────────────────────────
+const MAIN_GRID = "2.3fr 0.78fr 0.82fr 0.86fr 0.86fr 0.82fr 1.12fr";
+const COMPACT_GAP = 10;
+const TABLE_MIN_WIDTH = 780;
 
 function StatusBadge({
   ignicao,
@@ -181,9 +174,10 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
         gridTemplateColumns: MAIN_GRID,
         alignItems: "center",
         gap: COMPACT_GAP,
-        padding: "9px 16px",
+        padding: "9px 12px",
         borderBottom: `1px solid ${C.border}`,
         background: C.surface,
+        width: "100%",
       }}
     >
       <div style={{ minWidth: 0 }}>
@@ -338,7 +332,7 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
           display: "flex",
           alignItems: "center",
           gap: 10,
-          padding: "7px 16px",
+          padding: "7px 12px",
           background: "#f8f9fb",
           border: `1px solid ${C.border}`,
           borderBottom: "none",
@@ -364,13 +358,13 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
       </div>
 
       <div style={{ overflowX: "auto" }}>
-        <div style={{ minWidth: 920 }}>
+        <div style={{ minWidth: TABLE_MIN_WIDTH, width: "100%" }}>
           <div
             style={{
               display: "grid",
               gridTemplateColumns: MAIN_GRID,
               gap: COMPACT_GAP,
-              padding: "5px 16px",
+              padding: "5px 12px",
               background: "#fafafa",
               border: `1px solid ${C.border}`,
               borderBottom: "none",
@@ -379,6 +373,7 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
               fontWeight: 600,
               textTransform: "uppercase",
               letterSpacing: "0.05em",
+              width: "100%",
             }}
           >
             <div>Equipamento</div>
@@ -395,6 +390,7 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
               border: `1px solid ${C.border}`,
               borderRadius: "0 0 8px 8px",
               overflow: "hidden",
+              width: "100%",
             }}
           >
             {equips.map((eq) => (
@@ -434,8 +430,6 @@ function StatBox({ label, value, color }: { label: string; value: string; color:
     </div>
   );
 }
-
-// ─── Página ───────────────────────────────────────────────────────────────────
 
 export default function SigasulPage() {
   const TODAY = useMemo(todayBRT, []);
@@ -803,7 +797,7 @@ export default function SigasulPage() {
                 display: "flex",
                 alignItems: "center",
                 gap: 10,
-                padding: "7px 16px",
+                padding: "7px 12px",
                 background: "#fefce8",
                 border: `1px solid #fde68a`,
                 borderBottom: "none",
@@ -820,13 +814,13 @@ export default function SigasulPage() {
             </div>
 
             <div style={{ overflowX: "auto" }}>
-              <div style={{ minWidth: 920 }}>
+              <div style={{ minWidth: TABLE_MIN_WIDTH, width: "100%" }}>
                 <div
                   style={{
                     display: "grid",
                     gridTemplateColumns: MAIN_GRID,
                     gap: COMPACT_GAP,
-                    padding: "5px 16px",
+                    padding: "5px 12px",
                     background: "#fffbeb",
                     border: `1px solid #fde68a`,
                     borderBottom: "none",
@@ -835,14 +829,15 @@ export default function SigasulPage() {
                     fontWeight: 600,
                     textTransform: "uppercase",
                     letterSpacing: "0.05em",
+                    width: "100%",
                   }}
                 >
                   <div>Equipamento</div>
                   <div style={{ textAlign: "center" }}>Dias</div>
                   <div style={{ textAlign: "center" }}>Obra</div>
                   <div style={{ textAlign: "center" }}>Bateria</div>
-                  <div style={{ textAlign: "center" }}></div>
-                  <div style={{ textAlign: "center" }}></div>
+                  <div style={{ textAlign: "center" }} />
+                  <div style={{ textAlign: "center" }} />
                   <div style={{ textAlign: "right" }}>Último sinal</div>
                 </div>
 
@@ -851,6 +846,7 @@ export default function SigasulPage() {
                     border: `1px solid #fde68a`,
                     borderRadius: "0 0 8px 8px",
                     overflow: "hidden",
+                    width: "100%",
                   }}
                 >
                   {semComunicacao
@@ -863,10 +859,11 @@ export default function SigasulPage() {
                           gridTemplateColumns: MAIN_GRID,
                           alignItems: "center",
                           gap: COMPACT_GAP,
-                          padding: "8px 16px",
+                          padding: "8px 12px",
                           borderBottom: `1px solid #fef3c7`,
                           background: "#fffdf0",
                           fontSize: 13,
+                          width: "100%",
                         }}
                       >
                         <div style={{ minWidth: 0 }}>
