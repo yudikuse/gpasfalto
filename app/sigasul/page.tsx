@@ -81,6 +81,29 @@ type EquipRow = {
   primeiraIgnicao: string | null;
   kmTotal: number;
   tempoLigadoSec: number;
+  isKombi: boolean;
+};
+
+type KbDaySummaryRow = {
+  pos_equip_id: string;
+  codigo_equipamento: string;
+  placa: string | null;
+  dia_brt: string;
+  primeira_obra: string | null;
+  ultima_obra: string | null;
+  primeira_chegada_at: string | null;
+  primeira_chegada_hora_brt: string | null;
+  ultima_saida_at: string | null;
+  ultima_saida_hora_brt: string | null;
+  qtd_visitas: number | null;
+  total_permanencia_min: number | null;
+  total_permanencia_horas: number | null;
+  obra_atual: string | null;
+  online_atual: boolean | null;
+  ignicao_atual: boolean | null;
+  velocidade_atual: number | null;
+  tensao_atual: number | null;
+  last_seen_at: string | null;
 };
 
 function pad2(n: number) {
@@ -106,6 +129,14 @@ function secToLabel(sec: number) {
   if (h > 0) return `${h}h ${pad2(m % 60)}min`;
   if (m > 0) return `${m}min`;
   return `<1min`;
+}
+
+function minToLabel(min: number | null | undefined) {
+  if (!min || min <= 0) return "—";
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h > 0) return `${h}h ${pad2(m)}min`;
+  return `${m}min`;
 }
 
 function fmtKm(metros: number) {
@@ -142,6 +173,7 @@ function tensaoColor(v: number | null) {
 const MAIN_GRID = "2.3fr 0.78fr 0.82fr 0.86fr 0.86fr 0.82fr 1.12fr";
 const COMPACT_GAP = 10;
 const TABLE_MIN_WIDTH = 780;
+const KB_GRID = "1.1fr 1.25fr 0.8fr 0.8fr 0.9fr 0.9fr";
 
 function StatusBadge({
   ignicao,
@@ -221,15 +253,7 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 10,
-            color: C.textMute,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            marginBottom: 1,
-          }}
-        >
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
           Ligou
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.primary : C.textMute }}>
@@ -238,15 +262,7 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 10,
-            color: C.textMute,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            marginBottom: 1,
-          }}
-        >
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
           KM
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: eq.kmTotal > 0 ? C.success : C.textMute }}>
@@ -255,15 +271,7 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 10,
-            color: C.textMute,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            marginBottom: 1,
-          }}
-        >
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
           Tempo
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.warning : C.textMute }}>
@@ -272,15 +280,7 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 10,
-            color: C.textMute,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            marginBottom: 1,
-          }}
-        >
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
           Bateria
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: tensaoColor(eq.tensao) }}>
@@ -289,33 +289,17 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div
-          style={{
-            fontSize: 10,
-            color: C.textMute,
-            textTransform: "uppercase",
-            letterSpacing: "0.04em",
-            marginBottom: 1,
-          }}
-        >
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
           Agora
         </div>
-        <div
-          style={{
-            fontWeight: 700,
-            fontSize: 13,
-            color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute,
-          }}
-        >
+        <div style={{ fontWeight: 700, fontSize: 13, color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute }}>
           {eq.velocidade && eq.velocidade > 0 ? `${eq.velocidade} km/h` : "—"}
         </div>
       </div>
 
       <div style={{ textAlign: "right" }}>
         <StatusBadge ignicao={eq.ignicao} online={eq.online} expirado={eq.statusExpirado} />
-        {eq.ultimaPos && (
-          <div style={{ fontSize: 10, color: C.textMute, marginTop: 2 }}>{eq.ultimaPos}</div>
-        )}
+        {eq.ultimaPos && <div style={{ fontSize: 10, color: C.textMute, marginTop: 2 }}>{eq.ultimaPos}</div>}
       </div>
     </div>
   );
@@ -339,22 +323,11 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
           borderRadius: "8px 8px 0 0",
         }}
       >
-        <div
-          style={{
-            width: 3,
-            height: 16,
-            borderRadius: 2,
-            background: obra === "SEM OBRA" ? C.textMute : C.primary,
-          }}
-        />
+        <div style={{ width: 3, height: 16, borderRadius: 2, background: obra === "SEM OBRA" ? C.textMute : C.primary }} />
         <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{obra}</span>
         <span style={{ fontSize: 12, color: C.textMute }}>{equips.length} equip.</span>
-        <span style={{ fontSize: 12, color: C.success, fontWeight: 600 }}>
-          {trabalhando} trabalhando
-        </span>
-        <span style={{ fontSize: 12, color: C.primary, fontWeight: 600, marginLeft: "auto" }}>
-          {online} online
-        </span>
+        <span style={{ fontSize: 12, color: C.success, fontWeight: 600 }}>{trabalhando} trabalhando</span>
+        <span style={{ fontSize: 12, color: C.primary, fontWeight: 600, marginLeft: "auto" }}>{online} online</span>
       </div>
 
       <div style={{ overflowX: "auto" }}>
@@ -403,6 +376,146 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
   );
 }
 
+function KbSection({ rows }: { rows: KbDaySummaryRow[] }) {
+  const online = rows.filter((r) => r.online_atual === true).length;
+  const emObra = rows.filter((r) => !!r.obra_atual && r.obra_atual !== "Pátio").length;
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "7px 12px",
+          background: "#eef5ff",
+          border: `1px solid #cfe0ff`,
+          borderBottom: "none",
+          borderRadius: "8px 8px 0 0",
+        }}
+      >
+        <div style={{ width: 3, height: 16, borderRadius: 2, background: C.primary }} />
+        <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>Kombis</span>
+        <span style={{ fontSize: 12, color: C.textMute }}>{rows.length} kombis</span>
+        <span style={{ fontSize: 12, color: C.success, fontWeight: 600 }}>{emObra} em obra</span>
+        <span style={{ fontSize: 12, color: C.primary, fontWeight: 600, marginLeft: "auto" }}>{online} online</span>
+      </div>
+
+      <div style={{ overflowX: "auto" }}>
+        <div style={{ minWidth: 760, width: "100%" }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: KB_GRID,
+              gap: COMPACT_GAP,
+              padding: "5px 12px",
+              background: "#f7faff",
+              border: `1px solid #cfe0ff`,
+              borderBottom: "none",
+              fontSize: 10,
+              color: C.textMute,
+              fontWeight: 600,
+              textTransform: "uppercase",
+              letterSpacing: "0.05em",
+            }}
+          >
+            <div>Kombi</div>
+            <div>Obra</div>
+            <div style={{ textAlign: "center" }}>Chegada</div>
+            <div style={{ textAlign: "center" }}>Saída</div>
+            <div style={{ textAlign: "center" }}>Tempo</div>
+            <div style={{ textAlign: "right" }}>Status</div>
+          </div>
+
+          <div style={{ border: `1px solid #cfe0ff`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
+            {rows.map((kb) => {
+              const onlineNow = kb.online_atual === true;
+              const moving = !!kb.velocidade_atual && kb.velocidade_atual > 0;
+              const statusLabel = moving
+                ? "● EM DESLOCAMENTO"
+                : onlineNow
+                ? "● ONLINE"
+                : "● OFFLINE";
+
+              const statusColor = moving ? C.success : onlineNow ? C.primary : C.danger;
+
+              return (
+                <div
+                  key={`${kb.pos_equip_id}-${kb.dia_brt}`}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: KB_GRID,
+                    alignItems: "center",
+                    gap: COMPACT_GAP,
+                    padding: "9px 12px",
+                    borderBottom: `1px solid #e4edff`,
+                    background: C.surface,
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{kb.codigo_equipamento}</div>
+                    <div style={{ fontSize: 11, color: C.textMute }}>{kb.placa || "—"}</div>
+                  </div>
+
+                  <div style={{ minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontWeight: 700,
+                        fontSize: 13,
+                        color: C.text,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {kb.obra_atual || kb.primeira_obra || "—"}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 11,
+                        color: C.textMute,
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {kb.qtd_visitas ? `${kb.qtd_visitas} visita${kb.qtd_visitas > 1 ? "s" : ""}` : "sem visita fechada"}
+                    </div>
+                  </div>
+
+                  <div style={{ textAlign: "center", fontWeight: 700, color: C.primary, fontSize: 13 }}>
+                    {kb.primeira_chegada_hora_brt || "—"}
+                  </div>
+
+                  <div style={{ textAlign: "center", fontWeight: 700, color: C.warning, fontSize: 13 }}>
+                    {kb.ultima_saida_hora_brt || "—"}
+                  </div>
+
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: C.textMid }}>
+                      {minToLabel(kb.total_permanencia_min)}
+                    </div>
+                    <div style={{ fontSize: 10, color: C.textMute }}>
+                      {kb.tensao_atual != null ? `${kb.tensao_atual.toFixed(1)}V` : "—"}
+                    </div>
+                  </div>
+
+                  <div style={{ textAlign: "right" }}>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: statusColor }}>{statusLabel}</div>
+                    <div style={{ fontSize: 10, color: C.textMute, marginTop: 2 }}>
+                      {kb.last_seen_at ? fmtHoraUTC(kb.last_seen_at) : "—"}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function StatBox({ label, value, color }: { label: string; value: string; color: string }) {
   return (
     <div
@@ -413,20 +526,8 @@ function StatBox({ label, value, color }: { label: string; value: string; color:
         padding: "12px 16px",
       }}
     >
-      <div style={{ fontSize: 11, color: C.textMute, fontWeight: 600, marginBottom: 4 }}>
-        {label}
-      </div>
-      <div
-        style={{
-          fontSize: 22,
-          fontWeight: 800,
-          color,
-          letterSpacing: "-0.02em",
-          lineHeight: 1,
-        }}
-      >
-        {value}
-      </div>
+      <div style={{ fontSize: 11, color: C.textMute, fontWeight: 600, marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color, letterSpacing: "-0.02em", lineHeight: 1 }}>{value}</div>
     </div>
   );
 }
@@ -441,24 +542,39 @@ export default function SigasulPage() {
   const [latest, setLatest] = useState<LatestRow[]>([]);
   const [simplificada, setSimplificada] = useState<SigasulVeiculo[]>([]);
   const [positions, setPositions] = useState<SigasulPosition[]>([]);
+  const [kbSummary, setKbSummary] = useState<KbDaySummaryRow[]>([]);
 
   async function load() {
     setLoading(true);
     setErr(null);
 
-    const { data, error } = await supabase
-      .from("sigasul_dashboard_latest")
-      .select(
-        "pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista"
-      );
+    const [latestRes, kbRes] = await Promise.all([
+      supabase
+        .from("sigasul_dashboard_latest")
+        .select(
+          "pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista"
+        ),
+      supabase
+        .from("sigasul_kb_day_summary_v")
+        .select("*")
+        .eq("dia_brt", date)
+        .order("codigo_equipamento", { ascending: true }),
+    ]);
 
-    if (error) {
-      setErr(error.message);
+    if (latestRes.error) {
+      setErr(latestRes.error.message);
       setLoading(false);
       return;
     }
 
-    setLatest((data ?? []) as LatestRow[]);
+    setLatest((latestRes.data ?? []) as LatestRow[]);
+
+    if (kbRes.error) {
+      setErr((prev) => prev ?? kbRes.error!.message);
+      setKbSummary([]);
+    } else {
+      setKbSummary((kbRes.data ?? []) as KbDaySummaryRow[]);
+    }
 
     try {
       const res = await fetch(`/api/sigasul/today?date=${date}`, { cache: "no-store" });
@@ -480,8 +596,7 @@ export default function SigasulPage() {
     if (date !== TODAY) return;
     const t = setInterval(load, 60_000);
     return () => clearInterval(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [date]);
+  }, [date, TODAY]);
 
   const posMap = useMemo(() => {
     const m = new Map<string, SigasulPosition>();
@@ -508,12 +623,12 @@ export default function SigasulPage() {
         const key = placa.replace(/\W/g, "").toUpperCase();
         const simp = simpMap.get(key);
         const pos = posMap.get(key);
+        const isKombi = /^KB-/i.test(nome);
 
         const eventos = simp?.eventos ?? [];
         const kmTotal = eventos.reduce((a, e) => a + (e.distancia ?? 0), 0);
         const tempoLigadoSec = eventos.reduce((a, e) => a + hhmmssToSec(e.tempoLigado), 0);
-        const primeiraIgnicao =
-          eventos.length > 0 ? fmtHoraBRT(eventos[0].data_hora_inicial) : null;
+        const primeiraIgnicao = eventos.length > 0 ? fmtHoraBRT(eventos[0].data_hora_inicial) : null;
 
         const motorista =
           eventos.find((e) => e.motorista)?.motorista ||
@@ -525,7 +640,6 @@ export default function SigasulPage() {
 
         const online = pos?.pos_online ?? (statusExpirado ? null : row.online_atual);
         const ignicao = pos?.pos_ignicao ?? row.ignicao_atual;
-
         const velocidade = pos?.pos_velocidade ?? (statusExpirado ? null : row.pos_velocidade);
         const tensao = pos?.pos_tensao ?? row.pos_tensao;
 
@@ -556,13 +670,15 @@ export default function SigasulPage() {
           primeiraIgnicao,
           kmTotal,
           tempoLigadoSec,
+          isKombi,
         };
       })
       .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
   }, [latest, simpMap, posMap]);
 
-  const ativos = useMemo(() => equips.filter((e) => !e.semComunicacao), [equips]);
-  const semComunicacao = useMemo(() => equips.filter((e) => e.semComunicacao), [equips]);
+  const nonKbEquips = useMemo(() => equips.filter((e) => !e.isKombi), [equips]);
+  const ativos = useMemo(() => nonKbEquips.filter((e) => !e.semComunicacao), [nonKbEquips]);
+  const semComunicacao = useMemo(() => nonKbEquips.filter((e) => e.semComunicacao), [nonKbEquips]);
 
   const obras = useMemo(() => {
     const s = new Set(ativos.map((e) => e.obra));
@@ -603,13 +719,7 @@ export default function SigasulPage() {
   const isToday = date === TODAY;
 
   return (
-    <div
-      style={{
-        minHeight: "100vh",
-        background: C.bg,
-        fontFamily: "system-ui,-apple-system,sans-serif",
-      }}
-    >
+    <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "system-ui,-apple-system,sans-serif" }}>
       <div
         style={{
           background: C.surface,
@@ -625,11 +735,9 @@ export default function SigasulPage() {
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontWeight: 800, fontSize: 15, color: C.text }}>
-            🚛 Monitoramento de Frota
-          </span>
+          <span style={{ fontWeight: 800, fontSize: 15, color: C.text }}>🚛 Monitoramento de Frota</span>
           <span style={{ fontSize: 12, color: C.textMute }}>
-            {isToday ? "Hoje" : date} · {equips.length} equip.
+            {isToday ? "Hoje" : date} · {ativos.length} equip.
             {isToday && " · refresh 1min"}
           </span>
         </div>
@@ -726,11 +834,7 @@ export default function SigasulPage() {
           <StatBox label="Equipamentos" value={String(totals.total)} color={C.text} />
           <StatBox label="Online agora" value={String(totals.online)} color={C.primary} />
           <StatBox label="Trabalharam hoje" value={String(totals.ligados)} color={C.success} />
-          <StatBox
-            label="KM total frota"
-            value={totals.km > 0 ? fmtKm(totals.km) : "—"}
-            color={C.warning}
-          />
+          <StatBox label="KM total frota" value={totals.km > 0 ? fmtKm(totals.km) : "—"} color={C.warning} />
         </div>
 
         <div
@@ -750,28 +854,18 @@ export default function SigasulPage() {
             [C.danger, "<12V crítico"],
           ].map(([c, l]) => (
             <span key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span
-                style={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: "50%",
-                  background: c,
-                  display: "inline-block",
-                }}
-              />
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: c as string, display: "inline-block" }} />
               {l}
             </span>
           ))}
-          <span style={{ marginLeft: "auto", color: C.textMute }}>
-            ● SEM SINAL = não transmitiu nos últimos 10min
-          </span>
+          <span style={{ marginLeft: "auto", color: C.textMute }}>● SEM SINAL = não transmitiu nos últimos 10min</span>
         </div>
 
-        {loading && equips.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px 0", color: C.textMute }}>
-            Carregando…
-          </div>
-        ) : equips.length === 0 ? (
+        {kbSummary.length > 0 && <KbSection rows={kbSummary} />}
+
+        {loading && nonKbEquips.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "60px 0", color: C.textMute }}>Carregando…</div>
+        ) : nonKbEquips.length === 0 ? (
           <div
             style={{
               background: "#fffbeb",
@@ -785,9 +879,7 @@ export default function SigasulPage() {
             Nenhum equipamento encontrado.
           </div>
         ) : (
-          [...groups.entries()].map(([obra, rows]) => (
-            <ObraSection key={obra} obra={obra} equips={rows} />
-          ))
+          [...groups.entries()].map(([obra, rows]) => <ObraSection key={obra} obra={obra} equips={rows} />)
         )}
 
         {semComunicacao.length > 0 && (
@@ -805,9 +897,7 @@ export default function SigasulPage() {
               }}
             >
               <div style={{ width: 3, height: 16, borderRadius: 2, background: "#d97706" }} />
-              <span style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>
-                ⚠️ Sem Comunicação
-              </span>
+              <span style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>⚠️ Sem Comunicação</span>
               <span style={{ fontSize: 12, color: "#b45309" }}>
                 {semComunicacao.length} equipamentos sem sinal há mais de 7 dias
               </span>
@@ -841,14 +931,7 @@ export default function SigasulPage() {
                   <div style={{ textAlign: "right" }}>Último sinal</div>
                 </div>
 
-                <div
-                  style={{
-                    border: `1px solid #fde68a`,
-                    borderRadius: "0 0 8px 8px",
-                    overflow: "hidden",
-                    width: "100%",
-                  }}
-                >
+                <div style={{ border: `1px solid #fde68a`, borderRadius: "0 0 8px 8px", overflow: "hidden", width: "100%" }}>
                   {semComunicacao
                     .sort((a, b) => b.diasSemSinal - a.diasSemSinal)
                     .map((eq) => (
@@ -867,60 +950,23 @@ export default function SigasulPage() {
                         }}
                       >
                         <div style={{ minWidth: 0 }}>
-                          <div
-                            style={{
-                              fontWeight: 700,
-                              color: C.text,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
+                          <div style={{ fontWeight: 700, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                             {eq.nome}
                           </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: C.textMute,
-                              whiteSpace: "nowrap",
-                              overflow: "hidden",
-                              textOverflow: "ellipsis",
-                            }}
-                          >
+                          <div style={{ fontSize: 11, color: C.textMute, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                             {eq.placa}
                           </div>
                         </div>
 
-                        <div
-                          style={{
-                            textAlign: "center",
-                            fontWeight: 700,
-                            color: eq.diasSemSinal > 30 ? C.danger : "#d97706",
-                          }}
-                        >
+                        <div style={{ textAlign: "center", fontWeight: 700, color: eq.diasSemSinal > 30 ? C.danger : "#d97706" }}>
                           {eq.diasSemSinal}d
                         </div>
 
-                        <div
-                          style={{
-                            textAlign: "center",
-                            fontSize: 12,
-                            color: C.textMid,
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                          }}
-                        >
+                        <div style={{ textAlign: "center", fontSize: 12, color: C.textMid, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
                           {eq.obra}
                         </div>
 
-                        <div
-                          style={{
-                            textAlign: "center",
-                            fontWeight: 700,
-                            color: tensaoColor(eq.tensao),
-                          }}
-                        >
+                        <div style={{ textAlign: "center", fontWeight: 700, color: tensaoColor(eq.tensao) }}>
                           {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
                         </div>
 
