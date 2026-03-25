@@ -9,16 +9,16 @@ const supabase = createClient(
 );
 
 const C = {
-  bg:       "#f4f5f7",
-  surface:  "#ffffff",
-  border:   "#e8eaed",
-  text:     "#1a1f36",
-  textMid:  "#4b5563",
+  bg: "#f4f5f7",
+  surface: "#ffffff",
+  border: "#e8eaed",
+  text: "#1a1f36",
+  textMid: "#4b5563",
   textMute: "#9ca3af",
-  primary:  "#4361ee",
-  success:  "#0d9f6e",
-  danger:   "#dc2626",
-  warning:  "#d97706",
+  primary: "#4361ee",
+  success: "#0d9f6e",
+  danger: "#dc2626",
+  warning: "#d97706",
 };
 
 // ─── Tipos ────────────────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ type LatestRow = {
   ingested_at: string | null;
   pos_ignicao: boolean | null;
   pos_online: boolean | null;
-  ignicao_atual: boolean | null;  // null se expirado
+  ignicao_atual: boolean | null; // null se expirado
   online_atual: boolean | null;
   pos_velocidade: number | null;
   pos_tensao: number | null;
@@ -73,13 +73,13 @@ type EquipRow = {
   online: boolean | null;
   ignicao: boolean | null;
   statusExpirado: boolean;
-  semComunicacao: boolean;  // sem sinal há mais de 7 dias
+  semComunicacao: boolean; // sem sinal há mais de 7 dias
   diasSemSinal: number;
   velocidade: number | null;
   tensao: number | null;
   motorista: string | null;
-  ultimaPos: string | null;     // HH:MM
-  ultimaPosISO: string | null;  // ISO completo para calcular dias
+  ultimaPos: string | null; // HH:MM
+  ultimaPosISO: string | null; // ISO completo para calcular dias
   primeiraIgnicao: string | null;
   kmTotal: number;
   tempoLigadoSec: number;
@@ -87,7 +87,9 @@ type EquipRow = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function pad2(n: number) { return String(n).padStart(2, "0"); }
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
 
 function todayBRT() {
   const now = new Date();
@@ -96,7 +98,7 @@ function todayBRT() {
 }
 
 function hhmmssToSec(s: string) {
-  if (!s || !s.match(/^\d{2}:\d{2}:\d{2}$/)) return 0; // ignora "--" ou inválidos
+  if (!s || !s.match(/^\d{2}:\d{2}:\d{2}$/)) return 0;
   const [h, m, sec] = s.split(":").map(Number);
   return (h || 0) * 3600 + (m || 0) * 60 + (sec || 0);
 }
@@ -127,10 +129,13 @@ function fmtHoraUTC(iso: string | null): string {
   if (!iso) return "—";
   try {
     return new Date(iso).toLocaleTimeString("pt-BR", {
-      hour: "2-digit", minute: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
       timeZone: "America/Sao_Paulo",
     });
-  } catch { return "—"; }
+  } catch {
+    return "—";
+  }
 }
 
 function tensaoColor(v: number | null) {
@@ -142,36 +147,42 @@ function tensaoColor(v: number | null) {
 
 // ─── Componentes ──────────────────────────────────────────────────────────────
 
-function StatusBadge({ ignicao, online, expirado }: {
-  ignicao: boolean | null; online: boolean | null; expirado: boolean;
+function StatusBadge({
+  ignicao,
+  online,
+  expirado,
+}: {
+  ignicao: boolean | null;
+  online: boolean | null;
+  expirado: boolean;
 }) {
-  if (online === false) return (
-    <span style={{ fontSize: 11, fontWeight: 700, color: C.danger }}>● OFFLINE</span>
-  );
-  if (expirado) return (
-    <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute }}>● SEM SINAL</span>
-  );
-  if (ignicao === true) return (
-    <span style={{ fontSize: 11, fontWeight: 700, color: C.success }}>● LIGADO</span>
-  );
-  return (
-    <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute }}>● DESLIGADO</span>
-  );
+  if (online === false) {
+    return <span style={{ fontSize: 11, fontWeight: 700, color: C.danger }}>● OFFLINE</span>;
+  }
+  if (expirado) {
+    return <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute }}>● SEM SINAL</span>;
+  }
+  if (ignicao === true) {
+    return <span style={{ fontSize: 11, fontWeight: 700, color: C.success }}>● LIGADO</span>;
+  }
+  return <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute }}>● DESLIGADO</span>;
 }
 
 function EquipRowItem({ eq }: { eq: EquipRow }) {
   const ligado = eq.tempoLigadoSec > 0;
+
   return (
-    <div style={{
-      display: "grid",
-      gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
-      alignItems: "center",
-      gap: 8,
-      padding: "9px 16px",
-      borderBottom: `1px solid ${C.border}`,
-      background: C.surface,
-    }}>
-      {/* Nome */}
+    <div
+      style={{
+        display: "grid",
+        gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
+        alignItems: "center",
+        gap: 8,
+        padding: "9px 16px",
+        borderBottom: `1px solid ${C.border}`,
+        background: C.surface,
+      }}
+    >
       <div>
         <div style={{ fontWeight: 700, color: C.text, fontSize: 13 }}>{eq.nome}</div>
         <div style={{ fontSize: 11, color: C.textMute }}>{eq.placa}</div>
@@ -180,47 +191,97 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
         )}
       </div>
 
-      {/* Ligou */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Ligou</div>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
+          Ligou
+        </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.primary : C.textMute }}>
           {eq.primeiraIgnicao ?? "—"}
         </div>
       </div>
 
-      {/* KM */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>KM</div>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
+          KM
+        </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: eq.kmTotal > 0 ? C.success : C.textMute }}>
           {eq.kmTotal > 0 ? fmtKm(eq.kmTotal) : "—"}
         </div>
       </div>
 
-      {/* Tempo */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Tempo</div>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
+          Tempo
+        </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.warning : C.textMute }}>
           {ligado ? secToLabel(eq.tempoLigadoSec) : "—"}
         </div>
       </div>
 
-      {/* Bateria */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Bateria</div>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
+          Bateria
+        </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: tensaoColor(eq.tensao) }}>
           {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
         </div>
       </div>
 
-      {/* Velocidade */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Agora</div>
-        <div style={{ fontWeight: 700, fontSize: 13, color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
+          Agora
+        </div>
+        <div
+          style={{
+            fontWeight: 700,
+            fontSize: 13,
+            color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute,
+          }}
+        >
           {eq.velocidade && eq.velocidade > 0 ? `${eq.velocidade} km/h` : "—"}
         </div>
       </div>
 
-      {/* Status + última pos */}
       <div style={{ textAlign: "right" }}>
         <StatusBadge ignicao={eq.ignicao} online={eq.online} expirado={eq.statusExpirado} />
         {eq.ultimaPos && (
@@ -233,35 +294,56 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
 
 function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
   const trabalhando = equips.filter((e) => e.tempoLigadoSec > 0).length;
-  const online      = equips.filter((e) => e.online === true && !e.statusExpirado).length;
+  const online = equips.filter((e) => e.online === true && !e.statusExpirado).length;
 
   return (
     <div style={{ marginBottom: 20 }}>
-      {/* Header obra */}
-      <div style={{
-        display: "flex", alignItems: "center", gap: 10,
-        padding: "7px 16px",
-        background: "#f8f9fb",
-        border: `1px solid ${C.border}`, borderBottom: "none",
-        borderRadius: "8px 8px 0 0",
-      }}>
-        <div style={{ width: 3, height: 16, borderRadius: 2, background: obra === "SEM OBRA" ? C.textMute : C.primary }} />
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+          padding: "7px 16px",
+          background: "#f8f9fb",
+          border: `1px solid ${C.border}`,
+          borderBottom: "none",
+          borderRadius: "8px 8px 0 0",
+        }}
+      >
+        <div
+          style={{
+            width: 3,
+            height: 16,
+            borderRadius: 2,
+            background: obra === "SEM OBRA" ? C.textMute : C.primary,
+          }}
+        />
         <span style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{obra}</span>
         <span style={{ fontSize: 12, color: C.textMute }}>{equips.length} equip.</span>
-        <span style={{ fontSize: 12, color: C.success, fontWeight: 600 }}>{trabalhando} trabalhando</span>
-        <span style={{ fontSize: 12, color: C.primary, fontWeight: 600, marginLeft: "auto" }}>{online} online</span>
+        <span style={{ fontSize: 12, color: C.success, fontWeight: 600 }}>
+          {trabalhando} trabalhando
+        </span>
+        <span style={{ fontSize: 12, color: C.primary, fontWeight: 600, marginLeft: "auto" }}>
+          {online} online
+        </span>
       </div>
 
-      {/* Header colunas */}
-      <div style={{
-        display: "grid",
-        gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
-        gap: 8, padding: "5px 16px",
-        background: "#fafafa",
-        border: `1px solid ${C.border}`, borderBottom: "none",
-        fontSize: 10, color: C.textMute, fontWeight: 600,
-        textTransform: "uppercase", letterSpacing: "0.05em",
-      }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
+          gap: 8,
+          padding: "5px 16px",
+          background: "#fafafa",
+          border: `1px solid ${C.border}`,
+          borderBottom: "none",
+          fontSize: 10,
+          color: C.textMute,
+          fontWeight: 600,
+          textTransform: "uppercase",
+          letterSpacing: "0.05em",
+        }}
+      >
         <div>Equipamento</div>
         <div style={{ textAlign: "center" }}>Ligou</div>
         <div style={{ textAlign: "center" }}>KM</div>
@@ -271,9 +353,16 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
         <div style={{ textAlign: "right" }}>Status</div>
       </div>
 
-      {/* Linhas */}
-      <div style={{ border: `1px solid ${C.border}`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
-        {equips.map((eq) => <EquipRowItem key={eq.pos_equip_id} eq={eq} />)}
+      <div
+        style={{
+          border: `1px solid ${C.border}`,
+          borderRadius: "0 0 8px 8px",
+          overflow: "hidden",
+        }}
+      >
+        {equips.map((eq) => (
+          <EquipRowItem key={eq.pos_equip_id} eq={eq} />
+        ))}
       </div>
     </div>
   );
@@ -281,9 +370,28 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
 
 function StatBox({ label, value, color }: { label: string; value: string; color: string }) {
   return (
-    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 8, padding: "12px 16px" }}>
-      <div style={{ fontSize: 11, color: C.textMute, fontWeight: 600, marginBottom: 4 }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 800, color, letterSpacing: "-0.02em", lineHeight: 1 }}>{value}</div>
+    <div
+      style={{
+        background: C.surface,
+        border: `1px solid ${C.border}`,
+        borderRadius: 8,
+        padding: "12px 16px",
+      }}
+    >
+      <div style={{ fontSize: 11, color: C.textMute, fontWeight: 600, marginBottom: 4 }}>
+        {label}
+      </div>
+      <div
+        style={{
+          fontSize: 22,
+          fontWeight: 800,
+          color,
+          letterSpacing: "-0.02em",
+          lineHeight: 1,
+        }}
+      >
+        {value}
+      </div>
     </div>
   );
 }
@@ -292,14 +400,14 @@ function StatBox({ label, value, color }: { label: string; value: string; color:
 
 export default function SigasulPage() {
   const TODAY = useMemo(todayBRT, []);
-  const [date, setDate]             = useState(TODAY);
+  const [date, setDate] = useState(TODAY);
   const [obraFiltro, setObraFiltro] = useState("TODAS");
-  const [loading, setLoading]       = useState(true);
-  const [err, setErr]               = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState<string | null>(null);
   const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
-  const [latest, setLatest]         = useState<LatestRow[]>([]);
+  const [latest, setLatest] = useState<LatestRow[]>([]);
   const [simplificada, setSimplificada] = useState<SigasulVeiculo[]>([]);
-  const [positions, setPositions]   = useState<SigasulPosition[]>([]);
+  const [positions, setPositions] = useState<SigasulPosition[]>([]);
 
   async function load() {
     setLoading(true);
@@ -307,9 +415,16 @@ export default function SigasulPage() {
 
     const { data, error } = await supabase
       .from("sigasul_dashboard_latest")
-      .select("pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista");
+      .select(
+        "pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista"
+      );
 
-    if (error) { setErr(error.message); setLoading(false); return; }
+    if (error) {
+      setErr(error.message);
+      setLoading(false);
+      return;
+    }
+
     setLatest((data ?? []) as LatestRow[]);
 
     try {
@@ -317,9 +432,11 @@ export default function SigasulPage() {
       if (res.ok) {
         const json = await res.json();
         if (Array.isArray(json.simplificada)) setSimplificada(json.simplificada);
-        if (Array.isArray(json.positions))    setPositions(json.positions);
+        if (Array.isArray(json.positions)) setPositions(json.positions);
       }
-    } catch (e) { console.warn("today API:", e); }
+    } catch (e) {
+      console.warn("today API:", e);
+    }
 
     setLastUpdate(new Date());
     setLoading(false);
@@ -335,87 +452,102 @@ export default function SigasulPage() {
 
   const posMap = useMemo(() => {
     const m = new Map<string, SigasulPosition>();
-    for (const p of positions) if (p.pos_placa) m.set(p.pos_placa.replace(/\W/g, "").toUpperCase(), p);
+    for (const p of positions) {
+      if (p.pos_placa) m.set(p.pos_placa.replace(/\W/g, "").toUpperCase(), p);
+    }
     return m;
   }, [positions]);
 
   const simpMap = useMemo(() => {
     const m = new Map<string, SigasulVeiculo>();
-    for (const v of simplificada) if (v.placa) m.set(v.placa.replace(/\W/g, "").toUpperCase(), v);
+    for (const v of simplificada) {
+      if (v.placa) m.set(v.placa.replace(/\W/g, "").toUpperCase(), v);
+    }
     return m;
   }, [simplificada]);
 
   const equips = useMemo((): EquipRow[] => {
     return latest
       .map((row): EquipRow => {
-        const nome  = row.codigo_equipamento || row.pos_placa || row.pos_equip_id;
+        const nome = row.codigo_equipamento || row.pos_placa || row.pos_equip_id;
         const placa = row.pos_placa || "—";
-        const obra  = row.obra_final || "SEM OBRA";
-        const key   = placa.replace(/\W/g, "").toUpperCase();
-        const simp  = simpMap.get(key);
-        const pos   = posMap.get(key);
+        const obra = row.obra_final || "SEM OBRA";
+        const key = placa.replace(/\W/g, "").toUpperCase();
+        const simp = simpMap.get(key);
+        const pos = posMap.get(key);
 
-        const eventos        = simp?.eventos ?? [];
-        const kmTotal        = eventos.reduce((a, e) => a + (e.distancia ?? 0), 0);
+        const eventos = simp?.eventos ?? [];
+        const kmTotal = eventos.reduce((a, e) => a + (e.distancia ?? 0), 0);
         const tempoLigadoSec = eventos.reduce((a, e) => a + hhmmssToSec(e.tempoLigado), 0);
-        const primeiraIgnicao = eventos.length > 0 ? fmtHoraBRT(eventos[0].data_hora_inicial) : null;
+        const primeiraIgnicao =
+          eventos.length > 0 ? fmtHoraBRT(eventos[0].data_hora_inicial) : null;
 
-        const motorista = eventos.find((e) => e.motorista)?.motorista
-          || pos?.pos_nome_motorista
-          || row.pos_nome_motorista
-          || null;
+        const motorista =
+          eventos.find((e) => e.motorista)?.motorista ||
+          pos?.pos_nome_motorista ||
+          row.pos_nome_motorista ||
+          null;
 
-        // Status expirado = last_seen_at > 10min (view retorna ignicao_atual=false)
         const statusExpirado = !pos && row.ignicao_atual === false && row.pos_ignicao === true;
 
-        // OFFLINE real = pos_online=false e dado recente
-        // SEM SINAL = expirado (ignicao sumiu, mas era true antes)
-        const online     = pos?.pos_online    ?? (statusExpirado ? null : row.online_atual);
-        const ignicao    = pos?.pos_ignicao   ?? row.ignicao_atual;
+        const online = pos?.pos_online ?? (statusExpirado ? null : row.online_atual);
+        const ignicao = pos?.pos_ignicao ?? row.ignicao_atual;
 
-        // velocidade: só mostra se dado recente (não expirado)
         const velocidade = pos?.pos_velocidade ?? (statusExpirado ? null : row.pos_velocidade);
-        const tensao     = pos?.pos_tensao     ?? row.pos_tensao;
+        const tensao = pos?.pos_tensao ?? row.pos_tensao;
 
-        // last_seen_at = quando o cron viu o veículo pela última vez no controls/all
-        // Para equipamentos manuais (pos_id_ref < 0), é a data real do último sinal
-        const ultimaPosISO   = row.last_seen_at ?? row.ingested_at;
-        const ultimaPos      = fmtHoraUTC(row.ingested_at);
+        const ultimaPosISO = row.last_seen_at ?? row.ingested_at;
+        const ultimaPos = fmtHoraUTC(row.ingested_at);
 
-        // Sem comunicação = sem sinal há mais de 7 dias
         const diasSemSinal = ultimaPosISO
           ? Math.floor((Date.now() - new Date(ultimaPosISO).getTime()) / (1000 * 60 * 60 * 24))
           : 999;
+
         const semComunicacao = diasSemSinal >= 7;
 
         return {
           pos_equip_id: row.pos_equip_id,
-          nome, placa, obra,
-          online, ignicao, statusExpirado, semComunicacao, diasSemSinal,
-          velocidade, tensao, motorista,
-          ultimaPos, ultimaPosISO, primeiraIgnicao,
-          kmTotal, tempoLigadoSec,
+          nome,
+          placa,
+          obra,
+          online,
+          ignicao,
+          statusExpirado,
+          semComunicacao,
+          diasSemSinal,
+          velocidade,
+          tensao,
+          motorista,
+          ultimaPos,
+          ultimaPosISO,
+          primeiraIgnicao,
+          kmTotal,
+          tempoLigadoSec,
         };
       })
       .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
   }, [latest, simpMap, posMap]);
 
+  // Separa ativos (comunicaram nos últimos 7 dias) dos sem comunicação
+  const ativos = useMemo(() => equips.filter((e) => !e.semComunicacao), [equips]);
+  const semComunicacao = useMemo(() => equips.filter((e) => e.semComunicacao), [equips]);
+
   const obras = useMemo(() => {
     const s = new Set(ativos.map((e) => e.obra));
-    return ["TODAS", ...Array.from(s).sort((a, b) => {
-      if (a === "SEM OBRA") return 1;
-      if (b === "SEM OBRA") return -1;
-      return a.localeCompare(b, "pt-BR");
-    })];
-  }, [equips]);
+    return [
+      "TODAS",
+      ...Array.from(s).sort((a, b) => {
+        if (a === "SEM OBRA") return 1;
+        if (b === "SEM OBRA") return -1;
+        return a.localeCompare(b, "pt-BR");
+      }),
+    ];
+  }, [ativos]);
 
-  // Separa ativos (comunicaram nos últimos 7 dias) dos sem comunicação
-  const ativos          = useMemo(() => equips.filter((e) => !e.semComunicacao), [equips]);
-  const semComunicacao  = useMemo(() => equips.filter((e) =>  e.semComunicacao), [equips]);
-
-  const filtered = useMemo(() =>
-    obraFiltro === "TODAS" ? ativos : ativos.filter((e) => e.obra === obraFiltro),
-    [ativos, obraFiltro]);
+  const filtered = useMemo(
+    () => (obraFiltro === "TODAS" ? ativos : ativos.filter((e) => e.obra === obraFiltro)),
+    [ativos, obraFiltro]
+  );
 
   const groups = useMemo(() => {
     const m = new Map<string, EquipRow[]>();
@@ -426,43 +558,109 @@ export default function SigasulPage() {
     return m;
   }, [filtered]);
 
-  const totals = useMemo(() => ({
-    total:   ativos.length,
-    online:  ativos.filter((e) => e.online === true && !e.statusExpirado).length,
-    ligados: ativos.filter((e) => e.tempoLigadoSec > 0).length,
-    km:      ativos.reduce((a, e) => a + e.kmTotal, 0),
-  }), [ativos]);
+  const totals = useMemo(
+    () => ({
+      total: ativos.length,
+      online: ativos.filter((e) => e.online === true && !e.statusExpirado).length,
+      ligados: ativos.filter((e) => e.tempoLigadoSec > 0).length,
+      km: ativos.reduce((a, e) => a + e.kmTotal, 0),
+    }),
+    [ativos]
+  );
 
   const isToday = date === TODAY;
 
   return (
-    <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "system-ui,-apple-system,sans-serif" }}>
-      <div style={{
-        background: C.surface, borderBottom: `1px solid ${C.border}`,
-        padding: "10px 24px", display: "flex", alignItems: "center",
-        justifyContent: "space-between", gap: 12,
-        position: "sticky", top: 0, zIndex: 100,
-      }}>
+    <div
+      style={{
+        minHeight: "100vh",
+        background: C.bg,
+        fontFamily: "system-ui,-apple-system,sans-serif",
+      }}
+    >
+      <div
+        style={{
+          background: C.surface,
+          borderBottom: `1px solid ${C.border}`,
+          padding: "10px 24px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 12,
+          position: "sticky",
+          top: 0,
+          zIndex: 100,
+        }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <span style={{ fontWeight: 800, fontSize: 15, color: C.text }}>🚛 Monitoramento de Frota</span>
+          <span style={{ fontWeight: 800, fontSize: 15, color: C.text }}>
+            🚛 Monitoramento de Frota
+          </span>
           <span style={{ fontSize: 12, color: C.textMute }}>
-            {isToday ? "Hoje" : date} · {equips.length} equip.{isToday && " · refresh 1min"}
+            {isToday ? "Hoje" : date} · {equips.length} equip.
+            {isToday && " · refresh 1min"}
           </span>
         </div>
+
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input type="date" value={date} onChange={(e) => setDate(e.target.value)}
-            style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", fontSize: 13, color: C.text, background: C.surface }} />
-          <select value={obraFiltro} onChange={(e) => setObraFiltro(e.target.value)}
-            style={{ border: `1px solid ${C.border}`, borderRadius: 6, padding: "5px 8px", fontSize: 13, color: C.text, background: C.surface, minWidth: 150 }}>
-            {obras.map((o) => <option key={o} value={o}>{o}</option>)}
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            style={{
+              border: `1px solid ${C.border}`,
+              borderRadius: 6,
+              padding: "5px 8px",
+              fontSize: 13,
+              color: C.text,
+              background: C.surface,
+            }}
+          />
+
+          <select
+            value={obraFiltro}
+            onChange={(e) => setObraFiltro(e.target.value)}
+            style={{
+              border: `1px solid ${C.border}`,
+              borderRadius: 6,
+              padding: "5px 8px",
+              fontSize: 13,
+              color: C.text,
+              background: C.surface,
+              minWidth: 150,
+            }}
+          >
+            {obras.map((o) => (
+              <option key={o} value={o}>
+                {o}
+              </option>
+            ))}
           </select>
-          <button onClick={load} disabled={loading}
-            style={{ background: loading ? C.border : C.primary, border: "none", borderRadius: 6, padding: "6px 14px", fontSize: 13, fontWeight: 600, color: loading ? C.textMute : "#fff", cursor: loading ? "not-allowed" : "pointer" }}>
+
+          <button
+            onClick={load}
+            disabled={loading}
+            style={{
+              background: loading ? C.border : C.primary,
+              border: "none",
+              borderRadius: 6,
+              padding: "6px 14px",
+              fontSize: 13,
+              fontWeight: 600,
+              color: loading ? C.textMute : "#fff",
+              cursor: loading ? "not-allowed" : "pointer",
+            }}
+          >
             {loading ? "Atualizando…" : "↺ Atualizar"}
           </button>
+
           {lastUpdate && (
             <span style={{ fontSize: 11, color: C.textMute }}>
-              {lastUpdate.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              {lastUpdate.toLocaleTimeString("pt-BR", {
+                hour: "2-digit",
+                minute: "2-digit",
+                second: "2-digit",
+              })}
             </span>
           )}
         </div>
@@ -470,23 +668,66 @@ export default function SigasulPage() {
 
       <div style={{ padding: "16px 24px", maxWidth: 1400, margin: "0 auto" }}>
         {err && (
-          <div style={{ background: "#fef2f2", border: `1px solid #fecaca`, borderRadius: 8, padding: "10px 14px", color: C.danger, marginBottom: 12, fontSize: 13 }}>
+          <div
+            style={{
+              background: "#fef2f2",
+              border: `1px solid #fecaca`,
+              borderRadius: 8,
+              padding: "10px 14px",
+              color: C.danger,
+              marginBottom: 12,
+              fontSize: 13,
+            }}
+          >
             <strong>Erro:</strong> {err}
           </div>
         )}
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
-          <StatBox label="Equipamentos"     value={String(totals.total)}   color={C.text} />
-          <StatBox label="Online agora"     value={String(totals.online)}  color={C.primary} />
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(4,1fr)",
+            gap: 10,
+            marginBottom: 16,
+          }}
+        >
+          <StatBox label="Equipamentos" value={String(totals.total)} color={C.text} />
+          <StatBox label="Online agora" value={String(totals.online)} color={C.primary} />
           <StatBox label="Trabalharam hoje" value={String(totals.ligados)} color={C.success} />
-          <StatBox label="KM total frota"   value={totals.km > 0 ? fmtKm(totals.km) : "—"} color={C.warning} />
+          <StatBox
+            label="KM total frota"
+            value={totals.km > 0 ? fmtKm(totals.km) : "—"}
+            color={C.warning}
+          />
         </div>
 
-        <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 11, color: C.textMute, alignItems: "center" }}>
+        <div
+          style={{
+            display: "flex",
+            gap: 16,
+            marginBottom: 12,
+            fontSize: 11,
+            color: C.textMute,
+            alignItems: "center",
+          }}
+        >
           <span style={{ fontWeight: 700, color: C.textMid }}>Bateria:</span>
-          {[[C.success,"≥13V normal"],[C.warning,"12–13V atenção"],[C.danger,"<12V crítico"]].map(([c,l]) => (
+          {[
+            [C.success, "≥13V normal"],
+            [C.warning, "12–13V atenção"],
+            [C.danger, "<12V crítico"],
+          ].map(([c, l]) => (
             <span key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />{l}
+              <span
+                style={{
+                  width: 8,
+                  height: 8,
+                  borderRadius: "50%",
+                  background: c,
+                  display: "inline-block",
+                }}
+              />
+              {l}
             </span>
           ))}
           <span style={{ marginLeft: "auto", color: C.textMute }}>
@@ -495,9 +736,20 @@ export default function SigasulPage() {
         </div>
 
         {loading && equips.length === 0 ? (
-          <div style={{ textAlign: "center", padding: "60px 0", color: C.textMute }}>Carregando…</div>
+          <div style={{ textAlign: "center", padding: "60px 0", color: C.textMute }}>
+            Carregando…
+          </div>
         ) : equips.length === 0 ? (
-          <div style={{ background: "#fffbeb", border: `1px solid #fde68a`, borderRadius: 8, padding: "14px 16px", color: C.warning, fontSize: 13 }}>
+          <div
+            style={{
+              background: "#fffbeb",
+              border: `1px solid #fde68a`,
+              borderRadius: 8,
+              padding: "14px 16px",
+              color: C.warning,
+              fontSize: 13,
+            }}
+          >
             Nenhum equipamento encontrado.
           </div>
         ) : (
@@ -506,15 +758,20 @@ export default function SigasulPage() {
           ))
         )}
 
-        {/* Seção sem comunicação */}
         {semComunicacao.length > 0 && (
           <div style={{ marginTop: 8 }}>
-            <div style={{
-              display: "flex", alignItems: "center", gap: 10,
-              padding: "7px 16px",
-              background: "#fefce8", border: `1px solid #fde68a`,
-              borderBottom: "none", borderRadius: "8px 8px 0 0",
-            }}>
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 10,
+                padding: "7px 16px",
+                background: "#fefce8",
+                border: `1px solid #fde68a`,
+                borderBottom: "none",
+                borderRadius: "8px 8px 0 0",
+              }}
+            >
               <div style={{ width: 3, height: 16, borderRadius: 2, background: "#d97706" }} />
               <span style={{ fontWeight: 700, fontSize: 13, color: "#92400e" }}>
                 ⚠️ Sem Comunicação
@@ -523,7 +780,23 @@ export default function SigasulPage() {
                 {semComunicacao.length} equipamentos sem sinal há mais de 7 dias
               </span>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px", gap: 12, padding: "5px 16px", background: "#fffbeb", border: `1px solid #fde68a`, borderBottom: "none", fontSize: 10, color: "#b45309", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
+                gap: 12,
+                padding: "5px 16px",
+                background: "#fffbeb",
+                border: `1px solid #fde68a`,
+                borderBottom: "none",
+                fontSize: 10,
+                color: "#b45309",
+                fontWeight: 600,
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
               <div>Equipamento</div>
               <div style={{ textAlign: "center" }}>Dias</div>
               <div style={{ textAlign: "center" }}>Obra</div>
@@ -532,37 +805,74 @@ export default function SigasulPage() {
               <div style={{ textAlign: "center" }}></div>
               <div style={{ textAlign: "right" }}>Último sinal</div>
             </div>
-            <div style={{ border: `1px solid #fde68a`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
+
+            <div
+              style={{
+                border: `1px solid #fde68a`,
+                borderRadius: "0 0 8px 8px",
+                overflow: "hidden",
+              }}
+            >
               {semComunicacao
                 .sort((a, b) => b.diasSemSinal - a.diasSemSinal)
                 .map((eq) => (
-                <div key={eq.pos_equip_id} style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
-                  alignItems: "center", gap: 12,
-                  padding: "8px 16px",
-                  borderBottom: `1px solid #fef3c7`,
-                  background: "#fffdf0",
-                  fontSize: 13,
-                }}>
-                  <div>
-                    <div style={{ fontWeight: 700, color: C.text }}>{eq.nome}</div>
-                    <div style={{ fontSize: 11, color: C.textMute }}>{eq.placa}</div>
+                  <div
+                    key={eq.pos_equip_id}
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
+                      alignItems: "center",
+                      gap: 12,
+                      padding: "8px 16px",
+                      borderBottom: `1px solid #fef3c7`,
+                      background: "#fffdf0",
+                      fontSize: 13,
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontWeight: 700, color: C.text }}>{eq.nome}</div>
+                      <div style={{ fontSize: 11, color: C.textMute }}>{eq.placa}</div>
+                    </div>
+
+                    <div
+                      style={{
+                        textAlign: "center",
+                        fontWeight: 700,
+                        color: eq.diasSemSinal > 30 ? C.danger : "#d97706",
+                      }}
+                    >
+                      {eq.diasSemSinal}d
+                    </div>
+
+                    <div style={{ textAlign: "center", fontSize: 12, color: C.textMid }}>
+                      {eq.obra}
+                    </div>
+
+                    <div
+                      style={{
+                        textAlign: "center",
+                        fontWeight: 700,
+                        color: tensaoColor(eq.tensao),
+                      }}
+                    >
+                      {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
+                    </div>
+
+                    <div />
+                    <div />
+
+                    <div style={{ textAlign: "right", fontSize: 11, color: C.textMute }}>
+                      {eq.ultimaPosISO
+                        ? new Date(eq.ultimaPosISO).toLocaleDateString("pt-BR", {
+                            timeZone: "America/Sao_Paulo",
+                            day: "2-digit",
+                            month: "2-digit",
+                            year: "2-digit",
+                          })
+                        : "—"}
+                    </div>
                   </div>
-                  <div style={{ textAlign: "center", fontWeight: 700, color: eq.diasSemSinal > 30 ? C.danger : "#d97706" }}>
-                    {eq.diasSemSinal}d
-                  </div>
-                  <div style={{ textAlign: "center", fontSize: 12, color: C.textMid }}>{eq.obra}</div>
-                  <div style={{ textAlign: "center", fontWeight: 700, color: tensaoColor(eq.tensao) }}>
-                    {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
-                  </div>
-                  <div />
-                  <div />
-                  <div style={{ textAlign: "right", fontSize: 11, color: C.textMute }}>
-                    {eq.ultimaPosISO ? new Date(eq.ultimaPosISO).toLocaleDateString("pt-BR", { timeZone: "America/Sao_Paulo", day: "2-digit", month: "2-digit", year: "2-digit" }) : "—"}
-                  </div>
-                </div>
-              ))}
+                ))}
             </div>
           </div>
         )}
