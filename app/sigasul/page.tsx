@@ -32,6 +32,8 @@ type LatestRow = {
   ingested_at: string | null;
   pos_ignicao: boolean | null;
   pos_online: boolean | null;
+  ignicao_atual: boolean | null;  // null se expirado
+  online_atual: boolean | null;
   pos_velocidade: number | null;
   pos_tensao: number | null;
   pos_nome_motorista: string | null;
@@ -69,6 +71,7 @@ type EquipRow = {
   obra: string;
   online: boolean | null;
   ignicao: boolean | null;
+  statusExpirado: boolean;
   velocidade: number | null;
   tensao: number | null;
   motorista: string | null;
@@ -108,7 +111,7 @@ function fmtKm(metros: number) {
   return `${metros.toFixed(0)} m`;
 }
 
-// Sigasul já retorna BRT — extrai HH:MM direto
+// Sigasul já retorna BRT — extrai HH:MM direto da string
 function fmtHoraBRT(dt: string | null): string {
   if (!dt) return "—";
   const match = dt.match(/[T ](\d{2}:\d{2})/);
@@ -126,28 +129,29 @@ function fmtHoraUTC(iso: string | null): string {
   } catch { return "—"; }
 }
 
-function tensaoColor(v: number | null): string {
+function tensaoColor(v: number | null) {
   if (v == null) return C.textMute;
   if (v >= 13.0) return C.success;
   if (v >= 12.0) return C.warning;
   return C.danger;
 }
 
-function tensaoLabel(v: number | null): string {
-  if (v == null) return "—";
-  return `${v.toFixed(1)}V`;
-}
-
 // ─── Componentes ──────────────────────────────────────────────────────────────
 
-function StatusDot({ online, ignicao }: { online: boolean | null; ignicao: boolean | null }) {
-  const color = online === false ? C.danger : ignicao === true ? C.success : C.textMute;
-  const label = online === false ? "OFFLINE" : ignicao === true ? "LIGADO" : "DESLIGADO";
+function StatusBadge({ ignicao, online, expirado }: {
+  ignicao: boolean | null; online: boolean | null; expirado: boolean;
+}) {
+  if (online === false) return (
+    <span style={{ fontSize: 11, fontWeight: 700, color: C.danger }}>● OFFLINE</span>
+  );
+  if (expirado) return (
+    <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute }}>● SEM SINAL</span>
+  );
+  if (ignicao === true) return (
+    <span style={{ fontSize: 11, fontWeight: 700, color: C.success }}>● LIGADO</span>
+  );
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color }}>
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: color, display: "inline-block" }} />
-      {label}
-    </span>
+    <span style={{ fontSize: 11, fontWeight: 600, color: C.textMute }}>● DESLIGADO</span>
   );
 }
 
@@ -156,66 +160,65 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
   return (
     <div style={{
       display: "grid",
-      gridTemplateColumns: "170px 80px 80px 90px 90px 80px 1fr",
+      gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
       alignItems: "center",
-      gap: 12,
-      padding: "10px 16px",
+      gap: 8,
+      padding: "9px 16px",
       borderBottom: `1px solid ${C.border}`,
       background: C.surface,
-      fontSize: 13,
     }}>
-      {/* Nome + placa */}
+      {/* Nome */}
       <div>
-        <div style={{ fontWeight: 700, color: C.text }}>{eq.nome}</div>
-        <div style={{ fontSize: 11, color: C.textMute, marginTop: 1 }}>{eq.placa}</div>
+        <div style={{ fontWeight: 700, color: C.text, fontSize: 13 }}>{eq.nome}</div>
+        <div style={{ fontSize: 11, color: C.textMute }}>{eq.placa}</div>
         {eq.motorista && (
-          <div style={{ fontSize: 11, color: C.primary, marginTop: 2 }}>👤 {eq.motorista}</div>
+          <div style={{ fontSize: 11, color: C.primary, marginTop: 1 }}>👤 {eq.motorista}</div>
         )}
       </div>
 
-      {/* Ligou às */}
+      {/* Ligou */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Ligou</div>
-        <div style={{ fontWeight: 700, color: ligado ? C.primary : C.textMute }}>
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Ligou</div>
+        <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.primary : C.textMute }}>
           {eq.primeiraIgnicao ?? "—"}
         </div>
       </div>
 
       {/* KM */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>KM</div>
-        <div style={{ fontWeight: 700, color: eq.kmTotal > 0 ? C.success : C.textMute }}>
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>KM</div>
+        <div style={{ fontWeight: 700, fontSize: 13, color: eq.kmTotal > 0 ? C.success : C.textMute }}>
           {eq.kmTotal > 0 ? fmtKm(eq.kmTotal) : "—"}
         </div>
       </div>
 
-      {/* Tempo ligado */}
+      {/* Tempo */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Tempo</div>
-        <div style={{ fontWeight: 700, color: ligado ? C.warning : C.textMute }}>
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Tempo</div>
+        <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.warning : C.textMute }}>
           {ligado ? secToLabel(eq.tempoLigadoSec) : "—"}
         </div>
       </div>
 
       {/* Bateria */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Bateria</div>
-        <div style={{ fontWeight: 700, color: tensaoColor(eq.tensao) }}>
-          {tensaoLabel(eq.tensao)}
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Bateria</div>
+        <div style={{ fontWeight: 700, fontSize: 13, color: tensaoColor(eq.tensao) }}>
+          {eq.tensao != null ? `${eq.tensao.toFixed(1)}V` : "—"}
         </div>
       </div>
 
-      {/* Velocidade atual */}
+      {/* Velocidade */}
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em" }}>Agora</div>
-        <div style={{ fontWeight: 700, color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute }}>
+        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>Agora</div>
+        <div style={{ fontWeight: 700, fontSize: 13, color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute }}>
           {eq.velocidade && eq.velocidade > 0 ? `${eq.velocidade} km/h` : "—"}
         </div>
       </div>
 
       {/* Status + última pos */}
       <div style={{ textAlign: "right" }}>
-        <StatusDot online={eq.online} ignicao={eq.ignicao} />
+        <StatusBadge ignicao={eq.ignicao} online={eq.online} expirado={eq.statusExpirado} />
         {eq.ultimaPos && (
           <div style={{ fontSize: 10, color: C.textMute, marginTop: 2 }}>{eq.ultimaPos}</div>
         )}
@@ -226,15 +229,16 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
 
 function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
   const trabalhando = equips.filter((e) => e.tempoLigadoSec > 0).length;
-  const online      = equips.filter((e) => e.online === true).length;
+  const online      = equips.filter((e) => e.online === true && !e.statusExpirado).length;
+
   return (
     <div style={{ marginBottom: 20 }}>
+      {/* Header obra */}
       <div style={{
         display: "flex", alignItems: "center", gap: 10,
         padding: "7px 16px",
         background: "#f8f9fb",
-        border: `1px solid ${C.border}`,
-        borderBottom: "none",
+        border: `1px solid ${C.border}`, borderBottom: "none",
         borderRadius: "8px 8px 0 0",
       }}>
         <div style={{ width: 3, height: 16, borderRadius: 2, background: obra === "SEM OBRA" ? C.textMute : C.primary }} />
@@ -243,13 +247,14 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
         <span style={{ fontSize: 12, color: C.success, fontWeight: 600 }}>{trabalhando} trabalhando</span>
         <span style={{ fontSize: 12, color: C.primary, fontWeight: 600, marginLeft: "auto" }}>{online} online</span>
       </div>
+
+      {/* Header colunas */}
       <div style={{
         display: "grid",
-        gridTemplateColumns: "170px 80px 80px 90px 90px 80px 1fr",
-        gap: 12, padding: "5px 16px",
+        gridTemplateColumns: "1fr 80px 90px 100px 80px 100px 120px",
+        gap: 8, padding: "5px 16px",
         background: "#fafafa",
-        border: `1px solid ${C.border}`,
-        borderBottom: "none",
+        border: `1px solid ${C.border}`, borderBottom: "none",
         fontSize: 10, color: C.textMute, fontWeight: 600,
         textTransform: "uppercase", letterSpacing: "0.05em",
       }}>
@@ -261,6 +266,8 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
         <div style={{ textAlign: "center" }}>Agora</div>
         <div style={{ textAlign: "right" }}>Status</div>
       </div>
+
+      {/* Linhas */}
       <div style={{ border: `1px solid ${C.border}`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
         {equips.map((eq) => <EquipRowItem key={eq.pos_equip_id} eq={eq} />)}
       </div>
@@ -296,7 +303,7 @@ export default function SigasulPage() {
 
     const { data, error } = await supabase
       .from("sigasul_dashboard_latest")
-      .select("pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,pos_ignicao,pos_online,pos_velocidade,pos_tensao,pos_nome_motorista");
+      .select("pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista");
 
     if (error) { setErr(error.message); setLoading(false); return; }
     setLatest((data ?? []) as LatestRow[]);
@@ -339,7 +346,7 @@ export default function SigasulPage() {
       .map((row): EquipRow => {
         const nome  = row.codigo_equipamento || row.pos_placa || row.pos_equip_id;
         const placa = row.pos_placa || "—";
-        const obra  = row.obra_final && row.obra_final !== "SEM_OBRA" ? row.obra_final : "SEM OBRA";
+        const obra  = row.obra_final || "SEM OBRA";
         const key   = placa.replace(/\W/g, "").toUpperCase();
         const simp  = simpMap.get(key);
         const pos   = posMap.get(key);
@@ -349,26 +356,29 @@ export default function SigasulPage() {
         const tempoLigadoSec = eventos.reduce((a, e) => a + hhmmssToSec(e.tempoLigado), 0);
         const primeiraIgnicao = eventos.length > 0 ? fmtHoraBRT(eventos[0].data_hora_inicial) : null;
 
-        // Motorista: da simplificada (quem operou hoje) ou do latest (último registrado)
         const motorista = eventos.find((e) => e.motorista)?.motorista
           || pos?.pos_nome_motorista
           || row.pos_nome_motorista
           || null;
 
-        // Status em tempo real (positions) ou fallback para latest
-        const online    = pos?.pos_online    ?? row.pos_online;
-        const ignicao   = pos?.pos_ignicao   ?? row.pos_ignicao;
-        const velocidade = pos?.pos_velocidade ?? row.pos_velocidade;
-        const tensao    = pos?.pos_tensao    ?? row.pos_tensao;
+        // Status em tempo real (controls/all) — confiável, acabou de chegar
+        // Se não veio do controls, usa o ignicao_atual da view (que expira em 10min)
+        const online         = pos?.pos_online    ?? row.online_atual;
+        const ignicao        = pos?.pos_ignicao   ?? row.ignicao_atual;
+        const velocidade     = pos?.pos_velocidade ?? row.pos_velocidade;
+        const tensao         = pos?.pos_tensao     ?? row.pos_tensao;
 
-        // Última posição: ingested_at (hora que chegou no banco hoje) — sempre correto
+        // Status expirado = não chegou no controls E ignicao_atual é false (expirado pela view)
+        const statusExpirado = !pos && row.ignicao_atual === false && row.pos_ignicao === true;
+
         const ultimaPos = fmtHoraUTC(row.ingested_at);
 
         return {
           pos_equip_id: row.pos_equip_id,
           nome, placa, obra,
-          online, ignicao, velocidade, tensao,
-          motorista, ultimaPos, primeiraIgnicao,
+          online, ignicao, statusExpirado,
+          velocidade, tensao, motorista,
+          ultimaPos, primeiraIgnicao,
           kmTotal, tempoLigadoSec,
         };
       })
@@ -399,7 +409,7 @@ export default function SigasulPage() {
 
   const totals = useMemo(() => ({
     total:   equips.length,
-    online:  equips.filter((e) => e.online === true).length,
+    online:  equips.filter((e) => e.online === true && !e.statusExpirado).length,
     ligados: equips.filter((e) => e.tempoLigadoSec > 0).length,
     km:      equips.reduce((a, e) => a + e.kmTotal, 0),
   }), [equips]);
@@ -408,7 +418,6 @@ export default function SigasulPage() {
 
   return (
     <div style={{ minHeight: "100vh", background: C.bg, fontFamily: "system-ui,-apple-system,sans-serif" }}>
-      {/* Topbar */}
       <div style={{
         background: C.surface, borderBottom: `1px solid ${C.border}`,
         padding: "10px 24px", display: "flex", alignItems: "center",
@@ -447,7 +456,6 @@ export default function SigasulPage() {
           </div>
         )}
 
-        {/* Stats */}
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, marginBottom: 16 }}>
           <StatBox label="Equipamentos"     value={String(totals.total)}   color={C.text} />
           <StatBox label="Online agora"     value={String(totals.online)}  color={C.primary} />
@@ -455,7 +463,6 @@ export default function SigasulPage() {
           <StatBox label="KM total frota"   value={totals.km > 0 ? fmtKm(totals.km) : "—"} color={C.warning} />
         </div>
 
-        {/* Legenda tensão */}
         <div style={{ display: "flex", gap: 16, marginBottom: 12, fontSize: 11, color: C.textMute, alignItems: "center" }}>
           <span style={{ fontWeight: 700, color: C.textMid }}>Bateria:</span>
           {[[C.success,"≥13V normal"],[C.warning,"12–13V atenção"],[C.danger,"<12V crítico"]].map(([c,l]) => (
@@ -463,13 +470,16 @@ export default function SigasulPage() {
               <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />{l}
             </span>
           ))}
+          <span style={{ marginLeft: "auto", color: C.textMute }}>
+            ● SEM SINAL = não transmitiu nos últimos 10min
+          </span>
         </div>
 
         {loading && equips.length === 0 ? (
           <div style={{ textAlign: "center", padding: "60px 0", color: C.textMute }}>Carregando…</div>
         ) : equips.length === 0 ? (
           <div style={{ background: "#fffbeb", border: `1px solid #fde68a`, borderRadius: 8, padding: "14px 16px", color: C.warning, fontSize: 13 }}>
-            Nenhum equipamento encontrado. Verifique a tabela <code>sigasul_dashboard_latest</code>.
+            Nenhum equipamento encontrado.
           </div>
         ) : (
           [...groups.entries()].map(([obra, rows]) => (
