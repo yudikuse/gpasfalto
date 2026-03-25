@@ -37,6 +37,7 @@ type LatestRow = {
   pos_velocidade: number | null;
   pos_tensao: number | null;
   pos_nome_motorista: string | null;
+  last_seen_at: string | null;
 };
 
 type SigasulEvento = {
@@ -306,7 +307,7 @@ export default function SigasulPage() {
 
     const { data, error } = await supabase
       .from("sigasul_dashboard_latest")
-      .select("pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista");
+      .select("pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista");
 
     if (error) { setErr(error.message); setLoading(false); return; }
     setLatest((data ?? []) as LatestRow[]);
@@ -376,8 +377,10 @@ export default function SigasulPage() {
         const velocidade = pos?.pos_velocidade ?? (statusExpirado ? null : row.pos_velocidade);
         const tensao     = pos?.pos_tensao     ?? row.pos_tensao;
 
-        const ultimaPosISO = row.ingested_at;
-        const ultimaPos    = fmtHoraUTC(row.ingested_at);
+        // last_seen_at = quando o cron viu o veículo pela última vez no controls/all
+        // Para equipamentos manuais (pos_id_ref < 0), é a data real do último sinal
+        const ultimaPosISO   = row.last_seen_at ?? row.ingested_at;
+        const ultimaPos      = fmtHoraUTC(row.ingested_at);
 
         // Sem comunicação = sem sinal há mais de 7 dias
         const diasSemSinal = ultimaPosISO
