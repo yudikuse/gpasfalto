@@ -653,14 +653,14 @@ export default function SigasulPage() {
     setLatest((latestRes.data ?? []) as LatestRow[]);
 
     if (kbSummaryRes.error) {
-      setErr((prev) => prev ?? kbSummaryRes.error!.message);
+      console.warn("sigasul_kb_day_summary_v:", kbSummaryRes.error.message);
       setKbSummary([]);
     } else {
       setKbSummary((kbSummaryRes.data ?? []) as KbDaySummaryRow[]);
     }
 
     if (kbHistoryRes.error) {
-      setErr((prev) => prev ?? kbHistoryRes.error!.message);
+      console.warn("sigasul_kb_geofence_events_v:", kbHistoryRes.error.message);
       setKbHistory([]);
     } else {
       setKbHistory((kbHistoryRes.data ?? []) as KbHistoryRow[]);
@@ -858,6 +858,8 @@ export default function SigasulPage() {
 
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           <input
+            id="sigasul-date"
+            name="sigasul-date"
             type="date"
             value={date}
             onChange={(e) => setDate(e.target.value)}
@@ -872,6 +874,8 @@ export default function SigasulPage() {
           />
 
           <select
+            id="sigasul-obra"
+            name="sigasul-obra"
             value={obraFiltro}
             onChange={(e) => setObraFiltro(e.target.value)}
             style={{
