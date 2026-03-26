@@ -118,6 +118,24 @@ type KbHistoryRow = {
   obra_destino: string | null;
 };
 
+type KbCurrentStateRow = {
+  pos_equip_id: string;
+  codigo_equipamento: string;
+  placa: string | null;
+  dia_brt: string;
+  ponto_at: string;
+  obra_calc: string | null;
+  obra_proxima: string | null;
+  distancia_m: number | null;
+  raio_usado_m: number | null;
+  pos_velocidade: number | null;
+  pos_online: boolean | null;
+  pos_ignicao: boolean | null;
+  pos_tensao: number | null;
+  pos_latitude: number | null;
+  pos_longitude: number | null;
+};
+
 type KbDisplayRow = {
   pos_equip_id: string;
   codigo_equipamento: string;
@@ -620,12 +638,18 @@ export default function SigasulPage() {
   const [positions, setPositions] = useState<SigasulPosition[]>([]);
   const [kbSummary, setKbSummary] = useState<KbDaySummaryRow[]>([]);
   const [kbHistory, setKbHistory] = useState<KbHistoryRow[]>([]);
+  const [kbCurrentState, setKbCurrentState] = useState<KbCurrentStateRow[]>([]);
 
   async function load() {
     setLoading(true);
     setErr(null);
 
-    const [latestRes, kbSummaryRes, kbHistoryRes] = await Promise.all([
+    const [
+      latestRes,
+      kbSummaryRes,
+      kbHistoryRes,
+      kbCurrentStateRes,
+    ] = await Promise.all([
       supabase
         .from("sigasul_dashboard_latest")
         .select(
@@ -642,6 +666,11 @@ export default function SigasulPage() {
         .eq("dia_brt", date)
         .order("codigo_equipamento", { ascending: true })
         .order("evento_at", { ascending: true }),
+      supabase
+        .from("sigasul_kb_current_state_v")
+        .select("*")
+        .eq("dia_brt", date)
+        .order("codigo_equipamento", { ascending: true }),
     ]);
 
     if (latestRes.error) {
@@ -664,6 +693,13 @@ export default function SigasulPage() {
       setKbHistory([]);
     } else {
       setKbHistory((kbHistoryRes.data ?? []) as KbHistoryRow[]);
+    }
+
+    if (kbCurrentStateRes.error) {
+      console.warn("sigasul_kb_current_state_v:", kbCurrentStateRes.error.message);
+      setKbCurrentState([]);
+    } else {
+      setKbCurrentState((kbCurrentStateRes.data ?? []) as KbCurrentStateRow[]);
     }
 
     try {
@@ -774,25 +810,35 @@ export default function SigasulPage() {
 
   const kbRows = useMemo((): KbDisplayRow[] => {
     const summaryMap = new Map(kbSummary.map((r) => [r.pos_equip_id, r]));
+    const currentMap = new Map(kbCurrentState.map((r) => [r.pos_equip_id, r]));
 
     return kombis
       .map((kb) => {
         const s = summaryMap.get(kb.pos_equip_id);
-        const moving = !!(s?.velocidade_atual ?? kb.velocidade) && (s?.velocidade_atual ?? kb.velocidade)! > 0;
+        const c = currentMap.get(kb.pos_equip_id);
+
+        const velocidadeAtual =
+          c?.pos_velocidade ?? s?.velocidade_atual ?? kb.velocidade;
+        const tensaoAtual =
+          c?.pos_tensao ?? s?.tensao_atual ?? kb.tensao;
+        const onlineAtual =
+          c?.pos_online ?? s?.online_atual ?? kb.online;
+        const ignicaoAtual =
+          c?.pos_ignicao ?? s?.ignicao_atual ?? kb.ignicao;
 
         return {
           pos_equip_id: kb.pos_equip_id,
           codigo_equipamento: kb.nome,
-          obraAtual: moving ? "—" : s?.obra_atual || (kb.obra !== "SEM OBRA" ? kb.obra : "—"),
-          velocidade: s?.velocidade_atual ?? kb.velocidade,
-          tensao: s?.tensao_atual ?? kb.tensao,
-          online: s?.online_atual ?? kb.online,
-          ignicao: s?.ignicao_atual ?? kb.ignicao,
-          ultimaPos: s?.last_seen_at ? fmtHoraUTC(s.last_seen_at) : kb.ultimaPos,
+          obraAtual: c?.obra_calc || "—",
+          velocidade: velocidadeAtual,
+          tensao: tensaoAtual,
+          online: onlineAtual,
+          ignicao: ignicaoAtual,
+          ultimaPos: c?.ponto_at ? fmtHoraUTC(c.ponto_at) : s?.last_seen_at ? fmtHoraUTC(s.last_seen_at) : kb.ultimaPos,
         };
       })
       .sort((a, b) => a.codigo_equipamento.localeCompare(b.codigo_equipamento, "pt-BR"));
-  }, [kombis, kbSummary]);
+  }, [kombis, kbSummary, kbCurrentState]);
 
   const obras = useMemo(() => {
     const s = new Set(ativos.map((e) => e.obra));
