@@ -106,6 +106,22 @@ type KbDaySummaryRow = {
   last_seen_at: string | null;
 };
 
+type KbDisplayRow = {
+  pos_equip_id: string;
+  codigo_equipamento: string;
+  placa: string;
+  obraAtual: string;
+  motorista: string | null;
+  chegada: string | null;
+  saida: string | null;
+  tempoMin: number | null;
+  tensao: number | null;
+  velocidade: number | null;
+  online: boolean | null;
+  ignicao: boolean | null;
+  ultimaPos: string | null;
+};
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -171,9 +187,9 @@ function tensaoColor(v: number | null) {
 }
 
 const MAIN_GRID = "2.3fr 0.78fr 0.82fr 0.86fr 0.86fr 0.82fr 1.12fr";
+const KB_GRID = "1.15fr 1.3fr 0.75fr 0.75fr 0.85fr 0.75fr 0.8fr 1fr";
 const COMPACT_GAP = 10;
 const TABLE_MIN_WIDTH = 780;
-const KB_GRID = "1.1fr 1.25fr 0.8fr 0.8fr 0.9fr 0.9fr";
 
 function StatusBadge({
   ignicao,
@@ -376,9 +392,9 @@ function ObraSection({ obra, equips }: { obra: string; equips: EquipRow[] }) {
   );
 }
 
-function KbSection({ rows }: { rows: KbDaySummaryRow[] }) {
-  const online = rows.filter((r) => r.online_atual === true).length;
-  const emObra = rows.filter((r) => !!r.obra_atual && r.obra_atual !== "Pátio").length;
+function KbSection({ rows }: { rows: KbDisplayRow[] }) {
+  const online = rows.filter((r) => r.online === true).length;
+  const emObra = rows.filter((r) => r.obraAtual && r.obraAtual !== "SEM OBRA").length;
 
   return (
     <div style={{ marginBottom: 20 }}>
@@ -402,7 +418,7 @@ function KbSection({ rows }: { rows: KbDaySummaryRow[] }) {
       </div>
 
       <div style={{ overflowX: "auto" }}>
-        <div style={{ minWidth: 760, width: "100%" }}>
+        <div style={{ minWidth: 980, width: "100%" }}>
           <div
             style={{
               display: "grid",
@@ -424,15 +440,20 @@ function KbSection({ rows }: { rows: KbDaySummaryRow[] }) {
             <div style={{ textAlign: "center" }}>Chegada</div>
             <div style={{ textAlign: "center" }}>Saída</div>
             <div style={{ textAlign: "center" }}>Tempo</div>
+            <div style={{ textAlign: "center" }}>Bateria</div>
+            <div style={{ textAlign: "center" }}>Agora</div>
             <div style={{ textAlign: "right" }}>Status</div>
           </div>
 
           <div style={{ border: `1px solid #cfe0ff`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
             {rows.map((kb) => {
-              const onlineNow = kb.online_atual === true;
-              const moving = !!kb.velocidade_atual && kb.velocidade_atual > 0;
+              const moving = !!kb.velocidade && kb.velocidade > 0;
+              const onlineNow = kb.online === true;
+
               const statusLabel = moving
                 ? "● EM DESLOCAMENTO"
+                : onlineNow && kb.ignicao
+                ? "● LIGADA"
                 : onlineNow
                 ? "● ONLINE"
                 : "● OFFLINE";
@@ -441,7 +462,7 @@ function KbSection({ rows }: { rows: KbDaySummaryRow[] }) {
 
               return (
                 <div
-                  key={`${kb.pos_equip_id}-${kb.dia_brt}`}
+                  key={kb.pos_equip_id}
                   style={{
                     display: "grid",
                     gridTemplateColumns: KB_GRID,
@@ -455,6 +476,7 @@ function KbSection({ rows }: { rows: KbDaySummaryRow[] }) {
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{kb.codigo_equipamento}</div>
                     <div style={{ fontSize: 11, color: C.textMute }}>{kb.placa || "—"}</div>
+                    {kb.motorista && <div style={{ fontSize: 11, color: C.primary }}>👤 {kb.motorista}</div>}
                   </div>
 
                   <div style={{ minWidth: 0 }}>
@@ -468,43 +490,33 @@ function KbSection({ rows }: { rows: KbDaySummaryRow[] }) {
                         textOverflow: "ellipsis",
                       }}
                     >
-                      {kb.obra_atual || kb.primeira_obra || "—"}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color: C.textMute,
-                        whiteSpace: "nowrap",
-                        overflow: "hidden",
-                        textOverflow: "ellipsis",
-                      }}
-                    >
-                      {kb.qtd_visitas ? `${kb.qtd_visitas} visita${kb.qtd_visitas > 1 ? "s" : ""}` : "sem visita fechada"}
+                      {kb.obraAtual || "SEM OBRA"}
                     </div>
                   </div>
 
                   <div style={{ textAlign: "center", fontWeight: 700, color: C.primary, fontSize: 13 }}>
-                    {kb.primeira_chegada_hora_brt || "—"}
+                    {kb.chegada || "—"}
                   </div>
 
                   <div style={{ textAlign: "center", fontWeight: 700, color: C.warning, fontSize: 13 }}>
-                    {kb.ultima_saida_hora_brt || "—"}
+                    {kb.saida || "—"}
                   </div>
 
-                  <div style={{ textAlign: "center" }}>
-                    <div style={{ fontWeight: 700, fontSize: 13, color: C.textMid }}>
-                      {minToLabel(kb.total_permanencia_min)}
-                    </div>
-                    <div style={{ fontSize: 10, color: C.textMute }}>
-                      {kb.tensao_atual != null ? `${kb.tensao_atual.toFixed(1)}V` : "—"}
-                    </div>
+                  <div style={{ textAlign: "center", fontWeight: 700, color: C.textMid, fontSize: 13 }}>
+                    {minToLabel(kb.tempoMin)}
+                  </div>
+
+                  <div style={{ textAlign: "center", fontWeight: 700, color: tensaoColor(kb.tensao), fontSize: 13 }}>
+                    {kb.tensao != null ? `${kb.tensao.toFixed(1)}V` : "—"}
+                  </div>
+
+                  <div style={{ textAlign: "center", fontWeight: 700, color: moving ? C.success : C.textMute, fontSize: 13 }}>
+                    {kb.velocidade && kb.velocidade > 0 ? `${kb.velocidade} km/h` : "—"}
                   </div>
 
                   <div style={{ textAlign: "right" }}>
                     <div style={{ fontSize: 11, fontWeight: 700, color: statusColor }}>{statusLabel}</div>
-                    <div style={{ fontSize: 10, color: C.textMute, marginTop: 2 }}>
-                      {kb.last_seen_at ? fmtHoraUTC(kb.last_seen_at) : "—"}
-                    </div>
+                    <div style={{ fontSize: 10, color: C.textMute, marginTop: 2 }}>{kb.ultimaPos || "—"}</div>
                   </div>
                 </div>
               );
@@ -676,9 +688,37 @@ export default function SigasulPage() {
       .sort((a, b) => a.nome.localeCompare(b.nome, "pt-BR"));
   }, [latest, simpMap, posMap]);
 
+  const kombis = useMemo(() => equips.filter((e) => e.isKombi), [equips]);
   const nonKbEquips = useMemo(() => equips.filter((e) => !e.isKombi), [equips]);
+
   const ativos = useMemo(() => nonKbEquips.filter((e) => !e.semComunicacao), [nonKbEquips]);
   const semComunicacao = useMemo(() => nonKbEquips.filter((e) => e.semComunicacao), [nonKbEquips]);
+
+  const kbRows = useMemo((): KbDisplayRow[] => {
+    const summaryMap = new Map(kbSummary.map((r) => [r.pos_equip_id, r]));
+
+    return kombis
+      .map((kb) => {
+        const s = summaryMap.get(kb.pos_equip_id);
+
+        return {
+          pos_equip_id: kb.pos_equip_id,
+          codigo_equipamento: kb.nome,
+          placa: kb.placa,
+          obraAtual: s?.obra_atual || kb.obra || "SEM OBRA",
+          motorista: kb.motorista,
+          chegada: s?.primeira_chegada_hora_brt || null,
+          saida: s?.ultima_saida_hora_brt || null,
+          tempoMin: s?.total_permanencia_min ?? null,
+          tensao: s?.tensao_atual ?? kb.tensao,
+          velocidade: s?.velocidade_atual ?? kb.velocidade,
+          online: s?.online_atual ?? kb.online,
+          ignicao: s?.ignicao_atual ?? kb.ignicao,
+          ultimaPos: s?.last_seen_at ? fmtHoraUTC(s.last_seen_at) : kb.ultimaPos,
+        };
+      })
+      .sort((a, b) => a.codigo_equipamento.localeCompare(b.codigo_equipamento, "pt-BR"));
+  }, [kombis, kbSummary]);
 
   const obras = useMemo(() => {
     const s = new Set(ativos.map((e) => e.obra));
@@ -861,7 +901,7 @@ export default function SigasulPage() {
           <span style={{ marginLeft: "auto", color: C.textMute }}>● SEM SINAL = não transmitiu nos últimos 10min</span>
         </div>
 
-        {kbSummary.length > 0 && <KbSection rows={kbSummary} />}
+        {kbRows.length > 0 && <KbSection rows={kbRows} />}
 
         {loading && nonKbEquips.length === 0 ? (
           <div style={{ textAlign: "center", padding: "60px 0", color: C.textMute }}>Carregando…</div>
