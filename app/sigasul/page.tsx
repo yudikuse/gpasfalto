@@ -661,9 +661,10 @@ export default function SigasulPage() {
         .eq("dia_brt", date)
         .order("codigo_equipamento", { ascending: true }),
       supabase
-        .from("sigasul_kb_geofence_events_v")
+        .from("sigasul_geofence_events_v")
         .select("pos_equip_id,codigo_equipamento,evento_at,dia_brt,hora_brt,evento,obra,obra_origem,obra_destino")
         .eq("dia_brt", date)
+        .ilike("codigo_equipamento", "KB-%")
         .order("codigo_equipamento", { ascending: true })
         .order("evento_at", { ascending: true }),
       supabase
@@ -689,7 +690,7 @@ export default function SigasulPage() {
     }
 
     if (kbHistoryRes.error) {
-      console.warn("sigasul_kb_geofence_events_v:", kbHistoryRes.error.message);
+      console.warn("sigasul_geofence_events_v:", kbHistoryRes.error.message);
       setKbHistory([]);
     } else {
       setKbHistory((kbHistoryRes.data ?? []) as KbHistoryRow[]);
