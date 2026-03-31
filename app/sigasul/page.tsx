@@ -84,28 +84,6 @@ type EquipRow = {
   isKombi: boolean;
 };
 
-type KbDaySummaryRow = {
-  pos_equip_id: string;
-  codigo_equipamento: string;
-  placa: string | null;
-  dia_brt: string;
-  primeira_obra: string | null;
-  ultima_obra: string | null;
-  primeira_chegada_at: string | null;
-  primeira_chegada_hora_brt: string | null;
-  ultima_saida_at: string | null;
-  ultima_saida_hora_brt: string | null;
-  qtd_visitas: number | null;
-  total_permanencia_min: number | null;
-  total_permanencia_horas: number | null;
-  obra_atual: string | null;
-  online_atual: boolean | null;
-  ignicao_atual: boolean | null;
-  velocidade_atual: number | null;
-  tensao_atual: number | null;
-  last_seen_at: string | null;
-};
-
 type KbHistoryRow = {
   pos_equip_id: string;
   codigo_equipamento: string;
@@ -116,24 +94,6 @@ type KbHistoryRow = {
   obra: string | null;
   obra_origem: string | null;
   obra_destino: string | null;
-};
-
-type KbCurrentStateRow = {
-  pos_equip_id: string;
-  codigo_equipamento: string;
-  placa: string | null;
-  dia_brt: string;
-  ponto_at: string;
-  obra_calc: string | null;
-  obra_proxima: string | null;
-  distancia_m: number | null;
-  raio_usado_m: number | null;
-  pos_velocidade: number | null;
-  pos_online: boolean | null;
-  pos_ignicao: boolean | null;
-  pos_tensao: number | null;
-  pos_latitude: number | null;
-  pos_longitude: number | null;
 };
 
 type KbDisplayRow = {
@@ -468,10 +428,10 @@ function KbSummarySection({ rows }: { rows: KbDisplayRow[] }) {
               const statusLabel = moving
                 ? "● EM DESLOCAMENTO"
                 : onlineNow && kb.ignicao
-                ? "● LIGADA"
-                : onlineNow
-                ? "● ONLINE"
-                : "● OFFLINE";
+                  ? "● LIGADA"
+                  : onlineNow
+                    ? "● ONLINE"
+                    : "● OFFLINE";
               const statusColor = moving ? C.success : onlineNow ? C.primary : C.danger;
 
               return (
@@ -689,30 +649,18 @@ export default function SigasulPage() {
   const [latest, setLatest] = useState<LatestRow[]>([]);
   const [simplificada, setSimplificada] = useState<SigasulVeiculo[]>([]);
   const [positions, setPositions] = useState<SigasulPosition[]>([]);
-  const [kbSummary, setKbSummary] = useState<KbDaySummaryRow[]>([]);
   const [kbHistory, setKbHistory] = useState<KbHistoryRow[]>([]);
-  const [kbCurrentState, setKbCurrentState] = useState<KbCurrentStateRow[]>([]);
 
   async function load() {
     setLoading(true);
     setErr(null);
 
-    const [
-      latestRes,
-      kbSummaryRes,
-      kbHistoryRes,
-      kbCurrentStateRes,
-    ] = await Promise.all([
+    const [latestRes, kbHistoryRes] = await Promise.all([
       supabase
         .from("sigasul_dashboard_latest")
         .select(
           "pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista"
         ),
-      supabase
-        .from("sigasul_kb_day_summary_v")
-        .select("*")
-        .eq("dia_brt", date)
-        .order("codigo_equipamento", { ascending: true }),
       supabase
         .from("sigasul_geofence_events_v")
         .select("pos_equip_id,codigo_equipamento,evento_at,dia_brt,hora_brt,evento,obra,obra_origem,obra_destino")
@@ -720,11 +668,6 @@ export default function SigasulPage() {
         .ilike("codigo_equipamento", "KB-%")
         .order("codigo_equipamento", { ascending: true })
         .order("evento_at", { ascending: true }),
-      supabase
-        .from("sigasul_kb_current_state_v")
-        .select("*")
-        .eq("dia_brt", date)
-        .order("codigo_equipamento", { ascending: true }),
     ]);
 
     if (latestRes.error) {
@@ -735,25 +678,11 @@ export default function SigasulPage() {
 
     setLatest((latestRes.data ?? []) as LatestRow[]);
 
-    if (kbSummaryRes.error) {
-      console.warn("sigasul_kb_day_summary_v:", kbSummaryRes.error.message);
-      setKbSummary([]);
-    } else {
-      setKbSummary((kbSummaryRes.data ?? []) as KbDaySummaryRow[]);
-    }
-
     if (kbHistoryRes.error) {
       console.warn("sigasul_geofence_events_v:", kbHistoryRes.error.message);
       setKbHistory([]);
     } else {
       setKbHistory((kbHistoryRes.data ?? []) as KbHistoryRow[]);
-    }
-
-    if (kbCurrentStateRes.error) {
-      console.warn("sigasul_kb_current_state_v:", kbCurrentStateRes.error.message);
-      setKbCurrentState([]);
-    } else {
-      setKbCurrentState((kbCurrentStateRes.data ?? []) as KbCurrentStateRow[]);
     }
 
     try {
@@ -762,9 +691,14 @@ export default function SigasulPage() {
         const json = await res.json();
         if (Array.isArray(json.simplificada)) setSimplificada(json.simplificada);
         if (Array.isArray(json.positions)) setPositions(json.positions);
+      } else {
+        setSimplificada([]);
+        setPositions([]);
       }
     } catch (e) {
       console.warn("today API:", e);
+      setSimplificada([]);
+      setPositions([]);
     }
 
     setLastUpdate(new Date());
@@ -799,7 +733,6 @@ export default function SigasulPage() {
       .map((row): EquipRow => {
         const nome = row.codigo_equipamento || row.pos_placa || row.pos_equip_id;
         const placa = row.pos_placa || "—";
-        const obra = row.obra_final || "SEM OBRA";
         const key = placa.replace(/\W/g, "").toUpperCase();
         const simp = simpMap.get(key);
         const pos = posMap.get(key);
@@ -818,13 +751,14 @@ export default function SigasulPage() {
 
         const statusExpirado = !pos && row.ignicao_atual === false && row.pos_ignicao === true;
 
-        const online = pos?.pos_online ?? (statusExpirado ? null : row.online_atual);
-        const ignicao = pos?.pos_ignicao ?? row.ignicao_atual;
+        const online = pos?.pos_online ?? (statusExpirado ? null : row.online_atual ?? row.pos_online);
+        const ignicao = pos?.pos_ignicao ?? row.ignicao_atual ?? row.pos_ignicao;
         const velocidade = pos?.pos_velocidade ?? (statusExpirado ? null : row.pos_velocidade);
         const tensao = pos?.pos_tensao ?? row.pos_tensao;
 
-        const ultimaPosISO = row.last_seen_at ?? row.ingested_at;
-        const ultimaPos = fmtHoraUTC(row.ingested_at);
+        const obraAtual = row.obra_final || "SEM OBRA";
+        const ultimaPosISO = row.last_seen_at ?? row.ingested_at ?? row.gps_at;
+        const ultimaPos = fmtHoraUTC(ultimaPosISO);
 
         const diasSemSinal = ultimaPosISO
           ? Math.floor((Date.now() - new Date(ultimaPosISO).getTime()) / (1000 * 60 * 60 * 24))
@@ -836,7 +770,7 @@ export default function SigasulPage() {
           pos_equip_id: row.pos_equip_id,
           nome,
           placa,
-          obra,
+          obra: obraAtual,
           online,
           ignicao,
           statusExpirado,
@@ -863,36 +797,19 @@ export default function SigasulPage() {
   const semComunicacao = useMemo(() => nonKbEquips.filter((e) => e.semComunicacao), [nonKbEquips]);
 
   const kbRows = useMemo((): KbDisplayRow[] => {
-    const summaryMap = new Map(kbSummary.map((r) => [r.pos_equip_id, r]));
-    const currentMap = new Map(kbCurrentState.map((r) => [r.pos_equip_id, r]));
-
     return kombis
-      .map((kb) => {
-        const s = summaryMap.get(kb.pos_equip_id);
-        const c = currentMap.get(kb.pos_equip_id);
-
-        const velocidadeAtual =
-          c?.pos_velocidade ?? s?.velocidade_atual ?? kb.velocidade;
-        const tensaoAtual =
-          c?.pos_tensao ?? s?.tensao_atual ?? kb.tensao;
-        const onlineAtual =
-          c?.pos_online ?? s?.online_atual ?? kb.online;
-        const ignicaoAtual =
-          c?.pos_ignicao ?? s?.ignicao_atual ?? kb.ignicao;
-
-        return {
-          pos_equip_id: kb.pos_equip_id,
-          codigo_equipamento: kb.nome,
-          obraAtual: c?.obra_calc || "—",
-          velocidade: velocidadeAtual,
-          tensao: tensaoAtual,
-          online: onlineAtual,
-          ignicao: ignicaoAtual,
-          ultimaPos: c?.ponto_at ? fmtHoraUTC(c.ponto_at) : s?.last_seen_at ? fmtHoraUTC(s.last_seen_at) : kb.ultimaPos,
-        };
-      })
+      .map((kb) => ({
+        pos_equip_id: kb.pos_equip_id,
+        codigo_equipamento: kb.nome,
+        obraAtual: kb.obra || "—",
+        velocidade: kb.velocidade,
+        tensao: kb.tensao,
+        online: kb.online,
+        ignicao: kb.ignicao,
+        ultimaPos: kb.ultimaPos,
+      }))
       .sort((a, b) => a.codigo_equipamento.localeCompare(b.codigo_equipamento, "pt-BR"));
-  }, [kombis, kbSummary, kbCurrentState]);
+  }, [kombis]);
 
   const obras = useMemo(() => {
     const s = new Set(ativos.map((e) => e.obra));
@@ -1195,11 +1112,11 @@ export default function SigasulPage() {
                         <div style={{ textAlign: "right", fontSize: 11, color: C.textMute }}>
                           {eq.ultimaPosISO
                             ? new Date(eq.ultimaPosISO).toLocaleDateString("pt-BR", {
-                                timeZone: "America/Sao_Paulo",
-                                day: "2-digit",
-                                month: "2-digit",
-                                year: "2-digit",
-                              })
+                              timeZone: "America/Sao_Paulo",
+                              day: "2-digit",
+                              month: "2-digit",
+                              year: "2-digit",
+                            })
                             : "—"}
                         </div>
                       </div>
