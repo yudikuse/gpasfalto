@@ -205,7 +205,7 @@ function tensaoColor(v: number | null) {
 
 const MAIN_GRID = "2.3fr 0.78fr 0.82fr 0.86fr 0.86fr 0.82fr 1.12fr";
 const KB_SUMMARY_GRID = "1fr 1fr 1.25fr 0.8fr 0.85fr 0.9fr";
-const KB_HISTORY_GRID = "0.8fr 0.7fr 0.9fr 1.6fr";
+const KB_HISTORY_GRID = "0.72fr 0.9fr 1.7fr";
 const COMPACT_GAP = 10;
 const TABLE_MIN_WIDTH = 780;
 
@@ -526,6 +526,17 @@ function KbSummarySection({ rows }: { rows: KbDisplayRow[] }) {
 function KbHistorySection({ rows }: { rows: KbHistoryRow[] }) {
   if (rows.length === 0) return null;
 
+  const grouped = rows.reduce<Record<string, KbHistoryRow[]>>((acc, row) => {
+    const key = row.codigo_equipamento || "SEM CÓDIGO";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(row);
+    return acc;
+  }, {});
+
+  const orderedGroups = Object.entries(grouped).sort((a, b) =>
+    a[0].localeCompare(b[0], "pt-BR")
+  );
+
   return (
     <div style={{ marginBottom: 20 }}>
       <div
@@ -545,65 +556,107 @@ function KbHistorySection({ rows }: { rows: KbHistoryRow[] }) {
         <span style={{ fontSize: 12, color: C.textMute }}>{rows.length} eventos</span>
       </div>
 
-      <div style={{ overflowX: "auto" }}>
-        <div style={{ minWidth: 720, width: "100%" }}>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: KB_HISTORY_GRID,
-              gap: COMPACT_GAP,
-              padding: "5px 12px",
-              background: "#fafafa",
-              border: `1px solid ${C.border}`,
-              borderBottom: "none",
-              fontSize: 10,
-              color: C.textMute,
-              fontWeight: 600,
-              textTransform: "uppercase",
-              letterSpacing: "0.05em",
-            }}
-          >
-            <div>Kombi</div>
-            <div>Hora</div>
-            <div>Evento</div>
-            <div>Obra</div>
-          </div>
-
-          <div style={{ border: `1px solid ${C.border}`, borderRadius: "0 0 8px 8px", overflow: "hidden" }}>
-            {rows.map((r, idx) => {
-              const eventoColor = r.evento === "ENTRADA" ? C.primary : C.warning;
-              return (
-                <div
-                  key={`${r.codigo_equipamento}-${r.evento_at}-${idx}`}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: KB_HISTORY_GRID,
-                    gap: COMPACT_GAP,
-                    alignItems: "center",
-                    padding: "8px 12px",
-                    borderBottom: `1px solid ${C.border}`,
-                    background: C.surface,
-                  }}
-                >
-                  <div style={{ fontWeight: 700, fontSize: 13, color: C.text }}>{r.codigo_equipamento}</div>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: C.textMid }}>{r.hora_brt || "—"}</div>
-                  <div style={{ fontWeight: 700, fontSize: 12, color: eventoColor }}>{r.evento}</div>
-                  <div
-                    style={{
-                      fontWeight: 700,
-                      fontSize: 13,
-                      color: C.text,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {r.obra || "—"}
-                  </div>
+      <div
+        style={{
+          border: `1px solid ${C.border}`,
+          borderRadius: "0 0 8px 8px",
+          background: C.surface,
+          padding: 12,
+        }}
+      >
+        <div
+          style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(auto-fit, minmax(320px, 1fr))",
+            gap: 12,
+          }}
+        >
+          {orderedGroups.map(([codigo, events]) => (
+            <div
+              key={codigo}
+              style={{
+                border: `1px solid ${C.border}`,
+                borderRadius: 10,
+                overflow: "hidden",
+                background: "#fcfcfd",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 8,
+                  padding: "9px 12px",
+                  background: "#f3f4f6",
+                  borderBottom: `1px solid ${C.border}`,
+                }}
+              >
+                <div style={{ fontWeight: 800, fontSize: 14, color: C.text }}>{codigo}</div>
+                <div style={{ marginLeft: "auto", fontSize: 11, color: C.textMute }}>
+                  {events.length} evento{events.length === 1 ? "" : "s"}
                 </div>
-              );
-            })}
-          </div>
+              </div>
+
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: KB_HISTORY_GRID,
+                  gap: COMPACT_GAP,
+                  padding: "6px 12px",
+                  background: "#fafafa",
+                  borderBottom: `1px solid ${C.border}`,
+                  fontSize: 10,
+                  color: C.textMute,
+                  fontWeight: 600,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.05em",
+                }}
+              >
+                <div>Hora</div>
+                <div>Evento</div>
+                <div>Obra</div>
+              </div>
+
+              <div>
+                {events.map((r, idx) => {
+                  const eventoColor = r.evento === "ENTRADA" ? C.primary : C.warning;
+                  return (
+                    <div
+                      key={`${r.codigo_equipamento}-${r.evento_at}-${idx}`}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: KB_HISTORY_GRID,
+                        gap: COMPACT_GAP,
+                        alignItems: "center",
+                        padding: "8px 12px",
+                        borderBottom: idx === events.length - 1 ? "none" : `1px solid ${C.border}`,
+                        background: C.surface,
+                      }}
+                    >
+                      <div style={{ fontWeight: 700, fontSize: 13, color: C.textMid }}>
+                        {r.hora_brt || "—"}
+                      </div>
+                      <div style={{ fontWeight: 700, fontSize: 12, color: eventoColor }}>
+                        {r.evento}
+                      </div>
+                      <div
+                        style={{
+                          fontWeight: 700,
+                          fontSize: 13,
+                          color: C.text,
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {r.obra || "—"}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     </div>
