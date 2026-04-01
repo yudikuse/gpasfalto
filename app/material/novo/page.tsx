@@ -599,6 +599,55 @@ async function loadEntradaPlansForTicket(origemVal: string, matVal: string, date
   }
 }
 
+function sortEntradaPlansByRule(matVal: string, plans: EntradaPlan[]) {
+  const matCanon = normalizeMaterialForMsg(matVal).toUpperCase();
+
+  const getDate = (p: EntradaPlan) => {
+    const t = String(p.inicio_em || "").trim();
+    const ms = t ? new Date(`${t}T00:00:00`).getTime() : 0;
+    return Number.isFinite(ms) ? ms : 0;
+  };
+
+  const isPermutaPlan = (p: EntradaPlan) => /PERMUTA/i.test(String(p.obra || ""));
+
+  const arr = [...plans];
+
+  // BRITA 01 = consome o mais antigo primeiro
+  if (matCanon === "BRITA 01") {
+    arr.sort((a, b) => {
+      const diff = getDate(a) - getDate(b);
+      if (diff !== 0) return diff;
+      return Number(a.id) - Number(b.id);
+    });
+    return arr;
+  }
+
+  // BRITA ZERO e PO BRITA = consome PERMUTA primeiro
+  if (matCanon === "BRITA ZERO" || matCanon === "PO BRITA") {
+    arr.sort((a, b) => {
+      const aPerm = isPermutaPlan(a) ? 1 : 0;
+      const bPerm = isPermutaPlan(b) ? 1 : 0;
+
+      if (aPerm !== bPerm) return bPerm - aPerm;
+
+      const diff = getDate(b) - getDate(a);
+      if (diff !== 0) return diff;
+
+      return Number(b.id) - Number(a.id);
+    });
+    return arr;
+  }
+
+  // padrão atual
+  arr.sort((a, b) => {
+    const diff = getDate(b) - getDate(a);
+    if (diff !== 0) return diff;
+    return Number(b.id) - Number(a.id);
+  });
+
+  return arr;
+}
+
 async function loadEntradaPlanResumoByIds(planIds: number[]): Promise<Record<number, EntradaPlanResumo>> {
   try {
     const uniq = Array.from(new Set((planIds || []).filter((x) => Number.isFinite(Number(x))))) as number[];
@@ -1061,7 +1110,8 @@ export default function MaterialTicketNovoPage() {
       // - SAÍDA permanece intocada
       // ---------------------------------------------------------
       if (tipo === "ENTRADA") {
-        const plans = await loadEntradaPlansForTicket(origem.trim(), matCanon, dateISO);
+        const plansRaw = await loadEntradaPlansForTicket(origem.trim(), matCanon, dateISO);
+        const plans = sortEntradaPlansByRule(matCanon, plansRaw);
 
         let allocs: EntradaAlloc[] = [];
         if (plans.length) {
@@ -1069,7 +1119,6 @@ export default function MaterialTicketNovoPage() {
 
           let remaining = pesoNum;
 
-          // plans já vêm ordenados por inicio_em desc
           for (const p of plans) {
             if (remaining <= 0.0001) break;
 
