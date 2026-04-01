@@ -1,5 +1,6 @@
 // FILE: app/layout.tsx
 import "./globals.css";
+import HomeButton from "@/components/HomeButton";
 
 export const metadata = {
   title: "GP Asfalto",
@@ -20,7 +21,10 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0"
         />
       </head>
-      <body>{children}</body>
+      <body>
+        {children}
+        <HomeButton />
+      </body>
     </html>
   );
 }
