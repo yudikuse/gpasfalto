@@ -27,8 +27,7 @@ function hhmmssToSec(s: string): number {
   return (h || 0) * 3600 + (m || 0) * 60 + (sec || 0);
 }
 
-function chunkArray<T>(arr: T[], size: number): T[][]
-{
+function chunkArray<T>(arr: T[], size: number): T[][] {
   const out: T[][] = [];
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
   return out;
@@ -48,6 +47,14 @@ type GfEventRow = {
   velocidade: number | null;
   tensao: number | null;
   pos_id_ref: number | null;
+};
+
+type DailyAgg = {
+  km_metros: number;
+  tempo_ligado_sec: number;
+  primeira_ignicao: string | null;
+  ultima_ignicao: string | null;
+  trabalhou: boolean;
 };
 
 export async function GET(req: Request) {
@@ -79,7 +86,7 @@ export async function GET(req: Request) {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // ── 1. Equipamentos cadastrados ──────────────────────────────────
+  // ── 1. Cadastro base por código/placa ────────────────────────────
   const { data: placaCodigos, error: placaErr } = await supabase
     .from("sigasul_placa_codigo")
     .select("pos_placa, codigo");
@@ -88,51 +95,71 @@ export async function GET(req: Request) {
     return Response.json({ ok: false, error: `placa_codigo: ${placaErr.message}` }, { status: 500 });
   }
 
-  const allEquips = new Map<string, string>();
+  const codigoToPlaca = new Map<string, string>();
   for (const r of placaCodigos ?? []) {
-    if (r.pos_placa && r.codigo) allEquips.set(r.pos_placa, r.codigo);
+    if (r.codigo && r.pos_placa) {
+      codigoToPlaca.set(String(r.codigo), String(r.pos_placa));
+    }
   }
 
-  const { data: equipsRaw, error: equipsErr } = await supabase
-    .from("sigasul_positions_raw")
-    .select("pos_equip_id, pos_placa")
-    .in("pos_placa", Array.from(allEquips.keys()));
+  // ── 2. Mapear codigo -> pos_equip_id atual (1 por código) ───────
+  const { data: latestRows, error: latestErr } = await supabase
+    .from("sigasul_dashboard_latest")
+    .select("pos_equip_id, codigo_equipamento, pos_placa");
 
-  if (equipsErr) {
-    return Response.json({ ok: false, error: `positions_raw/equips: ${equipsErr.message}` }, { status: 500 });
+  if (latestErr) {
+    return Response.json({ ok: false, error: `dashboard_latest: ${latestErr.message}` }, { status: 500 });
   }
 
-  const placaToEquipId = new Map<string, string>();
-  for (const r of equipsRaw ?? []) {
-    if (r.pos_equip_id && r.pos_placa) placaToEquipId.set(r.pos_placa, r.pos_equip_id);
+  const codigoToEquipId = new Map<string, string>();
+  const codigoToLatestPlaca = new Map<string, string>();
+
+  for (const r of latestRows ?? []) {
+    const codigo = r.codigo_equipamento ? String(r.codigo_equipamento) : null;
+    const equipId = r.pos_equip_id ? String(r.pos_equip_id) : null;
+    const placa = r.pos_placa ? String(r.pos_placa) : null;
+    if (!codigo || !equipId) continue;
+
+    if (!codigoToEquipId.has(codigo)) {
+      codigoToEquipId.set(codigo, equipId);
+    }
+    if (placa && !codigoToLatestPlaca.has(codigo)) {
+      codigoToLatestPlaca.set(codigo, placa);
+    }
   }
 
-  // ── 2. Obra mais frequente por equipamento ───────────────────────
-  const { data: posicoesDia, error: posDiaErr } = await supabase
-    .from("sigasul_positions_raw")
-    .select("pos_equip_id, obra")
-    .gte("last_seen_at", `${targetDate}T00:00:00-03:00`)
-    .lte("last_seen_at", `${targetDate}T23:59:59-03:00`);
+  // ── 3. Obra principal do dia usando BASE NOVA enriquecida ───────
+  const { data: enrichedRows, error: enrichedErr } = await supabase
+    .from("sigasul_points_enriched_day")
+    .select("codigo_equipamento, obra_norm")
+    .eq("dia_brt", targetDate);
 
-  if (posDiaErr) {
-    return Response.json({ ok: false, error: `positions_raw/day: ${posDiaErr.message}` }, { status: 500 });
+  if (enrichedErr) {
+    return Response.json({ ok: false, error: `points_enriched_day: ${enrichedErr.message}` }, { status: 500 });
   }
 
-  const obraCount = new Map<string, Map<string, number>>();
-  for (const p of posicoesDia ?? []) {
-    if (!p.pos_equip_id || !p.obra) continue;
-    if (!obraCount.has(p.pos_equip_id)) obraCount.set(p.pos_equip_id, new Map());
-    const m = obraCount.get(p.pos_equip_id)!;
-    m.set(p.obra, (m.get(p.obra) ?? 0) + 1);
+  const obraCountByCodigo = new Map<string, Map<string, number>>();
+
+  for (const row of enrichedRows ?? []) {
+    const codigo = row.codigo_equipamento ? String(row.codigo_equipamento) : null;
+    const obra = row.obra_norm ? String(row.obra_norm).trim() : null;
+    if (!codigo || !obra) continue;
+
+    if (!obraCountByCodigo.has(codigo)) {
+      obraCountByCodigo.set(codigo, new Map<string, number>());
+    }
+
+    const obraMap = obraCountByCodigo.get(codigo)!;
+    obraMap.set(obra, (obraMap.get(obra) ?? 0) + 1);
   }
 
-  function obraPrincipal(equipId: string): string {
-    const m = obraCount.get(equipId);
-    if (!m || m.size === 0) return "SEM OBRA";
-    return [...m.entries()].sort((a, b) => b[1] - a[1])[0][0];
+  function obraPrincipalPorCodigo(codigo: string): string {
+    const obraMap = obraCountByCodigo.get(codigo);
+    if (!obraMap || obraMap.size === 0) return "SEM OBRA";
+    return [...obraMap.entries()].sort((a, b) => b[1] - a[1])[0][0];
   }
 
-  // ── 3. Simplificada → totais do dia ─────────────────────────────
+  // ── 4. Simplificada → totais do dia por PLACA ────────────────────
   const sigasulUrl = `${BASE}/api/jornadas/simplificada/${encodeURIComponent(start)}/${encodeURIComponent(end)}`;
 
   let simplificada: any[] = [];
@@ -150,47 +177,52 @@ export async function GET(req: Request) {
     console.error("simplificada:", e);
   }
 
-  type Agg = {
-    km_metros: number;
-    tempo_ligado_sec: number;
-    primeira_ignicao: string | null;
-    ultima_ignicao: string | null;
-    trabalhou: boolean;
-  };
-
-  const byPlaca = new Map<string, Agg>();
+  const byPlaca = new Map<string, DailyAgg>();
 
   for (const v of simplificada) {
-    const placa = (v.placa as string)?.toUpperCase();
-    if (!placa || !v.eventos?.length) continue;
+    const placa = (v.placa as string | undefined)?.toUpperCase()?.trim();
+    if (!placa || !Array.isArray(v.eventos) || v.eventos.length === 0) continue;
 
     const ev = v.eventos as any[];
     byPlaca.set(placa, {
-      km_metros: ev.reduce((a: number, e: any) => a + Math.max(0, e.distancia ?? 0), 0),
-      tempo_ligado_sec: ev.reduce((a: number, e: any) => a + hhmmssToSec(e.tempoLigado), 0),
+      km_metros: ev.reduce((a: number, e: any) => a + Math.max(0, Number(e.distancia ?? 0)), 0),
+      tempo_ligado_sec: ev.reduce((a: number, e: any) => a + hhmmssToSec(String(e.tempoLigado ?? "")), 0),
       primeira_ignicao: ev[0]?.data_hora_inicial?.split(" ")[1] ?? null,
       ultima_ignicao: ev[ev.length - 1]?.data_hora_final?.split(" ")[1] ?? null,
       trabalhou: true,
     });
   }
 
-  // ── 4. Upsert daily_summary ──────────────────────────────────────
-  const summaryRows = Array.from(allEquips.entries()).map(([placa, codigo]) => {
-    const equipId = placaToEquipId.get(placa) ?? placa;
-    const agg = byPlaca.get(placa.toUpperCase()) ?? {
-      km_metros: 0,
-      tempo_ligado_sec: 0,
-      primeira_ignicao: null,
-      ultima_ignicao: null,
-      trabalhou: false,
-    };
+  // ── 5. Montar 1 resumo por CÓDIGO (não por pos_equip_id) ────────
+  const allCodigos = Array.from(
+    new Set([
+      ...Array.from(codigoToPlaca.keys()),
+      ...Array.from(codigoToEquipId.keys()),
+      ...Array.from(obraCountByCodigo.keys()),
+    ])
+  ).sort((a, b) => a.localeCompare(b, "pt-BR"));
+
+  const summaryRows = allCodigos.map((codigo) => {
+    const placa =
+      codigoToPlaca.get(codigo) ??
+      codigoToLatestPlaca.get(codigo) ??
+      null;
+
+    const agg =
+      (placa ? byPlaca.get(placa.toUpperCase()) : undefined) ?? {
+        km_metros: 0,
+        tempo_ligado_sec: 0,
+        primeira_ignicao: null,
+        ultima_ignicao: null,
+        trabalhou: false,
+      };
 
     return {
       dia: targetDate,
-      pos_equip_id: equipId,
+      pos_equip_id: codigoToEquipId.get(codigo) ?? codigo,
       codigo,
       placa,
-      obra: obraPrincipal(equipId),
+      obra: obraPrincipalPorCodigo(codigo),
       km_metros: agg.km_metros,
       tempo_ligado_sec: agg.tempo_ligado_sec,
       primeira_ignicao: agg.primeira_ignicao,
@@ -201,20 +233,17 @@ export async function GET(req: Request) {
 
   const { error: summaryErr } = await supabase
     .from("sigasul_daily_summary")
-    .upsert(summaryRows, { onConflict: "dia,pos_equip_id" });
+    .upsert(summaryRows, { onConflict: "dia,codigo" });
 
   if (summaryErr) {
     return Response.json({ ok: false, error: `summary: ${summaryErr.message}` }, { status: 500 });
   }
 
-  // ── 5. Geofence events do dia via view (EM LOTES) ───────────────
-  const codigoList = Array.from(
-    new Set(
-      summaryRows
-        .map((r) => r.codigo)
-        .filter((v): v is string => !!v)
-    )
-  ).sort((a, b) => a.localeCompare(b, "pt-BR"));
+  // ── 6. Geofence events do dia via view nova (em lotes) ───────────
+  const codigoList = summaryRows
+    .map((r) => r.codigo)
+    .filter((v): v is string => !!v)
+    .sort((a, b) => a.localeCompare(b, "pt-BR"));
 
   const batches = chunkArray(codigoList, 12);
 
