@@ -1,51 +1,5 @@
 "use client";
 
-// ─────────────────────────────────────────────────────────────
-// PASSO 1 + PASSO 2
-//
-// PASSO 1 — Proteção contra edição/cancelamento de pedidos
-//           já confirmados pelo restaurante.
-//
-//  1. Novo estado:  pendingReopenShift  (Shift | null)
-//  2. saveShift()   → bloqueia se já confirmado (pede confirmação)
-//  3. handleConfirmReopen()  ← NOVA
-//  4. cancelShift() → bloqueia DELETE se já confirmado pelo restaurante
-//  5. JSX — card de aviso de reabertura
-//
-// PASSO 2 — Dialog "Tem certeza?" antes de cancelar
-//
-//  1. Novo estado:  pendingCancelShift  (Shift | null)
-//  2. cancelShift() — dois estágios (confirmar antes de deletar)
-//  3. handleConfirmCancel()  ← NOVA
-//  4. JSX — card de confirmação de cancelamento
-//
-// PASSO 3 — Badge de status de confirmação para o encarregado
-//
-// PASSO 6 — Modal de visitante (substitui window.prompt)
-//
-//  Problema: addVisitor() usava window.prompt() — visual feio,
-//  não funciona em iOS PWA, sem validação, bloqueia a thread.
-//
-//  Correção:
-//  1. Novo estado visitorModal { open, targetShift, name, error }
-//  2. addVisitor() agora abre o modal em vez do prompt nativo.
-//  3. handleVisitorConfirm() valida e adiciona o visitante.
-//  4. JSX — overlay + card modal renderizado na raiz do componente.
-// ─────────────────────────────────────────────────────────────
-//
-//  1. SavedSnapshot — novo campo:  confirmedAt: string | null
-//     → guarda o confirmed_at do pedido salvo no banco.
-//
-//  2. fetchSavedForShift()
-//     → agora seleciona também confirmed_at do meal_order.
-//     → retorna confirmedAt junto com orderId/employeeIds/visitors.
-//
-//  3. JSX — badge nos cards de totais (barra fixa inferior)
-//     → ✅ "Confirmado pelo restaurante às HH:MM"  (se confirmado)
-//     → ⏳ "Aguardando confirmação"                (se salvo, sem confirmação)
-//     → (nada)                                     (se não há pedido salvo)
-// ─────────────────────────────────────────────────────────────
-
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
@@ -60,9 +14,15 @@ type Worksite = {
   active: boolean | null;
 };
 
-type Contract = {
+type Restaurant = {
   id: string;
-  worksite_id: string;
+  name: string;
+  city: string | null;
+  active: boolean | null;
+};
+
+type RestaurantContract = {
+  id: string;
   restaurant_id: string;
   start_date: string | null;
   end_date: string | null;
@@ -84,22 +44,29 @@ type SavedSnapshot = {
   orderId: string | null;
   employeeIds: string[];
   visitors: string[];
-  confirmedAt: string | null; // ── PASSO 3
+  confirmedAt: string | null;
+};
+
+type LotSummary = {
+  orderId: string;
+  shift: Shift;
+  restaurantId: string;
+  restaurantName: string;
+  qty: number;
+  confirmedAt: string | null;
+  status: string | null;
 };
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
-function isoTodayLocal(): string {
+function isoTodayLocal() {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
 }
 function formatBRFromISO(iso: string) {
   const [y, m, d] = iso.split("-");
   return `${d}/${m}/${y}`;
-}
-function isSameISODate(a: string, b: string) {
-  return a === b;
 }
 function addDaysISO(iso: string, delta: number) {
   const [y, m, d] = iso.split("-").map(Number);
@@ -119,7 +86,6 @@ function buildCutoffAtISO(mealDateISO: string, cutoffTime: string | null) {
   const hh = pad2(parts[0] ?? 0);
   const mm = pad2(parts[1] ?? 0);
   const ss = pad2(parts[2] ?? 0);
-  // ── PASSO 5: offset fixo -03:00 (BRT), igual ao page_69 ──
   return `${mealDateISO}T${hh}:${mm}:${ss}-03:00`;
 }
 function uniq(arr: string[]) {
@@ -162,7 +128,7 @@ function bigBtnStyle(kind: "primaryLunch" | "primaryDinner" | "danger" | "ghost"
 export default function RefeicoesPage() {
   const router = useRouter();
 
-  const [userEmail, setUserEmail] = useState<string>("");
+  const [userEmail, setUserEmail] = useState("");
   const [userId, setUserId] = useState<string | null>(null);
 
   const [loginEmail, setLoginEmail] = useState("");
@@ -171,10 +137,12 @@ export default function RefeicoesPage() {
   const [loggingIn, setLoggingIn] = useState(false);
 
   const [worksites, setWorksites] = useState<Worksite[]>([]);
-  const [worksiteId, setWorksiteId] = useState<string>("");
-  const [mealDate, setMealDate] = useState<string>(isoTodayLocal());
-  const [contract, setContract] = useState<Contract | null>(null);
-  const [canOverrideCutoff, setCanOverrideCutoff] = useState<boolean>(false);
+  const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
+  const [worksiteId, setWorksiteId] = useState("");
+  const [restaurantId, setRestaurantId] = useState("");
+  const [mealDate, setMealDate] = useState(isoTodayLocal());
+  const [restaurantContract, setRestaurantContract] = useState<RestaurantContract | null>(null);
+  const [canOverrideCutoff, setCanOverrideCutoff] = useState(false);
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [favoriteIds, setFavoriteIds] = useState<Set<string>>(new Set());
@@ -192,6 +160,7 @@ export default function RefeicoesPage() {
     ALMOCO: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null },
     JANTA: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null },
   });
+  const [lotSummaries, setLotSummaries] = useState<LotSummary[]>([]);
 
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
@@ -200,19 +169,14 @@ export default function RefeicoesPage() {
   const [error, setError] = useState<string | null>(null);
   const [okMsg, setOkMsg] = useState<string | null>(null);
 
-  // ── PASSO 1: guarda qual turno aguarda confirmação de reabertura ──
   const [pendingReopenShift, setPendingReopenShift] = useState<Shift | null>(null);
-
-  // ── PASSO 2: guarda qual turno aguarda confirmação de cancelamento ──
   const [pendingCancelShift, setPendingCancelShift] = useState<Shift | null>(null);
-
-  // ── PASSO 6: estado do modal de visitante ──
-  const [visitorModal, setVisitorModal] = useState<{
-    open: boolean;
-    targetShift: Shift;
-    name: string;
-    error: string | null;
-  }>({ open: false, targetShift: "ALMOCO", name: "", error: null });
+  const [visitorModal, setVisitorModal] = useState<{ open: boolean; targetShift: Shift; name: string; error: string | null }>({
+    open: false,
+    targetShift: "ALMOCO",
+    name: "",
+    error: null,
+  });
 
   const styles: Record<string, CSSProperties> = {
     label: { fontSize: 12, fontWeight: 800, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em", display: "block", marginBottom: 6 },
@@ -234,18 +198,19 @@ export default function RefeicoesPage() {
   }, [saved]);
 
   const limits = useMemo(() => {
-    const lunch = timeHHMM(contract?.cutoff_lunch ?? null);
-    const dinner = timeHHMM(contract?.cutoff_dinner ?? null);
+    const lunch = timeHHMM(restaurantContract?.cutoff_lunch ?? null);
+    const dinner = timeHHMM(restaurantContract?.cutoff_dinner ?? null);
     return { lunch, dinner };
-  }, [contract]);
+  }, [restaurantContract]);
 
   useEffect(() => {
     const today = isoTodayLocal();
-    if (!isSameISODate(mealDate, today)) { setMode("ALMOCO"); return; }
+    if (mealDate !== today) {
+      setMode("ALMOCO");
+      return;
+    }
     const now = new Date();
-    const hh = now.getHours();
-    const mm = now.getMinutes();
-    const after11 = hh > 11 || (hh === 11 && mm >= 0);
+    const after11 = now.getHours() > 11 || (now.getHours() === 11 && now.getMinutes() >= 0);
     setMode(after11 ? "JANTA" : "ALMOCO");
   }, [mealDate]);
 
@@ -260,7 +225,7 @@ export default function RefeicoesPage() {
     setError(null);
     setOkMsg(null);
     const email = loginEmail.trim().toLowerCase();
-    const pin = (loginPin || "").trim();
+    const pin = loginPin.trim();
     if (!email) return setError("Informe o e-mail."), undefined;
     if (!pin) return setError("Informe o PIN."), undefined;
     setLoggingIn(true);
@@ -284,7 +249,11 @@ export default function RefeicoesPage() {
     setUserId(uid);
     if (!uid) return null;
     const { data: ru, error: ruErr } = await supabase.from("meal_restaurant_users").select("restaurant_id").eq("user_id", uid).limit(1).maybeSingle();
-    if (!ruErr && ru?.restaurant_id) { setUserId(null); router.replace("/refeicoes/restaurante"); return null; }
+    if (!ruErr && ru?.restaurant_id) {
+      setUserId(null);
+      router.replace("/refeicoes/restaurante");
+      return null;
+    }
     return uid;
   }
 
@@ -293,7 +262,15 @@ export default function RefeicoesPage() {
     if (error) throw error;
     const rows = (data || []) as Worksite[];
     setWorksites(rows);
-    if (!worksiteId && rows[0]?.id) setWorksiteId(rows[0].id);
+    setWorksiteId((prev) => prev || rows[0]?.id || "");
+  }
+
+  async function loadRestaurants() {
+    const { data, error } = await supabase.from("meal_restaurants").select("id,name,city,active").eq("active", true).order("name", { ascending: true });
+    if (error) throw error;
+    const rows = (data || []) as Restaurant[];
+    setRestaurants(rows);
+    setRestaurantId((prev) => prev || rows[0]?.id || "");
   }
 
   async function loadEmployeesAndFavorites(wid: string) {
@@ -315,31 +292,44 @@ export default function RefeicoesPage() {
     setEmployees(emps);
   }
 
-  async function loadContract(wid: string, dateISO: string) {
-    const q = supabase
+  async function loadRestaurantContract(rid: string, dateISO: string) {
+    if (!rid) {
+      setRestaurantContract(null);
+      return null;
+    }
+    const { data, error } = await supabase
       .from("meal_contracts")
-      .select("id,worksite_id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
-      .eq("worksite_id", wid)
+      .select("id,restaurant_id,start_date,end_date,cutoff_lunch,cutoff_dinner,allow_after_cutoff,price_lunch,price_dinner")
+      .eq("restaurant_id", rid)
       .lte("start_date", dateISO)
+      .or(`end_date.is.null,end_date.gte.${dateISO}`)
       .order("start_date", { ascending: false })
-      .limit(1);
-    const { data, error } = await q.or(`end_date.is.null,end_date.gte.${dateISO}`).maybeSingle();
+      .limit(1)
+      .maybeSingle();
     if (error) throw error;
-    setContract((data as any) ?? null);
-    return (data as any) as Contract | null;
+    const row = (data as any) ?? null;
+    setRestaurantContract(row);
+    return row as RestaurantContract | null;
   }
 
   async function loadOverride(wid: string, uid: string | null) {
-    if (!uid) { setCanOverrideCutoff(false); return; }
+    if (!uid || !wid) {
+      setCanOverrideCutoff(false);
+      return;
+    }
     const { data, error } = await supabase.from("meal_worksite_members").select("can_override_cutoff").eq("worksite_id", wid).eq("user_id", uid).maybeSingle();
-    if (error) { setCanOverrideCutoff(false); return; }
+    if (error) {
+      setCanOverrideCutoff(false);
+      return;
+    }
     setCanOverrideCutoff(Boolean((data as any)?.can_override_cutoff));
   }
 
   async function fetchSavedForShift(wid: string, rid: string, dateISO: string, shift: Shift): Promise<SavedSnapshot> {
+    if (!wid || !rid) return { orderId: null, employeeIds: [], visitors: [], confirmedAt: null };
     const { data: order, error: e1 } = await supabase
       .from("meal_orders")
-      .select("id, confirmed_at")           // ── PASSO 3: adicionado confirmed_at
+      .select("id,confirmed_at")
       .eq("worksite_id", wid)
       .eq("restaurant_id", rid)
       .eq("meal_date", dateISO)
@@ -348,29 +338,79 @@ export default function RefeicoesPage() {
       .maybeSingle();
     if (e1) throw e1;
     const orderId = (order as any)?.id ? String((order as any).id) : null;
-    const confirmedAt = (order as any)?.confirmed_at ? String((order as any).confirmed_at) : null; // ── PASSO 3
+    const confirmedAt = (order as any)?.confirmed_at ? String((order as any).confirmed_at) : null;
     if (!orderId) return { orderId: null, employeeIds: [], visitors: [], confirmedAt: null };
-    const { data: lines, error: e2 } = await supabase
-      .from("meal_order_lines")
-      .select("employee_id,visitor_name,included")
-      .eq("meal_order_id", orderId)
-      .eq("included", true);
+    const { data: lines, error: e2 } = await supabase.from("meal_order_lines").select("id,employee_id,visitor_name,included").eq("meal_order_id", orderId).eq("included", true);
     if (e2) throw e2;
-    const empIds = uniq((lines || []).map((r: any) => (r.employee_id ? String(r.employee_id) : "")).filter(Boolean));
+    const employeeIds = uniq((lines || []).map((r: any) => (r.employee_id ? String(r.employee_id) : "")).filter(Boolean));
     const visitors = uniq((lines || []).map((r: any) => (r.visitor_name ? String(r.visitor_name) : "")).filter(Boolean));
-    return { orderId, employeeIds: empIds, visitors, confirmedAt }; // ── PASSO 3
+    return { orderId, employeeIds, visitors, confirmedAt };
   }
 
   async function refreshSaved() {
-    setError(null);
-    setOkMsg(null);
-    if (!worksiteId || !contract?.restaurant_id) {
+    if (!worksiteId || !restaurantId) {
       setSaved({ ALMOCO: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null }, JANTA: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null } });
       return;
     }
-    const rid = contract.restaurant_id;
-    const [l, j] = await Promise.all([fetchSavedForShift(worksiteId, rid, mealDate, "ALMOCO"), fetchSavedForShift(worksiteId, rid, mealDate, "JANTA")]);
+    const [l, j] = await Promise.all([
+      fetchSavedForShift(worksiteId, restaurantId, mealDate, "ALMOCO"),
+      fetchSavedForShift(worksiteId, restaurantId, mealDate, "JANTA"),
+    ]);
     setSaved({ ALMOCO: l, JANTA: j });
+  }
+
+  async function refreshLotSummaries() {
+    if (!worksiteId) {
+      setLotSummaries([]);
+      return;
+    }
+    const { data: orders, error: orderErr } = await supabase
+      .from("meal_orders")
+      .select("id,shift,restaurant_id,confirmed_at,status")
+      .eq("worksite_id", worksiteId)
+      .eq("meal_date", mealDate)
+      .order("shift", { ascending: true });
+    if (orderErr) throw orderErr;
+
+    const orderRows = (orders || []) as any[];
+    if (orderRows.length === 0) {
+      setLotSummaries([]);
+      return;
+    }
+
+    const orderIds = orderRows.map((o) => String(o.id));
+    const restaurantIds = Array.from(new Set(orderRows.map((o) => String(o.restaurant_id)).filter(Boolean)));
+
+    const [{ data: lines, error: lineErr }, { data: rs, error: rsErr }] = await Promise.all([
+      supabase.from("meal_order_lines").select("meal_order_id").in("meal_order_id", orderIds).eq("included", true),
+      supabase.from("meal_restaurants").select("id,name,city").in("id", restaurantIds),
+    ]);
+    if (lineErr) throw lineErr;
+    if (rsErr) throw rsErr;
+
+    const countMap = new Map<string, number>();
+    (lines || []).forEach((r: any) => {
+      const id = String(r.meal_order_id);
+      countMap.set(id, (countMap.get(id) || 0) + 1);
+    });
+
+    const restMap = new Map<string, string>();
+    (rs || []).forEach((r: any) => {
+      restMap.set(String(r.id), `${r.name}${r.city ? ` - ${r.city}` : ""}`);
+    });
+
+    const list: LotSummary[] = orderRows.map((o) => ({
+      orderId: String(o.id),
+      shift: o.shift as Shift,
+      restaurantId: String(o.restaurant_id),
+      restaurantName: restMap.get(String(o.restaurant_id)) || String(o.restaurant_id),
+      qty: countMap.get(String(o.id)) || 0,
+      confirmedAt: o.confirmed_at ? String(o.confirmed_at) : null,
+      status: o.status ? String(o.status) : null,
+    }));
+
+    list.sort((a, b) => a.shift.localeCompare(b.shift) || a.restaurantName.localeCompare(b.restaurantName, "pt-BR"));
+    setLotSummaries(list);
   }
 
   async function bootstrap() {
@@ -379,7 +419,7 @@ export default function RefeicoesPage() {
     try {
       const uid = await loadUser();
       if (!uid) return;
-      await loadWorksites();
+      await Promise.all([loadWorksites(), loadRestaurants()]);
       if (worksiteId) await loadOverride(worksiteId, uid);
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
@@ -390,86 +430,130 @@ export default function RefeicoesPage() {
 
   useEffect(() => {
     bootstrap();
-    const { data } = supabase.auth.onAuthStateChange(() => { bootstrap(); });
-    return () => { data.subscription.unsubscribe(); };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const { data } = supabase.auth.onAuthStateChange(() => {
+      bootstrap();
+    });
+    return () => {
+      data.subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
     (async () => {
-      if (!worksiteId) return;
+      if (!worksiteId || !restaurantId) return;
       setLoading(true);
       setError(null);
       setOkMsg(null);
       try {
         const { data } = await supabase.auth.getUser();
         const uid = data?.user?.id ?? null;
-        await loadEmployeesAndFavorites(worksiteId);
-        const c = await loadContract(worksiteId, mealDate);
-        await loadOverride(worksiteId, uid);
+        await Promise.all([
+          loadEmployeesAndFavorites(worksiteId),
+          loadRestaurantContract(restaurantId, mealDate),
+          loadOverride(worksiteId, uid),
+        ]);
         setSelectedLunch(new Set());
         setSelectedDinner(new Set());
         setVisitorsLunch([]);
         setVisitorsDinner([]);
-        if (c?.restaurant_id) {
-          await refreshSaved();
-        } else {
-          setSaved({ ALMOCO: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null }, JANTA: { orderId: null, employeeIds: [], visitors: [], confirmedAt: null } });
-        }
+        await Promise.all([refreshSaved(), refreshLotSummaries()]);
       } catch (e: any) {
         setError(e?.message || "Falha ao carregar dados.");
       } finally {
         setLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [worksiteId, mealDate]);
+  }, [worksiteId, restaurantId, mealDate]);
 
   function toggleEmployee(shift: Shift, employeeId: string) {
     if (shift === "ALMOCO") {
-      setSelectedLunch((prev) => { const n = new Set(prev); if (n.has(employeeId)) n.delete(employeeId); else n.add(employeeId); return n; });
-    } else {
-      setSelectedDinner((prev) => { const n = new Set(prev); if (n.has(employeeId)) n.delete(employeeId); else n.add(employeeId); return n; });
+      setSelectedLunch((prev) => {
+        const n = new Set(prev);
+        if (n.has(employeeId)) n.delete(employeeId);
+        else n.add(employeeId);
+        return n;
+      });
+      return;
     }
+    setSelectedDinner((prev) => {
+      const n = new Set(prev);
+      if (n.has(employeeId)) n.delete(employeeId);
+      else n.add(employeeId);
+      return n;
+    });
   }
 
   function clearSelection(target: Mode) {
-    if (target === "ALMOCO") { setSelectedLunch(new Set()); setVisitorsLunch([]); return; }
-    if (target === "JANTA") { setSelectedDinner(new Set()); setVisitorsDinner([]); return; }
-    setSelectedLunch(new Set()); setSelectedDinner(new Set()); setVisitorsLunch([]); setVisitorsDinner([]);
+    if (target === "ALMOCO") {
+      setSelectedLunch(new Set());
+      setVisitorsLunch([]);
+      return;
+    }
+    if (target === "JANTA") {
+      setSelectedDinner(new Set());
+      setVisitorsDinner([]);
+      return;
+    }
+    setSelectedLunch(new Set());
+    setSelectedDinner(new Set());
+    setVisitorsLunch([]);
+    setVisitorsDinner([]);
   }
 
   function restoreSaved(target: Mode) {
-    if (target === "ALMOCO") { setSelectedLunch(new Set(saved.ALMOCO.employeeIds || [])); setVisitorsLunch(saved.ALMOCO.visitors || []); return; }
-    if (target === "JANTA") { setSelectedDinner(new Set(saved.JANTA.employeeIds || [])); setVisitorsDinner(saved.JANTA.visitors || []); return; }
-    setSelectedLunch(new Set(saved.ALMOCO.employeeIds || [])); setVisitorsLunch(saved.ALMOCO.visitors || []);
-    setSelectedDinner(new Set(saved.JANTA.employeeIds || [])); setVisitorsDinner(saved.JANTA.visitors || []);
+    if (target === "ALMOCO") {
+      setSelectedLunch(new Set(saved.ALMOCO.employeeIds || []));
+      setVisitorsLunch(saved.ALMOCO.visitors || []);
+      return;
+    }
+    if (target === "JANTA") {
+      setSelectedDinner(new Set(saved.JANTA.employeeIds || []));
+      setVisitorsDinner(saved.JANTA.visitors || []);
+      return;
+    }
+    setSelectedLunch(new Set(saved.ALMOCO.employeeIds || []));
+    setVisitorsLunch(saved.ALMOCO.visitors || []);
+    setSelectedDinner(new Set(saved.JANTA.employeeIds || []));
+    setVisitorsDinner(saved.JANTA.visitors || []);
   }
 
   async function copyYesterday(target: Mode) {
-    setError(null); setOkMsg(null);
-    if (!worksiteId || !contract?.restaurant_id) { setError("Sem contrato ativo para esta obra."); return; }
-    const rid = contract.restaurant_id;
+    setError(null);
+    setOkMsg(null);
+    if (!worksiteId || !restaurantId) {
+      setError("Selecione obra e restaurante.");
+      return;
+    }
     const y = addDaysISO(mealDate, -1);
     try {
       if (target === "ALMOCO") {
-        const snap = await fetchSavedForShift(worksiteId, rid, y, "ALMOCO");
-        setSelectedLunch(new Set(snap.employeeIds || [])); setVisitorsLunch(snap.visitors || []);
-        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para ALMOÇO.`); return;
+        const snap = await fetchSavedForShift(worksiteId, restaurantId, y, "ALMOCO");
+        setSelectedLunch(new Set(snap.employeeIds || []));
+        setVisitorsLunch(snap.visitors || []);
+        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para ALMOÇO.`);
+        return;
       }
       if (target === "JANTA") {
-        const snap = await fetchSavedForShift(worksiteId, rid, y, "JANTA");
-        setSelectedDinner(new Set(snap.employeeIds || [])); setVisitorsDinner(snap.visitors || []);
-        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para JANTA.`); return;
+        const snap = await fetchSavedForShift(worksiteId, restaurantId, y, "JANTA");
+        setSelectedDinner(new Set(snap.employeeIds || []));
+        setVisitorsDinner(snap.visitors || []);
+        setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para JANTA.`);
+        return;
       }
-      const [l, j] = await Promise.all([fetchSavedForShift(worksiteId, rid, y, "ALMOCO"), fetchSavedForShift(worksiteId, rid, y, "JANTA")]);
-      setSelectedLunch(new Set(l.employeeIds || [])); setVisitorsLunch(l.visitors || []);
-      setSelectedDinner(new Set(j.employeeIds || [])); setVisitorsDinner(j.visitors || []);
+      const [l, j] = await Promise.all([
+        fetchSavedForShift(worksiteId, restaurantId, y, "ALMOCO"),
+        fetchSavedForShift(worksiteId, restaurantId, y, "JANTA"),
+      ]);
+      setSelectedLunch(new Set(l.employeeIds || []));
+      setVisitorsLunch(l.visitors || []);
+      setSelectedDinner(new Set(j.employeeIds || []));
+      setVisitorsDinner(j.visitors || []);
       setOkMsg(`Copiado de ontem (${formatBRFromISO(y)}) para ALMOÇO + JANTA.`);
-    } catch (e: any) { setError(e?.message || "Falha ao copiar ontem."); }
+    } catch (e: any) {
+      setError(e?.message || "Falha ao copiar ontem.");
+    }
   }
 
-  // ── PASSO 6: abre o modal em vez do window.prompt ──
   function addVisitor(targetShift: Shift) {
     setVisitorModal({ open: true, targetShift, name: "", error: null });
   }
@@ -488,64 +572,45 @@ export default function RefeicoesPage() {
     setVisitorModal({ open: false, targetShift: "ALMOCO", name: "", error: null });
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // saveShift — MODIFICADO
-  //
-  // Diferença do original:
-  //   • Seleciona também "confirmed_at" ao buscar o pedido existente.
-  //   • Se já confirmado e forceReopen=false, abre o card de aviso
-  //     (pendingReopenShift) e retorna sem salvar.
-  //   • Se forceReopen=true (usuário confirmou conscientemente),
-  //     segue normalmente zerando confirmed_at.
-  // ─────────────────────────────────────────────────────────────
   async function saveShift(shift: Shift, forceReopen = false) {
     setError(null);
     setOkMsg(null);
-
     if (!worksiteId) return setError("Selecione a obra."), undefined;
-    if (!contract?.restaurant_id) return setError("Sem contrato ativo para esta obra."), undefined;
+    if (!restaurantId) return setError("Selecione o restaurante do lote."), undefined;
 
-    const rid = contract.restaurant_id;
     const selectedIds = shift === "ALMOCO" ? Array.from(selectedLunch) : Array.from(selectedDinner);
     const visitors = shift === "ALMOCO" ? visitorsLunch : visitorsDinner;
-
     const total = selectedIds.length + visitors.length;
     if (total <= 0) return setError("Nenhuma refeição marcada para salvar."), undefined;
 
     setSaving((p) => ({ ...p, [shift]: true }));
-
     try {
       const { data: ud } = await supabase.auth.getUser();
       const uid = ud?.user?.id ?? null;
 
-      const cutoffTime = shift === "ALMOCO" ? contract.cutoff_lunch : contract.cutoff_dinner;
+      const cutoffTime = shift === "ALMOCO" ? restaurantContract?.cutoff_lunch ?? null : restaurantContract?.cutoff_dinner ?? null;
       const cutoffAtISO = buildCutoffAtISO(mealDate, cutoffTime);
-      const allowAfter = Boolean(contract.allow_after_cutoff);
+      const allowAfter = Boolean(restaurantContract?.allow_after_cutoff);
       const now = new Date();
-
       if (cutoffAtISO && !allowAfter && !canOverrideCutoff) {
         const cutoffAt = new Date(cutoffAtISO);
-        if (isSameISODate(mealDate, isoTodayLocal()) && now.getTime() > cutoffAt.getTime()) {
+        if (mealDate === isoTodayLocal() && now.getTime() > cutoffAt.getTime()) {
           throw new Error(`Fora do horário limite (${shift === "ALMOCO" ? limits.lunch : limits.dinner}).`);
         }
       }
 
-      // ── Busca pedido existente — agora inclui confirmed_at ──
       const { data: existing, error: e1 } = await supabase
         .from("meal_orders")
-        .select("id, confirmed_at")   // <-- adicionado confirmed_at
+        .select("id,confirmed_at")
         .eq("worksite_id", worksiteId)
-        .eq("restaurant_id", rid)
+        .eq("restaurant_id", restaurantId)
         .eq("meal_date", mealDate)
         .eq("shift", shift)
         .limit(1)
         .maybeSingle();
-
       if (e1) throw e1;
 
       let orderId = (existing as any)?.id ? String((existing as any).id) : null;
-
-      // ── NOVO: bloqueia se já confirmado (a menos que o usuário force) ──
       if (orderId && (existing as any)?.confirmed_at && !forceReopen) {
         setPendingReopenShift(shift);
         setSaving((p) => ({ ...p, [shift]: false }));
@@ -557,7 +622,7 @@ export default function RefeicoesPage() {
           .from("meal_orders")
           .insert({
             worksite_id: worksiteId,
-            restaurant_id: rid,
+            restaurant_id: restaurantId,
             meal_date: mealDate,
             shift,
             status: "DRAFT",
@@ -568,13 +633,11 @@ export default function RefeicoesPage() {
           })
           .select("id")
           .single();
-
         if (ins.error) throw ins.error;
         orderId = String((ins.data as any)?.id);
       } else {
         const del = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
         if (del.error) throw del.error;
-
         const baseUpdate: any = {
           cutoff_at: cutoffAtISO,
           updated_by: uid,
@@ -582,7 +645,6 @@ export default function RefeicoesPage() {
           confirmed_at: null,
           closed_at: null,
         };
-
         const up1 = await supabase.from("meal_orders").update({ ...baseUpdate, status: "DRAFT" as any }).eq("id", orderId);
         if (up1.error) {
           const msg = String(up1.error.message || "");
@@ -598,23 +660,23 @@ export default function RefeicoesPage() {
       const rows: any[] = [];
       for (const eid of selectedIds) rows.push({ meal_order_id: orderId, employee_id: eid, included: true, created_by: uid, updated_by: uid });
       for (const v of visitors) rows.push({ meal_order_id: orderId, visitor_name: v, included: true, created_by: uid, updated_by: uid });
-
       const insLines = await supabase.from("meal_order_lines").insert(rows);
       if (insLines.error) throw insLines.error;
 
-      await refreshSaved();
-      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo com sucesso (${total}).`);
+      await Promise.all([refreshSaved(), refreshLotSummaries()]);
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} salvo para este restaurante (${total}).`);
     } catch (e: any) {
-      setError(e?.message || "Erro ao salvar.");
+      const msg = String(e?.message || "Erro ao salvar.");
+      if (msg.toLowerCase().includes("já possui refeição lançada neste dia/turno")) {
+        setError("Um ou mais funcionários já estão lançados em outro restaurante neste mesmo dia/turno.");
+      } else {
+        setError(msg || "Erro ao salvar.");
+      }
     } finally {
       setSaving((p) => ({ ...p, [shift]: false }));
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // handleConfirmReopen — NOVA
-  // Chamada pelo botão "Sim, editar" do card de aviso.
-  // ─────────────────────────────────────────────────────────────
   async function handleConfirmReopen() {
     const shift = pendingReopenShift;
     if (!shift) return;
@@ -622,33 +684,18 @@ export default function RefeicoesPage() {
     await saveShift(shift, true);
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // cancelShift — PASSO 1 + PASSO 2
-  //
-  // Estágio 1 (chamada pelo botão):
-  //   • Busca o pedido e verifica confirmed_at.
-  //   • Se já confirmado → exibe erro e para (Passo 1).
-  //   • Se não confirmado → seta pendingCancelShift e mostra
-  //     o card "Tem certeza?" sem deletar nada (Passo 2).
-  //
-  // Estágio 2 — handleConfirmCancel() executa o DELETE de fato.
-  // ─────────────────────────────────────────────────────────────
   async function cancelShift(shift: Shift) {
     setError(null);
     setOkMsg(null);
-
-    if (!worksiteId || !contract?.restaurant_id) {
-      setError("Sem contrato ativo para esta obra.");
+    if (!worksiteId || !restaurantId) {
+      setError("Selecione obra e restaurante.");
       return;
     }
-
-    const rid = contract.restaurant_id;
     setCanceling((p) => ({ ...p, [shift]: true }));
-
     try {
       let orderId = saved[shift]?.orderId || null;
       if (!orderId) {
-        const snap = await fetchSavedForShift(worksiteId, rid, mealDate, shift);
+        const snap = await fetchSavedForShift(worksiteId, restaurantId, mealDate, shift);
         orderId = snap.orderId;
       }
       if (!orderId) {
@@ -656,25 +703,12 @@ export default function RefeicoesPage() {
         return;
       }
 
-      // Passo 1: bloqueia se já confirmado
-      const { data: orderCheck, error: checkErr } = await supabase
-        .from("meal_orders")
-        .select("confirmed_at")
-        .eq("id", orderId)
-        .single();
-
+      const { data: orderCheck, error: checkErr } = await supabase.from("meal_orders").select("confirmed_at").eq("id", orderId).single();
       if (checkErr) throw checkErr;
-
       if ((orderCheck as any)?.confirmed_at) {
-        setError(
-          `Este pedido já foi confirmado pelo restaurante às ` +
-          `${new Date((orderCheck as any).confirmed_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}. ` +
-          `Entre em contato com o restaurante para cancelar.`
-        );
+        setError(`Este pedido já foi confirmado pelo restaurante às ${new Date((orderCheck as any).confirmed_at).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}. Entre em contato com o restaurante para cancelar.`);
         return;
       }
-
-      // Passo 2: pedido existe mas não confirmado → pede confirmação
       setPendingCancelShift(shift);
     } catch (e: any) {
       setError(e?.message || "Erro ao cancelar.");
@@ -683,39 +717,30 @@ export default function RefeicoesPage() {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // handleConfirmCancel — NOVA (Passo 2)
-  // Chamada pelo botão "Sim, cancelar" do card de confirmação.
-  // Executa o DELETE de fato.
-  // ─────────────────────────────────────────────────────────────
   async function handleConfirmCancel() {
     const shift = pendingCancelShift;
-    if (!shift || !worksiteId || !contract?.restaurant_id) return;
-
+    if (!shift || !worksiteId || !restaurantId) return;
     setPendingCancelShift(null);
     setError(null);
     setOkMsg(null);
-
-    const rid = contract.restaurant_id;
     setCanceling((p) => ({ ...p, [shift]: true }));
-
     try {
       let orderId = saved[shift]?.orderId || null;
       if (!orderId) {
-        const snap = await fetchSavedForShift(worksiteId, rid, mealDate, shift);
+        const snap = await fetchSavedForShift(worksiteId, restaurantId, mealDate, shift);
         orderId = snap.orderId;
       }
-      if (!orderId) { setOkMsg("Nada salvo para cancelar."); return; }
-
+      if (!orderId) {
+        setOkMsg("Nada salvo para cancelar.");
+        return;
+      }
       const delLines = await supabase.from("meal_order_lines").delete().eq("meal_order_id", orderId);
       if (delLines.error) throw delLines.error;
-
       const delOrder = await supabase.from("meal_orders").delete().eq("id", orderId);
       if (delOrder.error) throw delOrder.error;
-
-      await refreshSaved();
+      await Promise.all([refreshSaved(), refreshLotSummaries()]);
       clearSelection(shift);
-      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado (apagado).`);
+      setOkMsg(`${shift === "ALMOCO" ? "Almoço" : "Janta"} cancelado para este restaurante.`);
     } catch (e: any) {
       setError(e?.message || "Erro ao cancelar.");
     } finally {
@@ -725,11 +750,14 @@ export default function RefeicoesPage() {
 
   async function copyResumo() {
     const ws = worksites.find((w) => w.id === worksiteId);
+    const rs = restaurants.find((r) => r.id === restaurantId);
     const wsName = ws ? `${ws.name}${ws.city ? " - " + ws.city : ""}` : "-";
+    const rsName = rs ? `${rs.name}${rs.city ? " - " + rs.city : ""}` : "-";
     const lunchNames = employees.filter((e) => selectedLunch.has(e.id)).map((e) => e.full_name);
     const dinnerNames = employees.filter((e) => selectedDinner.has(e.id)).map((e) => e.full_name);
     const msg =
       `📍 Obra: ${wsName}\n` +
+      `🍽️ Restaurante: ${rsName}\n` +
       `📅 Data: ${formatBRFromISO(mealDate)}\n\n` +
       `🍽️ Almoço (${totals.lunch}):\n` +
       `${[...lunchNames, ...visitorsLunch].map((x) => `- ${x}`).join("\n") || "-"}\n\n` +
@@ -764,10 +792,11 @@ export default function RefeicoesPage() {
   }, [mode, totals]);
 
   const bottomSaveDisabled = useMemo(() => {
+    if (!restaurantId) return true;
     if (mode === "ALMOCO") return totals.lunch <= 0 || saving.ALMOCO;
     if (mode === "JANTA") return totals.dinner <= 0 || saving.JANTA;
     return (totals.lunch <= 0 && totals.dinner <= 0) || saving.ALMOCO || saving.JANTA;
-  }, [mode, totals, saving]);
+  }, [mode, totals, saving, restaurantId]);
 
   async function handleBottomSave() {
     if (mode === "ALMOCO") return saveShift("ALMOCO");
@@ -790,14 +819,12 @@ export default function RefeicoesPage() {
   }, [mode, savedCounts]);
 
   const bottomCancelDisabled = useMemo(() => {
+    if (!restaurantId) return true;
     if (mode === "ALMOCO") return canceling.ALMOCO || savedCounts.lunch <= 0;
     if (mode === "JANTA") return canceling.JANTA || savedCounts.dinner <= 0;
     return (savedCounts.lunch <= 0 && savedCounts.dinner <= 0) || canceling.ALMOCO || canceling.JANTA;
-  }, [mode, canceling, savedCounts]);
+  }, [mode, canceling, savedCounts, restaurantId]);
 
-  // ─────────────────────────────────────────────────────────────
-  // LOGIN UI
-  // ─────────────────────────────────────────────────────────────
   if (!userId) {
     return (
       <div className="page-root">
@@ -838,9 +865,6 @@ export default function RefeicoesPage() {
     );
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // UI PRINCIPAL
-  // ─────────────────────────────────────────────────────────────
   return (
     <div className="page-root">
       <div className="page-container" style={{ paddingBottom: 240 }}>
@@ -849,7 +873,7 @@ export default function RefeicoesPage() {
             <img src="/gpasfalto-logo.png" alt="GP Asfalto" style={{ width: 28, height: 28, objectFit: "contain", border: "none", background: "transparent" }} />
             <div>
               <div className="brand-text-main" style={{ lineHeight: 1.1 }}>Refeições</div>
-              <div className="brand-text-sub">Marcar • Conferir • Salvar</div>
+              <div className="brand-text-sub">Lotes por restaurante</div>
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -862,7 +886,7 @@ export default function RefeicoesPage() {
           <div className="section-header" style={{ alignItems: "flex-start" }}>
             <div>
               <div className="section-title">Marcação</div>
-              <div className="section-subtitle" style={{ marginTop: 2 }}>Escolha a obra, marque rápido e no final confira os totais antes de salvar.</div>
+              <div className="section-subtitle" style={{ marginTop: 2 }}>Agora cada pedido é um lote por restaurante. A mesma obra pode ter mais de um restaurante no mesmo turno.</div>
             </div>
             <div style={{ fontSize: 12, color: "var(--gp-muted-soft)" }}>{userEmail ? `Logado: ${userEmail}` : ""}</div>
           </div>
@@ -870,64 +894,30 @@ export default function RefeicoesPage() {
           {error ? <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #fecaca", background: "#fef2f2", color: "#991b1b", fontSize: 14, marginBottom: 12 }}>{error}</div> : null}
           {okMsg ? <div style={{ borderRadius: 14, padding: "10px 12px", border: "1px solid #bbf7d0", background: "#f0fdf4", color: "#166534", fontSize: 14, marginBottom: 12 }}>{okMsg}</div> : null}
 
-          {/* ⚠️ PASSO 2 — Card "Tem certeza?" antes de cancelar */}
           {pendingCancelShift ? (
             <div style={{ borderRadius: 14, padding: "14px 14px", border: "1px solid #fecaca", background: "#fef2f2", marginBottom: 12 }}>
-              <div style={{ fontWeight: 900, fontSize: 14, color: "#991b1b", marginBottom: 6 }}>
-                🗑️ Cancelar {pendingCancelShift === "ALMOCO" ? "Almoço" : "Janta"}?
-              </div>
-              <div style={{ fontSize: 13, color: "#7f1d1d", marginBottom: 12 }}>
-                O pedido será <b>apagado do banco</b> e não poderá ser recuperado. Tem certeza?
-              </div>
+              <div style={{ fontWeight: 900, fontSize: 14, color: "#991b1b", marginBottom: 6 }}>🗑️ Cancelar {pendingCancelShift === "ALMOCO" ? "Almoço" : "Janta"}?</div>
+              <div style={{ fontSize: 13, color: "#7f1d1d", marginBottom: 12 }}>O lote deste restaurante será apagado do banco. Tem certeza?</div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => setPendingCancelShift(null)}
-                  style={{ flex: 1, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}
-                >
-                  Não, voltar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmCancel}
-                  style={{ flex: 1, borderRadius: 12, border: "1px solid #fecaca", background: "#dc2626", color: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}
-                >
-                  Sim, cancelar pedido
-                </button>
+                <button type="button" onClick={() => setPendingCancelShift(null)} style={{ flex: 1, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>Não, voltar</button>
+                <button type="button" onClick={handleConfirmCancel} style={{ flex: 1, borderRadius: 12, border: "1px solid #fecaca", background: "#dc2626", color: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>Sim, cancelar lote</button>
               </div>
             </div>
           ) : null}
 
-          {/* ⚠️ AVISO DE REABERTURA — aparece quando o usuário tenta re-salvar um pedido já confirmado */}
           {pendingReopenShift ? (
             <div style={{ borderRadius: 14, padding: "14px 14px", border: "1px solid #fde68a", background: "#fffbeb", marginBottom: 12 }}>
-              <div style={{ fontWeight: 900, fontSize: 14, color: "#92400e", marginBottom: 6 }}>
-                ⚠️ Pedido de {pendingReopenShift === "ALMOCO" ? "Almoço" : "Janta"} já confirmado pelo restaurante
-              </div>
-              <div style={{ fontSize: 13, color: "#78350f", marginBottom: 12 }}>
-                Se você editar agora, a confirmação será desfeita e o restaurante precisará confirmar novamente. Deseja continuar?
-              </div>
+              <div style={{ fontWeight: 900, fontSize: 14, color: "#92400e", marginBottom: 6 }}>⚠️ Lote de {pendingReopenShift === "ALMOCO" ? "Almoço" : "Janta"} já confirmado</div>
+              <div style={{ fontSize: 13, color: "#78350f", marginBottom: 12 }}>Se você editar agora, a confirmação deste restaurante será desfeita. Deseja continuar?</div>
               <div style={{ display: "flex", gap: 10 }}>
-                <button
-                  type="button"
-                  onClick={() => setPendingReopenShift(null)}
-                  style={{ flex: 1, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmReopen}
-                  style={{ flex: 1, borderRadius: 12, border: "1px solid #fde68a", background: "#f59e0b", color: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}
-                >
-                  Sim, editar mesmo assim
-                </button>
+                <button type="button" onClick={() => setPendingReopenShift(null)} style={{ flex: 1, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>Cancelar</button>
+                <button type="button" onClick={handleConfirmReopen} style={{ flex: 1, borderRadius: 12, border: "1px solid #fde68a", background: "#f59e0b", color: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>Sim, editar mesmo assim</button>
               </div>
             </div>
           ) : null}
 
           <div style={{ display: "grid", gridTemplateColumns: "repeat(12, 1fr)", gap: 12 }}>
-            <div style={{ gridColumn: "span 12" }}>
+            <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Obra</label>
               <select style={styles.select} value={worksiteId} onChange={(e) => setWorksiteId(e.target.value)} disabled={loading || worksites.length === 0}>
                 {worksites.map((w) => (
@@ -936,14 +926,20 @@ export default function RefeicoesPage() {
               </select>
             </div>
             <div style={{ gridColumn: "span 6" }}>
+              <label style={styles.label}>Restaurante do lote</label>
+              <select style={styles.select} value={restaurantId} onChange={(e) => setRestaurantId(e.target.value)} disabled={loading || restaurants.length === 0}>
+                {restaurants.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name}{r.city ? ` - ${r.city}` : ""}</option>
+                ))}
+              </select>
+            </div>
+            <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data</label>
               <input style={styles.input} type="date" value={mealDate} onChange={(e) => setMealDate(e.target.value)} disabled={loading} />
-              <div style={{ marginTop: 6, ...styles.hint }}>Padrão: abre Almoço até 11h, depois Janta.</div>
             </div>
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Buscar</label>
               <input style={styles.input} value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Nome do funcionário..." />
-              <div style={{ marginTop: 6, ...styles.hint }}>Dica: marque e, se quiser, ative "Mostrar só marcados".</div>
             </div>
             <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -951,7 +947,7 @@ export default function RefeicoesPage() {
                 <button type="button" style={segBtnStyle(mode === "JANTA", "dinner")} onClick={() => setMode("JANTA")}>Janta</button>
                 <button type="button" style={segBtnStyle(mode === "AMBOS", "neutral")} onClick={() => setMode("AMBOS")}>Ambos</button>
                 <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
-                  Limites: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
+                  Limites do restaurante: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
                   {canOverrideCutoff ? <span style={{ marginLeft: 8 }}>(override ativo)</span> : null}
                 </div>
               </div>
@@ -968,187 +964,181 @@ export default function RefeicoesPage() {
                 <button type="button" style={segBtnStyle(false, "neutral")} onClick={copyResumo} disabled={loading}>Copiar resumo</button>
               </div>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }}>
-                  Almoço: {totals.lunch} (salvo: {savedCounts.lunch})
-                </div>
-                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }}>
-                  Janta: {totals.dinner} (salvo: {savedCounts.dinner})
-                </div>
+                <div style={{ borderRadius: 999, border: "1px solid #86efac", background: "#ecfdf5", color: "#166534", padding: "6px 10px", fontSize: 12, fontWeight: 900 }}>Almoço: {totals.lunch} (salvo: {savedCounts.lunch})</div>
+                <div style={{ borderRadius: 999, border: "1px solid #93c5fd", background: "#eff6ff", color: "#1d4ed8", padding: "6px 10px", fontSize: 12, fontWeight: 900 }}>Janta: {totals.dinner} (salvo: {savedCounts.dinner})</div>
               </div>
             </div>
-            {!contract ? (
-              <div style={{ gridColumn: "span 12", borderRadius: 14, border: "1px solid #fde68a", background: "#fffbeb", padding: "10px 12px", color: "#92400e", fontSize: 13 }}>
-                ⚠️ Nenhum contrato vigente encontrado para esta obra na data selecionada. Você pode marcar, mas não vai conseguir salvar.
-              </div>
-            ) : null}
           </div>
         </div>
 
-        {/* Lista de funcionários — igual ao original */}
+        <div className="section-card" style={{ marginTop: 16 }}>
+          <div className="section-header">
+            <div>
+              <div className="section-title">Lotes do dia nesta obra</div>
+              <div className="section-subtitle">Você pode ter mais de um restaurante no mesmo turno. O restaurante selecionado acima é o lote que será salvo/editado agora.</div>
+            </div>
+          </div>
+          {lotSummaries.length === 0 ? (
+            <div style={{ fontSize: 13, color: "var(--gp-muted-soft)" }}>Nenhum lote salvo para esta obra/data.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              {lotSummaries.map((lot) => {
+                const active = lot.restaurantId === restaurantId;
+                return (
+                  <button
+                    key={lot.orderId}
+                    type="button"
+                    onClick={() => setRestaurantId(lot.restaurantId)}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      gap: 10,
+                      padding: "12px 14px",
+                      borderRadius: 14,
+                      border: active ? "1px solid #93c5fd" : "1px solid #e5e7eb",
+                      background: active ? "#eff6ff" : "#fff",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a" }}>{lot.shift === "ALMOCO" ? "Almoço" : "Janta"} • {lot.restaurantName}</div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>
+                        {lot.confirmedAt ? `✅ Confirmado às ${new Date(lot.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "⏳ Aguardando confirmação"}
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 22, fontWeight: 950, color: "#0f172a" }}>{lot.qty}</div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
         <div className="section-card" style={{ marginTop: 16 }}>
           <div className="section-header">
             <div>
               <div className="section-title">Funcionários</div>
-              <div className="section-subtitle">Toque para marcar/desmarcar no turno selecionado.</div>
+              <div className="section-subtitle">Favoritos da obra aparecem primeiro. Um funcionário não pode ser lançado duas vezes no mesmo turno, mesmo em restaurantes diferentes.</div>
             </div>
-            <button type="button" onClick={() => addVisitor(mode === "JANTA" ? "JANTA" : "ALMOCO")} style={{ borderRadius: 999, border: "1px solid #e5e7eb", background: "#fff", padding: "8px 12px", fontSize: 13, fontWeight: 900, cursor: "pointer" }} title="Adicionar visitante sem cadastro">
-              + Pessoa
-            </button>
           </div>
-          <div style={{ display: "grid", gap: 12 }}>
+
+          <div style={{ display: "grid", gap: 8 }}>
             {filteredEmployees.map((e) => {
               const lunchOn = selectedLunch.has(e.id);
               const dinnerOn = selectedDinner.has(e.id);
-              const fav = favoriteIds.has(e.id);
-              const card: CSSProperties = { borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 };
-              const nameStyle: CSSProperties = { fontSize: 14, fontWeight: 900, color: "#0f172a", letterSpacing: "0.02em", textTransform: "uppercase" };
-              const actionBtn = (active: boolean, tone: Shift): CSSProperties => {
-                if (tone === "ALMOCO") return { width: "100%", borderRadius: 14, border: `1px solid ${active ? "#86efac" : "#d1fae5"}`, background: active ? "#ecfdf5" : "#f0fdf4", color: "#166534", padding: "14px 14px", fontSize: 16, fontWeight: 900, cursor: "pointer" };
-                return { width: "100%", borderRadius: 14, border: `1px solid ${active ? "#93c5fd" : "#dbeafe"}`, background: active ? "#eff6ff" : "#f8fbff", color: "#1d4ed8", padding: "14px 14px", fontSize: 16, fontWeight: 900, cursor: "pointer" };
-              };
               return (
-                <div key={e.id} style={card}>
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                    <div style={nameStyle}>{e.full_name}</div>
-                    {fav ? <div title="Favorito" style={{ fontSize: 18, fontWeight: 900, lineHeight: 1 }}>⭐</div> : null}
+                <div key={e.id} style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, alignItems: "center", borderRadius: 14, border: "1px solid #eef2f7", background: favoriteIds.has(e.id) ? "#fcfcfd" : "#fff", padding: "10px 12px" }}>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.full_name}</div>
+                    <div style={{ fontSize: 12, color: "#64748b" }}>{favoriteIds.has(e.id) ? "★ Favorito desta obra" : e.is_third_party ? "Terceiro" : "Equipe"}</div>
                   </div>
-                  <div style={{ marginTop: 10, display: "grid", gap: 10 }}>
-                    {mode === "AMBOS" ? (
-                      <>
-                        <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>{lunchOn ? "✓ Almoço" : "+ Almoço"}</button>
-                        <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>{dinnerOn ? "✓ Janta" : "+ Janta"}</button>
-                      </>
-                    ) : mode === "ALMOCO" ? (
-                      <button type="button" style={actionBtn(lunchOn, "ALMOCO")} onClick={() => toggleEmployee("ALMOCO", e.id)}>{lunchOn ? "✓ Almoço" : "+ Almoço"}</button>
-                    ) : (
-                      <button type="button" style={actionBtn(dinnerOn, "JANTA")} onClick={() => toggleEmployee("JANTA", e.id)}>{dinnerOn ? "✓ Janta" : "+ Janta"}</button>
-                    )}
-                  </div>
+                  <button type="button" onClick={() => toggleEmployee("ALMOCO", e.id)} style={segBtnStyle(lunchOn, "lunch")}>Almoço</button>
+                  <button type="button" onClick={() => toggleEmployee("JANTA", e.id)} style={segBtnStyle(dinnerOn, "dinner")}>Janta</button>
+                  <div style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", width: 28, textAlign: "center" }}>{lunchOn || dinnerOn ? "✓" : ""}</div>
                 </div>
               );
             })}
-            {visitorsLunch.length > 0 || visitorsDinner.length > 0 ? (
-              <div style={{ borderRadius: 16, border: "1px solid #eef2f7", background: "#fff", padding: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 900, color: "var(--gp-muted)", textTransform: "uppercase", letterSpacing: "0.08em" }}>Pessoas sem cadastro</div>
-                <div style={{ marginTop: 8, display: "grid", gap: 8 }}>
-                  {visitorsLunch.map((v) => (
-                    <div key={`l-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 800, color: "#166534" }}>🍽️ {v}</div>
-                      <button type="button" onClick={() => setVisitorsLunch((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>Remover</button>
-                    </div>
-                  ))}
-                  {visitorsDinner.map((v) => (
-                    <div key={`d-${v}`} style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ fontWeight: 800, color: "#1d4ed8" }}>🌙 {v}</div>
-                      <button type="button" onClick={() => setVisitorsDinner((p) => p.filter((x) => x !== v))} style={segBtnStyle(false, "neutral")}>Remover</button>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
           </div>
-          {loading ? <div style={{ marginTop: 12, fontSize: 13, color: "var(--gp-muted-soft)" }}>Carregando…</div> : null}
+        </div>
+
+        <div className="section-card" style={{ marginTop: 16 }}>
+          <div className="section-header">
+            <div>
+              <div className="section-title">Visitantes</div>
+              <div className="section-subtitle">Visitantes entram sem cadastro e contam normalmente no lote.</div>
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 900, color: "#166534" }}>Almoço ({visitorsLunch.length})</div>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => addVisitor("ALMOCO")}>+ Visitante</button>
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {visitorsLunch.length === 0 ? <div style={styles.hint}>Nenhum visitante.</div> : visitorsLunch.map((v) => (
+                  <div key={v} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderRadius: 12, border: "1px solid #e5e7eb", padding: "8px 10px" }}>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>{v}</div>
+                    <button type="button" onClick={() => setVisitorsLunch((p) => p.filter((x) => x !== v))} style={{ border: "none", background: "transparent", color: "#dc2626", fontWeight: 900, cursor: "pointer" }}>Remover</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 900, color: "#1d4ed8" }}>Janta ({visitorsDinner.length})</div>
+                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => addVisitor("JANTA")}>+ Visitante</button>
+              </div>
+              <div style={{ display: "grid", gap: 6 }}>
+                {visitorsDinner.length === 0 ? <div style={styles.hint}>Nenhum visitante.</div> : visitorsDinner.map((v) => (
+                  <div key={v} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderRadius: 12, border: "1px solid #e5e7eb", padding: "8px 10px" }}>
+                    <div style={{ fontSize: 13, fontWeight: 800 }}>{v}</div>
+                    <button type="button" onClick={() => setVisitorsDinner((p) => p.filter((x) => x !== v))} style={{ border: "none", background: "transparent", color: "#dc2626", fontWeight: 900, cursor: "pointer" }}>Remover</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* Barra fixa no fundo — igual ao original */}
-      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, padding: "12px 12px calc(12px + env(safe-area-inset-bottom))", background: "rgba(255,255,255,0.92)", borderTop: "1px solid #eef2f7", backdropFilter: "blur(10px)" }}>
-        <div style={{ maxWidth: 1100, margin: "0 auto" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-            {/* ── PASSO 3: badge de status de confirmação ── */}
-            <div style={{ borderRadius: 16, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
-              <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
-              <div style={{ fontSize: 12, color: "#166534" }}>salvo: {savedCounts.lunch} • limite {limits.lunch}</div>
-              {saved.ALMOCO.orderId ? (
-                saved.ALMOCO.confirmedAt ? (
-                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#15803d", background: "#dcfce7", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
-                    ✅ Confirmado às {new Date(saved.ALMOCO.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
+      <div style={{ position: "fixed", left: 0, right: 0, bottom: 0, zIndex: 60, padding: 12, background: "linear-gradient(180deg, rgba(243,244,246,0) 0%, rgba(243,244,246,0.94) 24%, rgba(243,244,246,1) 100%)" }}>
+        <div className="page-container" style={{ padding: 0 }}>
+          <div style={{ borderRadius: 18, border: "1px solid #e5e7eb", background: "#fff", padding: 12, boxShadow: "0 18px 38px rgba(15,23,42,0.08)" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+              <div style={{ borderRadius: 14, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
+                <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
+                {saved.ALMOCO.orderId ? (
+                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800, color: saved.ALMOCO.confirmedAt ? "#166534" : "#92400e" }}>
+                    {saved.ALMOCO.confirmedAt ? `✅ Confirmado às ${new Date(saved.ALMOCO.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "⏳ Aguardando confirmação"}
                   </div>
-                ) : (
-                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#92400e", background: "#fef9c3", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
-                    ⏳ Aguardando confirmação
+                ) : null}
+              </div>
+              <div style={{ borderRadius: 14, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
+                <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
+                {saved.JANTA.orderId ? (
+                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800, color: saved.JANTA.confirmedAt ? "#1d4ed8" : "#92400e" }}>
+                    {saved.JANTA.confirmedAt ? `✅ Confirmado às ${new Date(saved.JANTA.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "⏳ Aguardando confirmação"}
                   </div>
-                )
-              ) : null}
+                ) : null}
+              </div>
             </div>
-            <div style={{ borderRadius: 16, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
-              <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
-              <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
-              <div style={{ fontSize: 12, color: "#1d4ed8" }}>salvo: {savedCounts.dinner} • limite {limits.dinner}</div>
-              {saved.JANTA.orderId ? (
-                saved.JANTA.confirmedAt ? (
-                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#15803d", background: "#dcfce7", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
-                    ✅ Confirmado às {new Date(saved.JANTA.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}
-                  </div>
-                ) : (
-                  <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: "#92400e", background: "#fef9c3", borderRadius: 8, padding: "3px 8px", display: "inline-block" }}>
-                    ⏳ Aguardando confirmação
-                  </div>
-                )
-              ) : null}
+            <div style={{ display: "grid", gap: 10 }}>
+              <button type="button" onClick={handleBottomSave} style={bigBtnStyle(mode === "JANTA" ? "primaryDinner" : "primaryLunch", bottomSaveDisabled)} disabled={bottomSaveDisabled}>{bottomTitle}</button>
+              <button type="button" onClick={handleBottomCancel} style={bigBtnStyle("danger", bottomCancelDisabled)} disabled={bottomCancelDisabled}>{bottomCancelLabel}</button>
             </div>
           </div>
-          <button type="button" style={mode === "JANTA" ? bigBtnStyle("primaryDinner", bottomSaveDisabled) : bigBtnStyle("primaryLunch", bottomSaveDisabled)} onClick={handleBottomSave} disabled={bottomSaveDisabled || !contract}>
-            {saving.ALMOCO || saving.JANTA ? "Salvando..." : bottomTitle}
-          </button>
-          <div style={{ height: 10 }} />
-          <button type="button" style={bigBtnStyle("danger", bottomCancelDisabled)} onClick={handleBottomCancel} disabled={bottomCancelDisabled || !contract}>
-            {canceling.ALMOCO || canceling.JANTA ? "Cancelando..." : bottomCancelLabel}
-          </button>
-          <div style={{ height: 10 }} />
-          <button type="button" style={bigBtnStyle("ghost", false)} onClick={copyResumo}>
-            Copiar resumo
-          </button>
         </div>
       </div>
-      {/* ── PASSO 6: Modal de visitante ── */}
+
       {visitorModal.open ? (
         <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 999, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}
-          onClick={() => setVisitorModal((p) => ({ ...p, open: false }))}
+          onClick={() => setVisitorModal({ open: false, targetShift: "ALMOCO", name: "", error: null })}
+          style={{ position: "fixed", inset: 0, zIndex: 100, background: "rgba(15,23,42,0.42)", display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}
         >
-          <div
-            style={{ background: "#fff", borderRadius: 20, padding: 24, width: "100%", maxWidth: 380, boxShadow: "0 24px 48px rgba(0,0,0,0.18)" }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div style={{ fontSize: 16, fontWeight: 900, color: "#0f172a", marginBottom: 4 }}>
-              + Pessoa sem cadastro
-            </div>
-            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
-              Turno: <b>{visitorModal.targetShift === "ALMOCO" ? "Almoço" : "Janta"}</b>
-            </div>
-
-            <label style={{ fontSize: 12, fontWeight: 800, color: "var(--gp-muted)", textTransform: "uppercase" as const, letterSpacing: "0.08em", display: "block", marginBottom: 6 }}>
-              Nome
-            </label>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "100%", maxWidth: 420, borderRadius: 18, border: "1px solid #e5e7eb", background: "#fff", padding: 16, boxShadow: "0 24px 48px rgba(15,23,42,0.18)" }}>
+            <div style={{ fontSize: 16, fontWeight: 950, color: "#0f172a" }}>Adicionar visitante</div>
+            <div style={{ marginTop: 4, fontSize: 13, color: "#64748b" }}>Turno: <b>{visitorModal.targetShift === "ALMOCO" ? "Almoço" : "Janta"}</b></div>
+            <div style={{ height: 12 }} />
             <input
               autoFocus
+              placeholder="Nome do visitante"
               style={{ width: "100%", borderRadius: 14, border: `1px solid ${visitorModal.error ? "#fca5a5" : "#e5e7eb"}`, padding: "12px 12px", fontSize: 16, outline: "none", background: "#fff", color: "#0f172a" }}
-              placeholder="Nome completo..."
               value={visitorModal.name}
               onChange={(e) => setVisitorModal((p) => ({ ...p, name: e.target.value, error: null }))}
-              onKeyDown={(e) => { if (e.key === "Enter") handleVisitorConfirm(); if (e.key === "Escape") setVisitorModal((p) => ({ ...p, open: false })); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleVisitorConfirm();
+                if (e.key === "Escape") setVisitorModal({ open: false, targetShift: "ALMOCO", name: "", error: null });
+              }}
             />
-            {visitorModal.error ? (
-              <div style={{ marginTop: 6, fontSize: 12, color: "#dc2626", fontWeight: 700 }}>{visitorModal.error}</div>
-            ) : null}
-
-            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-              <button
-                type="button"
-                onClick={() => setVisitorModal((p) => ({ ...p, open: false }))}
-                style={{ flex: 1, borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", padding: "12px", fontSize: 15, fontWeight: 900, cursor: "pointer" }}
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                onClick={handleVisitorConfirm}
-                style={{ flex: 1, borderRadius: 14, border: "1px solid #86efac", background: "#22c55e", color: "#fff", padding: "12px", fontSize: 15, fontWeight: 900, cursor: "pointer" }}
-              >
-                Adicionar
-              </button>
+            {visitorModal.error ? <div style={{ marginTop: 6, fontSize: 12, color: "#dc2626", fontWeight: 700 }}>{visitorModal.error}</div> : null}
+            <div style={{ height: 12 }} />
+            <div style={{ display: "flex", gap: 10 }}>
+              <button type="button" onClick={() => setVisitorModal({ open: false, targetShift: "ALMOCO", name: "", error: null })} style={{ flex: 1, borderRadius: 12, border: "1px solid #e5e7eb", background: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>Cancelar</button>
+              <button type="button" onClick={handleVisitorConfirm} style={{ flex: 1, borderRadius: 12, border: "1px solid #93c5fd", background: "#2563eb", color: "#fff", padding: "10px 12px", fontSize: 14, fontWeight: 900, cursor: "pointer" }}>Adicionar</button>
             </div>
           </div>
         </div>
