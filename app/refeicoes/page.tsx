@@ -163,6 +163,7 @@ export default function RefeicoesPage() {
   const [lotSummaries, setLotSummaries] = useState<LotSummary[]>([]);
 
   const [loading, setLoading] = useState(false);
+  const [bootLoaded, setBootLoaded] = useState(false);
   const [saving, setSaving] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
   const [canceling, setCanceling] = useState<Record<Shift, boolean>>({ ALMOCO: false, JANTA: false });
 
@@ -425,6 +426,7 @@ export default function RefeicoesPage() {
       setError(e?.message || "Falha ao carregar.");
     } finally {
       setLoading(false);
+      setBootLoaded(true);
     }
   }
 
@@ -783,6 +785,12 @@ export default function RefeicoesPage() {
     });
   }, [employees, query, onlyMarked, mode, selectedLunch, selectedDinner]);
 
+  const loadHints = useMemo(() => ({
+    noWorksites: bootLoaded && worksites.length === 0,
+    noRestaurants: bootLoaded && restaurants.length === 0,
+    noEmployees: bootLoaded && !!worksiteId && employees.length === 0,
+  }), [bootLoaded, worksites.length, restaurants.length, employees.length, worksiteId]);
+
   const headerDatePill = useMemo(() => formatBRFromISO(mealDate), [mealDate]);
 
   const bottomTitle = useMemo(() => {
@@ -920,18 +928,22 @@ export default function RefeicoesPage() {
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Obra</label>
               <select style={styles.select} value={worksiteId} onChange={(e) => setWorksiteId(e.target.value)} disabled={loading || worksites.length === 0}>
+                <option value="">{worksites.length === 0 ? "Nenhuma obra disponível" : "Selecione a obra"}</option>
                 {worksites.map((w) => (
                   <option key={w.id} value={w.id}>{w.name}{w.city ? ` - ${w.city}` : ""}</option>
                 ))}
               </select>
+              {loadHints.noWorksites ? <div style={{ marginTop: 6, ...styles.hint, color: "#b91c1c" }}>Nenhuma obra foi carregada. Normalmente isso é cadastro vazio ou policy/RLS bloqueando `meal_worksites`.</div> : null}
             </div>
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Restaurante do lote</label>
               <select style={styles.select} value={restaurantId} onChange={(e) => setRestaurantId(e.target.value)} disabled={loading || restaurants.length === 0}>
+                <option value="">{restaurants.length === 0 ? "Nenhum restaurante disponível" : "Selecione o restaurante"}</option>
                 {restaurants.map((r) => (
                   <option key={r.id} value={r.id}>{r.name}{r.city ? ` - ${r.city}` : ""}</option>
                 ))}
               </select>
+              {loadHints.noRestaurants ? <div style={{ marginTop: 6, ...styles.hint, color: "#b91c1c" }}>Nenhum restaurante foi carregado.</div> : null}
             </div>
             <div style={{ gridColumn: "span 6" }}>
               <label style={styles.label}>Data</label>
@@ -1024,23 +1036,38 @@ export default function RefeicoesPage() {
             </div>
           </div>
 
-          <div style={{ display: "grid", gap: 8 }}>
-            {filteredEmployees.map((e) => {
-              const lunchOn = selectedLunch.has(e.id);
-              const dinnerOn = selectedDinner.has(e.id);
-              return (
-                <div key={e.id} style={{ display: "grid", gridTemplateColumns: "1fr auto auto auto", gap: 8, alignItems: "center", borderRadius: 14, border: "1px solid #eef2f7", background: favoriteIds.has(e.id) ? "#fcfcfd" : "#fff", padding: "10px 12px" }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.full_name}</div>
-                    <div style={{ fontSize: 12, color: "#64748b" }}>{favoriteIds.has(e.id) ? "★ Favorito desta obra" : e.is_third_party ? "Terceiro" : "Equipe"}</div>
+          {loadHints.noEmployees ? (
+            <div style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", padding: "14px 16px", fontSize: 13, color: "#b91c1c" }}>
+              Nenhum funcionário foi carregado para esta tela. Verifique a tabela `meal_employees` e a policy/RLS de leitura.
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: 8 }}>
+              {filteredEmployees.map((e) => {
+                const lunchOn = selectedLunch.has(e.id);
+                const dinnerOn = selectedDinner.has(e.id);
+                return (
+                  <div key={e.id} style={{ borderRadius: 14, border: "1px solid #eef2f7", background: favoriteIds.has(e.id) ? "#fcfcfd" : "#fff", padding: "10px 12px" }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
+                      <div style={{ minWidth: 0, flex: "1 1 260px" }}>
+                        <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis" }}>{e.full_name}</div>
+                        <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{favoriteIds.has(e.id) ? "★ Favorito desta obra" : e.is_third_party ? "Terceiro" : "Equipe"}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                        <button type="button" onClick={() => toggleEmployee("ALMOCO", e.id)} style={segBtnStyle(lunchOn, "lunch")}>Almoço</button>
+                        <button type="button" onClick={() => toggleEmployee("JANTA", e.id)} style={segBtnStyle(dinnerOn, "dinner")}>Janta</button>
+                        <div style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", minWidth: 18, textAlign: "center" }}>{lunchOn || dinnerOn ? "✓" : ""}</div>
+                      </div>
+                    </div>
                   </div>
-                  <button type="button" onClick={() => toggleEmployee("ALMOCO", e.id)} style={segBtnStyle(lunchOn, "lunch")}>Almoço</button>
-                  <button type="button" onClick={() => toggleEmployee("JANTA", e.id)} style={segBtnStyle(dinnerOn, "dinner")}>Janta</button>
-                  <div style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", width: 28, textAlign: "center" }}>{lunchOn || dinnerOn ? "✓" : ""}</div>
+                );
+              })}
+              {filteredEmployees.length === 0 ? (
+                <div style={{ borderRadius: 14, border: "1px solid #e5e7eb", background: "#fff", padding: "14px 16px", fontSize: 13, color: "#64748b" }}>
+                  Nenhum funcionário encontrado com este filtro.
                 </div>
-              );
-            })}
-          </div>
+              ) : null}
+            </div>
+          )}
         </div>
 
         <div className="section-card" style={{ marginTop: 16 }}>
