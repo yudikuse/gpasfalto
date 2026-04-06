@@ -1124,20 +1124,20 @@ export default function RefeicoesPage() {
         <div className="page-container" style={{ padding: 0 }}>
           <div style={{ borderRadius: 18, border: "1px solid #e5e7eb", background: "#fff", padding: 12, boxShadow: "0 18px 38px rgba(15,23,42,0.08)" }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-              <div style={{ borderRadius: 14, border: "1px solid #86efac", background: "#ecfdf5", padding: 12 }}>
+              <div style={{ borderRadius: 14, border: "1px solid #86efac", background: "#ecfdf5", padding: 12, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                 <div style={{ fontSize: 12, fontWeight: 900, color: "#166534", textTransform: "uppercase", letterSpacing: "0.08em" }}>Almoço</div>
-                <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.lunch}</div>
+                <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1, textAlign: "center", width: "100%" }}>{totals.lunch}</div>
                 {saved.ALMOCO.orderId ? (
-                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800, color: saved.ALMOCO.confirmedAt ? "#166534" : "#92400e" }}>
+                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800, color: saved.ALMOCO.confirmedAt ? "#166534" : "#92400e", textAlign: "center", width: "100%" }}>
                     {saved.ALMOCO.confirmedAt ? `✅ Confirmado às ${new Date(saved.ALMOCO.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "⏳ Aguardando confirmação"}
                   </div>
                 ) : null}
               </div>
-              <div style={{ borderRadius: 14, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12 }}>
+              <div style={{ borderRadius: 14, border: "1px solid #93c5fd", background: "#eff6ff", padding: 12, textAlign: "center", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
                 <div style={{ fontSize: 12, fontWeight: 900, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: "0.08em" }}>Janta</div>
-                <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1 }}>{totals.dinner}</div>
+                <div style={{ fontSize: 26, fontWeight: 950, color: "#0f172a", lineHeight: 1.1, textAlign: "center", width: "100%" }}>{totals.dinner}</div>
                 {saved.JANTA.orderId ? (
-                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800, color: saved.JANTA.confirmedAt ? "#1d4ed8" : "#92400e" }}>
+                  <div style={{ marginTop: 6, fontSize: 12, fontWeight: 800, color: saved.JANTA.confirmedAt ? "#1d4ed8" : "#92400e", textAlign: "center", width: "100%" }}>
                     {saved.JANTA.confirmedAt ? `✅ Confirmado às ${new Date(saved.JANTA.confirmedAt).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}` : "⏳ Aguardando confirmação"}
                   </div>
                 ) : null}
