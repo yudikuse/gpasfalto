@@ -36,6 +36,7 @@ type RestaurantContract = {
 type Employee = {
   id: string;
   full_name: string;
+  role: string | null;
   active: boolean | null;
   is_third_party: boolean | null;
 };
@@ -276,7 +277,7 @@ export default function RefeicoesPage() {
 
   async function loadEmployeesAndFavorites(wid: string) {
     const [empRes, favRes] = await Promise.all([
-      supabase.from("meal_employees").select("id,full_name,active,is_third_party").eq("active", true).order("full_name"),
+      supabase.from("meal_employees").select("id,full_name,role,active,is_third_party").eq("active", true).order("full_name"),
       supabase.from("meal_worksite_favorites").select("employee_id").eq("worksite_id", wid),
     ]);
     if (empRes.error) throw empRes.error;
@@ -1046,16 +1047,25 @@ export default function RefeicoesPage() {
                 const lunchOn = selectedLunch.has(e.id);
                 const dinnerOn = selectedDinner.has(e.id);
                 return (
-                  <div key={e.id} style={{ borderRadius: 14, border: "1px solid #eef2f7", background: favoriteIds.has(e.id) ? "#fcfcfd" : "#fff", padding: "10px 12px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start", flexWrap: "wrap" }}>
-                      <div style={{ minWidth: 0, flex: "1 1 260px" }}>
-                        <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a", overflow: "hidden", textOverflow: "ellipsis" }}>{e.full_name}</div>
-                        <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{favoriteIds.has(e.id) ? "★ Favorito desta obra" : e.is_third_party ? "Terceiro" : "Equipe"}</div>
+                  <div key={e.id} style={{ borderRadius: 14, border: "1px solid #eef2f7", background: favoriteIds.has(e.id) ? "#fcfcfd" : "#fff", padding: "12px 14px" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) auto", gap: 12, alignItems: "center" }}>
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 900, color: "#0f172a", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{e.full_name}</div>
+                        <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          {e.role?.trim()
+                            ? e.role
+                            : favoriteIds.has(e.id)
+                              ? "Favorito desta obra"
+                              : e.is_third_party
+                                ? "Terceiro"
+                                : "Sem cargo"}
+                          {favoriteIds.has(e.id) ? " • ★ Favorito" : ""}
+                        </div>
                       </div>
-                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-                        <button type="button" onClick={() => toggleEmployee("ALMOCO", e.id)} style={segBtnStyle(lunchOn, "lunch")}>Almoço</button>
-                        <button type="button" onClick={() => toggleEmployee("JANTA", e.id)} style={segBtnStyle(dinnerOn, "dinner")}>Janta</button>
-                        <div style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", minWidth: 18, textAlign: "center" }}>{lunchOn || dinnerOn ? "✓" : ""}</div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", minWidth: 210 }}>
+                        <button type="button" onClick={() => toggleEmployee("ALMOCO", e.id)} style={{ ...segBtnStyle(lunchOn, "lunch"), minWidth: 92 }}>Almoço</button>
+                        <button type="button" onClick={() => toggleEmployee("JANTA", e.id)} style={{ ...segBtnStyle(dinnerOn, "dinner"), minWidth: 92 }}>Janta</button>
+                        <div style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", width: 18, textAlign: "center" }}>{lunchOn || dinnerOn ? "✓" : ""}</div>
                       </div>
                     </div>
                   </div>
