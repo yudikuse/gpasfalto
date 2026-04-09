@@ -39,18 +39,6 @@ type DailySummaryRow = {
   created_at: string | null;
 };
 
-type KbEventRow = {
-  pos_equip_id: string | null;
-  codigo_equipamento: string | null;
-  evento_at: string | null;
-  dia_brt: string;
-  hora_brt: string | null;
-  evento: string | null;
-  obra: string | null;
-  obra_origem: string | null;
-  obra_destino: string | null;
-};
-
 type ObraDailyAgg = {
   dia: string;
   obra: string;
@@ -58,6 +46,16 @@ type ObraDailyAgg = {
   trabalharam: number;
   parados: number;
   km: number;
+};
+
+type KombiEventRow = {
+  dia_brt: string;
+  codigo_equipamento: string;
+  placa: string | null;
+  obra: string;
+  evento: "ENTRADA" | "SAIDA" | string;
+  evento_at: string;
+  origem: string | null;
 };
 
 type KbCell = {
@@ -72,6 +70,7 @@ type KbGridRow = {
 
 type KbGridCard = {
   kombi: string;
+  placa: string | null;
   rows: KbGridRow[];
 };
 
@@ -81,8 +80,9 @@ function pad2(n: number) {
 
 function todayBRT() {
   const now = new Date();
-  const brt = new Date(now.getTime() - 3 * 60 * 60 * 1000);
-  return `${brt.getUTCFullYear()}-${pad2(brt.getUTCMonth() + 1)}-${pad2(brt.getUTCDate())}`;
+  const utc = now.getTime() + now.getTimezoneOffset() * 60000;
+  const brt = new Date(utc - 3 * 60 * 60000);
+  return `${brt.getFullYear()}-${pad2(brt.getMonth() + 1)}-${pad2(brt.getDate())}`;
 }
 
 function daysAgo(dateStr: string, days: number) {
@@ -92,27 +92,35 @@ function daysAgo(dateStr: string, days: number) {
 }
 
 function fmtDateShort(yyyyMmDd: string) {
-  const [y, m, d] = yyyyMmDd.split("-");
+  const [, m, d] = yyyyMmDd.split("-");
   return `${d}/${m}`;
 }
 
 function fmtDateLabel(yyyyMmDd: string) {
-  const [y, m, d] = yyyyMmDd.split("-");
+  const [, m, d] = yyyyMmDd.split("-");
   const months = ["jan", "fev", "mar", "abr", "mai", "jun", "jul", "ago", "set", "out", "nov", "dez"];
   return `${d}/${months[Number(m) - 1] ?? m}`;
 }
 
-function fmtHour(iso: string | null) {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleTimeString("pt-BR", {
+function fmtHour(value: string | null) {
+  if (!value) return "—";
+
+  const s = String(value).trim();
+  if (!s) return "—";
+
+  const hhmm = s.match(/^(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (hhmm) return `${hhmm[1]}:${hhmm[2]}`;
+
+  const dt = new Date(s);
+  if (!Number.isNaN(dt.getTime())) {
+    return dt.toLocaleTimeString("pt-BR", {
       hour: "2-digit",
       minute: "2-digit",
       timeZone: "America/Sao_Paulo",
     });
-  } catch {
-    return "—";
   }
+
+  return "—";
 }
 
 function fmtKm(meters: number | null | undefined) {
@@ -449,14 +457,22 @@ function KbGridTable({
           alignItems: "center",
           gap: 10,
           background: "#fafafa",
+          flexWrap: "wrap",
         }}
       >
         <div style={{ fontSize: 15, fontWeight: 900, color: C.text }}>{card.kombi}</div>
-        <div style={{ fontSize: 12, color: C.textMute }}>{card.rows.length} obras com evento</div>
+        <div style={{ fontSize: 12, color: C.textMid }}>{card.placa || "—"}</div>
+        <div style={{ fontSize: 12, color: C.textMute }}>{card.rows.length} obras</div>
       </div>
 
       <div style={{ overflowX: "auto" }}>
-        <table style={{ width: "100%", borderCollapse: "collapse", minWidth: Math.max(520, dayCols.length * 120 + 180) }}>
+        <table
+          style={{
+            width: "100%",
+            borderCollapse: "collapse",
+            minWidth: Math.max(520, dayCols.length * 120 + 180),
+          }}
+        >
           <thead>
             <tr>
               <th rowSpan={2} style={{ ...mergedHeaderCellStyle(), minWidth: 180 }}>
@@ -530,7 +546,7 @@ export default function SigasulHistoricoPage() {
   const [dayRows, setDayRows] = useState<DailySummaryRow[]>([]);
   const [obraRows, setObraRows] = useState<ObraDailyAgg[]>([]);
   const [equipRows, setEquipRows] = useState<DailySummaryRow[]>([]);
-  const [kbRows, setKbRows] = useState<KbEventRow[]>([]);
+  const [kbRows, setKbRows] = useState<KombiEventRow[]>([]);
 
   const loadDay = useCallback(async () => {
     setLoading(true);
@@ -638,11 +654,10 @@ export default function SigasulHistoricoPage() {
     setErr(null);
 
     let query = supabase
-      .from("sigasul_geofence_events_v")
-      .select("pos_equip_id,codigo_equipamento,evento_at,dia_brt,hora_brt,evento,obra,obra_origem,obra_destino")
+      .from("sigasul_kombi_events")
+      .select("dia_brt,codigo_equipamento,placa,obra,evento,evento_at,origem")
       .gte("dia_brt", kbIni)
       .lte("dia_brt", kbFim)
-      .ilike("codigo_equipamento", "KB-%")
       .order("codigo_equipamento", { ascending: true })
       .order("dia_brt", { ascending: true })
       .order("evento_at", { ascending: true });
@@ -660,12 +675,12 @@ export default function SigasulHistoricoPage() {
       return;
     }
 
-    setKbRows((data ?? []) as KbEventRow[]);
+    setKbRows((data ?? []) as KombiEventRow[]);
     setLoading(false);
   }, [kbFiltro, kbFim, kbIni]);
 
   useEffect(() => {
-    if (tab === "dia") loadDay();
+    if (tab === "dia") void loadDay();
   }, [tab, loadDay]);
 
   const allObras = useMemo(() => {
@@ -723,32 +738,33 @@ export default function SigasulHistoricoPage() {
   const kbDayCols = useMemo(() => buildDateRange(kbIni, kbFim), [kbFim, kbIni]);
 
   const kbCards = useMemo((): KbGridCard[] => {
-    const byKombi = new Map<string, Map<string, Map<string, KbCell>>>();
+    const byKombi = new Map<string, { placa: string | null; obras: Map<string, Map<string, KbCell>> }>();
 
     for (const r of kbRows) {
       const kombi = r.codigo_equipamento || "SEM KOD";
-      const obra =
-        (r.obra && r.obra.trim()) ||
-        (r.obra_destino && r.obra_destino.trim()) ||
-        (r.obra_origem && r.obra_origem.trim()) ||
-        "SEM OBRA";
+      const obra = (r.obra || "SEM OBRA").trim() || "SEM OBRA";
       const diaKey = r.dia_brt;
-      const hora = r.hora_brt || fmtHour(r.evento_at);
+      const hora = fmtHour(r.evento_at);
       const evento = (r.evento || "").toUpperCase();
 
-      if (!byKombi.has(kombi)) byKombi.set(kombi, new Map());
-      const byObra = byKombi.get(kombi)!;
+      if (!byKombi.has(kombi)) {
+        byKombi.set(kombi, { placa: r.placa || null, obras: new Map() });
+      }
 
-      if (!byObra.has(obra)) byObra.set(obra, new Map());
-      const byDay = byObra.get(obra)!;
+      const item = byKombi.get(kombi)!;
+      if (!item.placa && r.placa) item.placa = r.placa;
+
+      if (!item.obras.has(obra)) item.obras.set(obra, new Map());
+      const byDay = item.obras.get(obra)!;
 
       const prev = byDay.get(diaKey) || { ent: null, sai: null };
 
-      if (evento.includes("ENTRADA")) {
-        if (!prev.ent || (hora && hora < prev.ent)) prev.ent = hora || prev.ent;
+      if (evento === "ENTRADA") {
+        if (!prev.ent || (hora !== "—" && hora < prev.ent)) prev.ent = hora !== "—" ? hora : prev.ent;
       }
-      if (evento.includes("SAIDA") || evento.includes("SAÍDA")) {
-        if (!prev.sai || (hora && hora > prev.sai)) prev.sai = hora || prev.sai;
+
+      if (evento === "SAIDA") {
+        if (!prev.sai || (hora !== "—" && hora > prev.sai)) prev.sai = hora !== "—" ? hora : prev.sai;
       }
 
       byDay.set(diaKey, prev);
@@ -756,19 +772,18 @@ export default function SigasulHistoricoPage() {
 
     return Array.from(byKombi.entries())
       .sort((a, b) => a[0].localeCompare(b[0], "pt-BR"))
-      .map(([kombi, obrasMap]) => {
-        const rows: KbGridRow[] = Array.from(obrasMap.entries())
+      .map(([kombi, item]) => {
+        const rows: KbGridRow[] = Array.from(item.obras.entries())
           .sort((a, b) => sortObra(a[0], b[0]))
           .map(([obra, byDayMap]) => {
             const byDay: Record<string, KbCell> = {};
             for (const d of kbDayCols) {
-              const v = byDayMap.get(d) || { ent: null, sai: null };
-              byDay[d] = v;
+              byDay[d] = byDayMap.get(d) || { ent: null, sai: null };
             }
             return { obra, byDay };
           });
 
-        return { kombi, rows };
+        return { kombi, placa: item.placa, rows };
       });
   }, [kbDayCols, kbRows]);
 
@@ -851,7 +866,7 @@ export default function SigasulHistoricoPage() {
                 title="Filtros"
                 right={
                   <button
-                    onClick={loadDay}
+                    onClick={() => void loadDay()}
                     disabled={loading}
                     style={{
                       border: "none",
@@ -966,7 +981,7 @@ export default function SigasulHistoricoPage() {
               title="Histórico por obra"
               right={
                 <button
-                  onClick={loadObraHistory}
+                  onClick={() => void loadObraHistory()}
                   disabled={loading}
                   style={{
                     border: "none",
@@ -1028,7 +1043,7 @@ export default function SigasulHistoricoPage() {
               title="Histórico do equipamento"
               right={
                 <button
-                  onClick={loadEquipHistory}
+                  onClick={() => void loadEquipHistory()}
                   disabled={loading}
                   style={{
                     border: "none",
@@ -1090,7 +1105,7 @@ export default function SigasulHistoricoPage() {
               title="Kombis · entradas e saídas"
               right={
                 <button
-                  onClick={loadKb}
+                  onClick={() => void loadKb()}
                   disabled={loading}
                   style={{
                     border: "none",
