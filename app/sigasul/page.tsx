@@ -107,6 +107,16 @@ type KbDisplayRow = {
   ultimaPos: string | null;
 };
 
+type KombiEventNewRow = {
+  dia_brt: string;
+  codigo_equipamento: string;
+  placa: string | null;
+  obra: string;
+  evento: string;
+  evento_at: string;
+  origem: string | null;
+};
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
@@ -588,6 +598,7 @@ function KbHistorySection({ rows }: { rows: KbHistoryRow[] }) {
               <div>
                 {events.map((r, idx) => {
                   const eventoColor = r.evento === "ENTRADA" ? C.primary : C.warning;
+                  const obraLabel = r.obra || r.obra_destino || r.obra_origem || "—";
                   return (
                     <div
                       key={`${r.codigo_equipamento}-${r.evento_at}-${idx}`}
@@ -602,7 +613,7 @@ function KbHistorySection({ rows }: { rows: KbHistoryRow[] }) {
                       }}
                     >
                       <div style={{ fontWeight: 700, fontSize: 13, color: C.textMid }}>
-                        {r.hora_brt || "—"}
+                        {r.hora_brt || fmtHoraUTC(r.evento_at)}
                       </div>
                       <div style={{ fontWeight: 700, fontSize: 12, color: eventoColor }}>
                         {r.evento}
@@ -617,7 +628,7 @@ function KbHistorySection({ rows }: { rows: KbHistoryRow[] }) {
                           textOverflow: "ellipsis",
                         }}
                       >
-                        {r.obra || "—"}
+                        {obraLabel}
                       </div>
                     </div>
                   );
@@ -663,17 +674,25 @@ export default function SigasulPage() {
     setLoading(true);
     setErr(null);
 
-    const [latestRes, kbHistoryRes] = await Promise.all([
+    const [latestRes, kbHistoryOldRes, kbHistoryNewRes] = await Promise.all([
       supabase
         .from("sigasul_dashboard_latest")
         .select(
           "pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista"
         ),
+
       supabase
         .from("sigasul_geofence_events_v")
         .select("pos_equip_id,codigo_equipamento,evento_at,dia_brt,hora_brt,evento,obra,obra_origem,obra_destino")
         .eq("dia_brt", date)
         .ilike("codigo_equipamento", "KB-%")
+        .order("codigo_equipamento", { ascending: true })
+        .order("evento_at", { ascending: true }),
+
+      supabase
+        .from("sigasul_kombi_events")
+        .select("dia_brt,codigo_equipamento,placa,obra,evento,evento_at,origem")
+        .eq("dia_brt", date)
         .order("codigo_equipamento", { ascending: true })
         .order("evento_at", { ascending: true }),
     ]);
@@ -686,12 +705,29 @@ export default function SigasulPage() {
 
     setLatest((latestRes.data ?? []) as LatestRow[]);
 
-    if (kbHistoryRes.error) {
-      console.warn("sigasul_geofence_events_v:", kbHistoryRes.error.message);
-      setKbHistory([]);
-    } else {
-      setKbHistory((kbHistoryRes.data ?? []) as KbHistoryRow[]);
+    if (kbHistoryOldRes.error) {
+      console.warn("sigasul_geofence_events_v:", kbHistoryOldRes.error.message);
     }
+    if (kbHistoryNewRes.error) {
+      console.warn("sigasul_kombi_events:", kbHistoryNewRes.error.message);
+    }
+
+    const oldRows = (kbHistoryOldRes.data ?? []) as KbHistoryRow[];
+    const newRowsRaw = (kbHistoryNewRes.data ?? []) as KombiEventNewRow[];
+
+    const newRowsAsOldShape: KbHistoryRow[] = newRowsRaw.map((r) => ({
+      pos_equip_id: "",
+      codigo_equipamento: r.codigo_equipamento,
+      evento_at: r.evento_at,
+      dia_brt: r.dia_brt,
+      hora_brt: fmtHoraUTC(r.evento_at),
+      evento: r.evento,
+      obra: r.obra ?? null,
+      obra_origem: null,
+      obra_destino: null,
+    }));
+
+    setKbHistory(oldRows.length > 0 ? oldRows : newRowsAsOldShape);
 
     try {
       const res = await fetch(`/api/sigasul/today?date=${date}`, { cache: "no-store" });
