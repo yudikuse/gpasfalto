@@ -85,15 +85,13 @@ type EquipRow = {
 };
 
 type KbHistoryRow = {
-  pos_equip_id: string;
-  codigo_equipamento: string;
-  evento_at: string;
   dia_brt: string;
-  hora_brt: string;
+  codigo_equipamento: string;
+  placa: string | null;
+  obra: string;
   evento: string;
-  obra: string | null;
-  obra_origem: string | null;
-  obra_destino: string | null;
+  evento_at: string;
+  origem: string | null;
 };
 
 type KbDisplayRow = {
@@ -143,17 +141,25 @@ function fmtHoraBRT(dt: string | null): string {
   return match ? match[1] : "—";
 }
 
-function fmtHoraUTC(iso: string | null): string {
-  if (!iso) return "—";
-  try {
-    return new Date(iso).toLocaleTimeString("pt-BR", {
+function fmtHoraUTC(value: string | null): string {
+  if (!value) return "—";
+
+  const s = String(value).trim();
+  if (!s) return "—";
+
+  const hhmm = s.match(/^(\d{2}):(\d{2})(?::\d{2})?$/);
+  if (hhmm) return `${hhmm[1]}:${hhmm[2]}`;
+
+  const dt = new Date(s);
+  if (!Number.isNaN(dt.getTime())) {
+    return dt.toLocaleTimeString("pt-BR", {
       hour: "2-digit",
       minute: "2-digit",
       timeZone: "America/Sao_Paulo",
     });
-  } catch {
-    return "—";
   }
+
+  return "—";
 }
 
 function tensaoColor(v: number | null) {
@@ -247,7 +253,15 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
           Ligou
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.primary : C.textMute }}>
@@ -256,7 +270,15 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
           KM
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: eq.kmTotal > 0 ? C.success : C.textMute }}>
@@ -265,7 +287,15 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
           Tempo
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: ligado ? C.warning : C.textMute }}>
@@ -274,7 +304,15 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
           Bateria
         </div>
         <div style={{ fontWeight: 700, fontSize: 13, color: tensaoColor(eq.tensao) }}>
@@ -283,10 +321,24 @@ function EquipRowItem({ eq }: { eq: EquipRow }) {
       </div>
 
       <div style={{ textAlign: "center" }}>
-        <div style={{ fontSize: 10, color: C.textMute, textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 1 }}>
+        <div
+          style={{
+            fontSize: 10,
+            color: C.textMute,
+            textTransform: "uppercase",
+            letterSpacing: "0.04em",
+            marginBottom: 1,
+          }}
+        >
           Agora
         </div>
-        <div style={{ fontWeight: 700, fontSize: 13, color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute }}>
+        <div
+          style={{
+            fontWeight: 700,
+            fontSize: 13,
+            color: eq.velocidade && eq.velocidade > 0 ? C.success : C.textMute,
+          }}
+        >
           {eq.velocidade && eq.velocidade > 0 ? `${eq.velocidade} km/h` : "—"}
         </div>
       </div>
@@ -464,7 +516,14 @@ function KbSummarySection({ rows }: { rows: KbDisplayRow[] }) {
                     {kb.obraAtual}
                   </div>
 
-                  <div style={{ textAlign: "center", fontWeight: 700, fontSize: 13, color: kb.velocidade && kb.velocidade > 0 ? C.success : C.textMute }}>
+                  <div
+                    style={{
+                      textAlign: "center",
+                      fontWeight: 700,
+                      fontSize: 13,
+                      color: kb.velocidade && kb.velocidade > 0 ? C.success : C.textMute,
+                    }}
+                  >
                     {kb.velocidade && kb.velocidade > 0 ? `${kb.velocidade} km/h` : "—"}
                   </div>
 
@@ -594,7 +653,7 @@ function KbHistorySection({ rows }: { rows: KbHistoryRow[] }) {
                       }}
                     >
                       <div style={{ fontWeight: 700, fontSize: 13, color: C.textMid }}>
-                        {r.hora_brt || "—"}
+                        {fmtHoraUTC(r.evento_at)}
                       </div>
                       <div style={{ fontWeight: 700, fontSize: 12, color: eventoColor }}>
                         {r.evento}
@@ -662,10 +721,9 @@ export default function SigasulPage() {
           "pos_equip_id,codigo_equipamento,pos_placa,obra_final,gps_at,ingested_at,last_seen_at,pos_ignicao,pos_online,ignicao_atual,online_atual,pos_velocidade,pos_tensao,pos_nome_motorista"
         ),
       supabase
-        .from("sigasul_geofence_events_v")
-        .select("pos_equip_id,codigo_equipamento,evento_at,dia_brt,hora_brt,evento,obra,obra_origem,obra_destino")
+        .from("sigasul_kombi_events")
+        .select("dia_brt,codigo_equipamento,placa,obra,evento,evento_at,origem")
         .eq("dia_brt", date)
-        .ilike("codigo_equipamento", "KB-%")
         .order("codigo_equipamento", { ascending: true })
         .order("evento_at", { ascending: true }),
     ]);
@@ -679,7 +737,7 @@ export default function SigasulPage() {
     setLatest((latestRes.data ?? []) as LatestRow[]);
 
     if (kbHistoryRes.error) {
-      console.warn("sigasul_geofence_events_v:", kbHistoryRes.error.message);
+      console.warn("sigasul_kombi_events:", kbHistoryRes.error.message);
       setKbHistory([]);
     } else {
       setKbHistory((kbHistoryRes.data ?? []) as KbHistoryRow[]);
@@ -706,9 +764,11 @@ export default function SigasulPage() {
   }
 
   useEffect(() => {
-    load();
+    void load();
     if (date !== TODAY) return;
-    const t = setInterval(load, 60_000);
+    const t = setInterval(() => {
+      void load();
+    }, 60_000);
     return () => clearInterval(t);
   }, [date, TODAY]);
 
@@ -913,7 +973,7 @@ export default function SigasulPage() {
           </select>
 
           <button
-            onClick={load}
+            onClick={() => void load()}
             disabled={loading}
             style={{
               background: loading ? C.border : C.primary,
@@ -1067,7 +1127,14 @@ export default function SigasulPage() {
                   <div style={{ textAlign: "right" }}>Último sinal</div>
                 </div>
 
-                <div style={{ border: `1px solid #fde68a`, borderRadius: "0 0 8px 8px", overflow: "hidden", width: "100%" }}>
+                <div
+                  style={{
+                    border: `1px solid #fde68a`,
+                    borderRadius: "0 0 8px 8px",
+                    overflow: "hidden",
+                    width: "100%",
+                  }}
+                >
                   {semComunicacao
                     .sort((a, b) => b.diasSemSinal - a.diasSemSinal)
                     .map((eq) => (
@@ -1086,10 +1153,26 @@ export default function SigasulPage() {
                         }}
                       >
                         <div style={{ minWidth: 0 }}>
-                          <div style={{ fontWeight: 700, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <div
+                            style={{
+                              fontWeight: 700,
+                              color: C.text,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
                             {eq.nome}
                           </div>
-                          <div style={{ fontSize: 11, color: C.textMute, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              color: C.textMute,
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
                             {eq.placa}
                           </div>
                         </div>
@@ -1098,7 +1181,16 @@ export default function SigasulPage() {
                           {eq.diasSemSinal}d
                         </div>
 
-                        <div style={{ textAlign: "center", fontSize: 12, color: C.textMid, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        <div
+                          style={{
+                            textAlign: "center",
+                            fontSize: 12,
+                            color: C.textMid,
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                          }}
+                        >
                           {eq.obra}
                         </div>
 
@@ -1112,11 +1204,11 @@ export default function SigasulPage() {
                         <div style={{ textAlign: "right", fontSize: 11, color: C.textMute }}>
                           {eq.ultimaPosISO
                             ? new Date(eq.ultimaPosISO).toLocaleDateString("pt-BR", {
-                              timeZone: "America/Sao_Paulo",
-                              day: "2-digit",
-                              month: "2-digit",
-                              year: "2-digit",
-                            })
+                                timeZone: "America/Sao_Paulo",
+                                day: "2-digit",
+                                month: "2-digit",
+                                year: "2-digit",
+                              })
                             : "—"}
                         </div>
                       </div>
