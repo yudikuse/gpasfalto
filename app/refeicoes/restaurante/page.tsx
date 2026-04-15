@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 type Shift = "ALMOCO" | "JANTA";
@@ -33,7 +34,7 @@ type ContractRow = {
   end_date: string | null;
 };
 
-const LS_KEY = "meal_restaurant_login_v1";
+const LS_KEY = "meal_restaurant_login_v2";
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -85,6 +86,10 @@ function buildCutoffISO_BRT(mealDateISO: string, hhmm: string | null) {
 }
 
 export default function RestaurantePage() {
+  const searchParams = useSearchParams();
+  const ridFromLink = (searchParams.get("rid") || "").trim();
+  const lockedByLink = Boolean(ridFromLink);
+
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [restaurantId, setRestaurantId] = useState<string>("");
   const [cnpj, setCnpj] = useState("");
@@ -157,18 +162,22 @@ export default function RestaurantePage() {
   };
 
   async function loadRestaurants() {
-    const { data, error } = await supabase
+    let query = supabase
       .from("meal_restaurants")
       .select("id,name,city,document,active")
-      .eq("active", true)
-      .order("name", { ascending: true });
+      .eq("active", true);
 
+    if (ridFromLink) {
+      query = query.eq("id", ridFromLink);
+    }
+
+    const { data, error } = await query.order("name", { ascending: true });
     if (error) throw error;
 
     const list = (data || []) as Restaurant[];
     setRestaurants(list);
 
-    if (!restaurantId && list[0]?.id) {
+    if (list.length > 0) {
       setRestaurantId(list[0].id);
     }
 
@@ -232,7 +241,7 @@ export default function RestaurantePage() {
 
     const selected = restaurants.find((r) => r.id === restaurantId);
     if (!selected) {
-      setError("Selecione o restaurante.");
+      setError("Restaurante inválido.");
       return;
     }
 
@@ -252,7 +261,7 @@ export default function RestaurantePage() {
     setLoggingIn(true);
     try {
       if (typed !== expected) {
-        throw new Error("CNPJ não confere com o restaurante selecionado.");
+        throw new Error("CNPJ não confere com o restaurante.");
       }
 
       setLoggedRestaurant(selected);
@@ -278,6 +287,7 @@ export default function RestaurantePage() {
         .eq("restaurant_id", loggedRestaurant.id)
         .lte("start_date", mealDate)
         .or(`end_date.is.null,end_date.gte.${mealDate}`);
+
       if (cErr) throw cErr;
 
       let maxLunch: string | null = null;
@@ -310,6 +320,7 @@ export default function RestaurantePage() {
         .select("id,worksite_id,shift,confirmed_at")
         .eq("restaurant_id", loggedRestaurant.id)
         .eq("meal_date", mealDate);
+
       if (oErr) throw oErr;
 
       const orows = (orders || []) as OrderRow[];
@@ -323,6 +334,7 @@ export default function RestaurantePage() {
           .from("meal_worksites")
           .select("id,name,city")
           .in("id", worksiteIds);
+
         if (wErr) throw wErr;
 
         (ws || []).forEach((w: any) =>
@@ -341,6 +353,7 @@ export default function RestaurantePage() {
           .select("meal_order_id,included")
           .in("meal_order_id", orderIds)
           .eq("included", true);
+
         if (lErr) throw lErr;
 
         (lines || []).forEach((r: any) => {
@@ -353,8 +366,16 @@ export default function RestaurantePage() {
         ALMOCO: new Map(),
         JANTA: new Map(),
       };
-      const hasShift: Record<Shift, boolean> = { ALMOCO: false, JANTA: false };
-      const conf: Record<Shift, boolean> = { ALMOCO: true, JANTA: true };
+
+      const hasShift: Record<Shift, boolean> = {
+        ALMOCO: false,
+        JANTA: false,
+      };
+
+      const conf: Record<Shift, boolean> = {
+        ALMOCO: true,
+        JANTA: true,
+      };
 
       for (const o of orows) {
         const oid = String(o.id);
@@ -363,6 +384,7 @@ export default function RestaurantePage() {
 
         hasShift[o.shift] = true;
         agg[o.shift].set(wid, (agg[o.shift].get(wid) || 0) + qty);
+
         if (!o.confirmed_at) conf[o.shift] = false;
       }
 
@@ -381,11 +403,16 @@ export default function RestaurantePage() {
       const lunchList = listShift("ALMOCO");
       const dinnerList = listShift("JANTA");
 
-      setByWorksite({ ALMOCO: lunchList, JANTA: dinnerList });
+      setByWorksite({
+        ALMOCO: lunchList,
+        JANTA: dinnerList,
+      });
+
       setTotals({
         ALMOCO: lunchList.reduce((s, x) => s + x.qty, 0),
         JANTA: dinnerList.reduce((s, x) => s + x.qty, 0),
       });
+
       setConfirmedAll(conf);
     } catch (e: any) {
       setError(e?.message || "Falha ao carregar.");
@@ -393,6 +420,65 @@ export default function RestaurantePage() {
       setLoading(false);
     }
   }
+
+  useEffect(() => {
+    let active = true;
+
+    (async () => {
+      try {
+        const list = await loadRestaurants();
+        if (!active) return;
+        await tryAutoLogin(list);
+      } catch (e: any) {
+        if (active) setError(e?.message || "Falha ao carregar restaurantes.");
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!loggedRestaurant?.id) return;
+    refresh();
+  }, [loggedRestaurant?.id, mealDate]);
+
+  const confirmWindow = useMemo(() => {
+    const today = isoTodayLocal();
+    const now = new Date();
+    const passed: Record<Shift, boolean> = { ALMOCO: false, JANTA: false };
+
+    for (const sh of ["ALMOCO", "JANTA"] as Shift[]) {
+      if (mealDate < today) {
+        passed[sh] = true;
+        continue;
+      }
+
+      if (mealDate > today) {
+        passed[sh] = false;
+        continue;
+      }
+
+      const iso = cutoffAtByShift[sh];
+      if (!iso) {
+        passed[sh] = false;
+        continue;
+      }
+
+      passed[sh] = now.getTime() >= new Date(iso).getTime();
+    }
+
+    return passed;
+  }, [mealDate, cutoffAtByShift]);
+
+  const canConfirm = useMemo(
+    () => ({
+      ALMOCO: totals.ALMOCO > 0 && !confirmedAll.ALMOCO && confirmWindow.ALMOCO,
+      JANTA: totals.JANTA > 0 && !confirmedAll.JANTA && confirmWindow.JANTA,
+    }),
+    [totals, confirmedAll, confirmWindow]
+  );
 
   async function confirmShift(shift: Shift) {
     setError(null);
@@ -442,61 +528,7 @@ export default function RestaurantePage() {
     }
   }
 
-  useEffect(() => {
-    let active = true;
-
-    (async () => {
-      try {
-        const list = await loadRestaurants();
-        if (!active) return;
-        await tryAutoLogin(list);
-      } catch (e: any) {
-        if (active) setError(e?.message || "Falha ao carregar restaurantes.");
-      }
-    })();
-
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!loggedRestaurant?.id) return;
-    refresh();
-  }, [loggedRestaurant?.id, mealDate]);
-
-  const confirmWindow = useMemo(() => {
-    const today = isoTodayLocal();
-    const now = new Date();
-    const passed: Record<Shift, boolean> = { ALMOCO: false, JANTA: false };
-
-    for (const sh of ["ALMOCO", "JANTA"] as Shift[]) {
-      if (mealDate < today) {
-        passed[sh] = true;
-        continue;
-      }
-      if (mealDate > today) {
-        passed[sh] = false;
-        continue;
-      }
-      const iso = cutoffAtByShift[sh];
-      if (!iso) {
-        passed[sh] = false;
-        continue;
-      }
-      passed[sh] = now.getTime() >= new Date(iso).getTime();
-    }
-
-    return passed;
-  }, [mealDate, cutoffAtByShift]);
-
-  const canConfirm = useMemo(
-    () => ({
-      ALMOCO: totals.ALMOCO > 0 && !confirmedAll.ALMOCO && confirmWindow.ALMOCO,
-      JANTA: totals.JANTA > 0 && !confirmedAll.JANTA && confirmWindow.JANTA,
-    }),
-    [totals, confirmedAll, confirmWindow]
-  );
+  const selectedRestaurant = restaurants.find((r) => r.id === restaurantId) || null;
 
   if (!loggedRestaurant) {
     return (
@@ -520,7 +552,11 @@ export default function RestaurantePage() {
             <div className="section-header">
               <div>
                 <div className="section-title">Entrar</div>
-                <div className="section-subtitle">Selecione o restaurante e valide com o CNPJ.</div>
+                <div className="section-subtitle">
+                  {lockedByLink
+                    ? "Acesso travado para este restaurante. Informe apenas o CNPJ."
+                    : "Selecione o restaurante e valide com o CNPJ."}
+                </div>
               </div>
             </div>
 
@@ -557,20 +593,28 @@ export default function RestaurantePage() {
             ) : null}
 
             <label style={styles.label}>Restaurante</label>
-            <select
-              style={styles.select}
-              value={restaurantId}
-              onChange={(e) => setRestaurantId(e.target.value)}
-              disabled={restaurants.length === 0 || loggingIn}
-            >
-              <option value="">Selecione...</option>
-              {restaurants.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name}
-                  {r.city ? ` - ${r.city}` : ""}
-                </option>
-              ))}
-            </select>
+            {lockedByLink ? (
+              <input
+                style={{ ...styles.input, background: "#f8fafc" }}
+                value={selectedRestaurant ? `${selectedRestaurant.name}${selectedRestaurant.city ? ` - ${selectedRestaurant.city}` : ""}` : ""}
+                readOnly
+              />
+            ) : (
+              <select
+                style={styles.select}
+                value={restaurantId}
+                onChange={(e) => setRestaurantId(e.target.value)}
+                disabled={restaurants.length === 0 || loggingIn}
+              >
+                <option value="">Selecione...</option>
+                {restaurants.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}
+                    {r.city ? ` - ${r.city}` : ""}
+                  </option>
+                ))}
+              </select>
+            )}
 
             <div style={{ height: 10 }} />
 
@@ -631,21 +675,23 @@ export default function RestaurantePage() {
               <div>{loggedRestaurant.name}</div>
               <div>{loggedRestaurant.city || ""}</div>
             </div>
-            <button
-              type="button"
-              onClick={clearLogin}
-              style={{
-                borderRadius: 999,
-                border: "1px solid #e5e7eb",
-                background: "#fff",
-                padding: "8px 12px",
-                fontSize: 13,
-                fontWeight: 900,
-                cursor: "pointer",
-              }}
-            >
-              Trocar
-            </button>
+            {!lockedByLink ? (
+              <button
+                type="button"
+                onClick={clearLogin}
+                style={{
+                  borderRadius: 999,
+                  border: "1px solid #e5e7eb",
+                  background: "#fff",
+                  padding: "8px 12px",
+                  fontSize: 13,
+                  fontWeight: 900,
+                  cursor: "pointer",
+                }}
+              >
+                Trocar
+              </button>
+            ) : null}
           </div>
         </header>
 
@@ -872,3 +918,6 @@ export default function RestaurantePage() {
     </div>
   );
 }
+"""
+Path("/mnt/data/refeicoes_restaurante_link_cnpj_fix.txt").write_text(restaurant_code, encoding='utf-8')
+print("/mnt/data/refeicoes_restaurante_link_cnpj_fix.txt")
