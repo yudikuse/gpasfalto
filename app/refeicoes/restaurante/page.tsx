@@ -447,7 +447,10 @@ export default function RestaurantePage() {
   const confirmWindow = useMemo(() => {
     const today = isoTodayLocal();
     const now = new Date();
-    const passed: Record<Shift, boolean> = { ALMOCO: false, JANTA: false };
+    const passed: Record<Shift, boolean> = {
+      ALMOCO: false,
+      JANTA: false,
+    };
 
     for (const sh of ["ALMOCO", "JANTA"] as Shift[]) {
       if (mealDate < today) {
@@ -918,6 +921,3 @@ export default function RestaurantePage() {
     </div>
   );
 }
-"""
-Path("/mnt/data/refeicoes_restaurante_link_cnpj_fix.txt").write_text(restaurant_code, encoding='utf-8')
-print("/mnt/data/refeicoes_restaurante_link_cnpj_fix.txt")
