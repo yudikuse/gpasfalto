@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Suspense, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
@@ -85,7 +85,19 @@ function buildCutoffISO_BRT(mealDateISO: string, hhmm: string | null) {
   return `${mealDateISO}T${hhmm}:00-03:00`;
 }
 
-export default function RestaurantePage() {
+function RestaurantePageFallback() {
+  return (
+    <div className="page-root">
+      <div className="page-container" style={{ paddingBottom: 48 }}>
+        <div className="section-card" style={{ maxWidth: 460, margin: "48px auto 0" }}>
+          <div style={{ fontSize: 14, color: "var(--gp-muted-soft)" }}>Carregando...</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RestaurantePageInner() {
   const searchParams = useSearchParams();
   const ridFromLink = (searchParams.get("rid") || "").trim();
   const lockedByLink = Boolean(ridFromLink);
@@ -919,5 +931,13 @@ export default function RestaurantePage() {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function RestaurantePage() {
+  return (
+    <Suspense fallback={<RestaurantePageFallback />}>
+      <RestaurantePageInner />
+    </Suspense>
   );
 }
