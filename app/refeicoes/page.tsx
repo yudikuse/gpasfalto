@@ -216,6 +216,23 @@ export default function RefeicoesPage() {
     return { lunch, dinner };
   }, [restaurantContract]);
 
+  const cutoffBlocked = useMemo<Record<Shift, boolean>>(() => {
+    const allowAfter = Boolean(restaurantContract?.allow_after_cutoff);
+    if (allowAfter) return { ALMOCO: false, JANTA: false };
+
+    const today = isoTodayLocal();
+    if (mealDate !== today) return { ALMOCO: false, JANTA: false };
+
+    const now = new Date();
+    const lunchIso = buildCutoffAtISO(mealDate, restaurantContract?.cutoff_lunch ?? null);
+    const dinnerIso = buildCutoffAtISO(mealDate, restaurantContract?.cutoff_dinner ?? null);
+
+    return {
+      ALMOCO: lunchIso ? now.getTime() > new Date(lunchIso).getTime() : false,
+      JANTA: dinnerIso ? now.getTime() > new Date(dinnerIso).getTime() : false,
+    };
+  }, [mealDate, restaurantContract]);
+
   const loadHints = useMemo(
     () => ({
       noWorksites: bootLoaded && worksites.length === 0,
@@ -858,16 +875,18 @@ export default function RefeicoesPage() {
 
   const bottomSaveDisabled = useMemo(() => {
     if (!restaurantId) return true;
-    if (mode === "ALMOCO") return totals.lunch <= 0 || saving.ALMOCO;
-    if (mode === "JANTA") return totals.dinner <= 0 || saving.JANTA;
-    return (totals.lunch <= 0 && totals.dinner <= 0) || saving.ALMOCO || saving.JANTA;
-  }, [mode, totals, saving, restaurantId]);
+    if (mode === "ALMOCO") return cutoffBlocked.ALMOCO || totals.lunch <= 0 || saving.ALMOCO;
+    if (mode === "JANTA") return cutoffBlocked.JANTA || totals.dinner <= 0 || saving.JANTA;
+    const lunchOk = !cutoffBlocked.ALMOCO && totals.lunch > 0;
+    const dinnerOk = !cutoffBlocked.JANTA && totals.dinner > 0;
+    return (!lunchOk && !dinnerOk) || saving.ALMOCO || saving.JANTA;
+  }, [mode, totals, saving, restaurantId, cutoffBlocked]);
 
   async function handleBottomSave() {
     if (mode === "ALMOCO") return saveShift("ALMOCO");
     if (mode === "JANTA") return saveShift("JANTA");
-    await saveShift("ALMOCO");
-    await saveShift("JANTA");
+    if (!cutoffBlocked.ALMOCO && totals.lunch > 0) await saveShift("ALMOCO");
+    if (!cutoffBlocked.JANTA && totals.dinner > 0) await saveShift("JANTA");
   }
 
   async function handleBottomCancel() {
@@ -1042,11 +1061,13 @@ export default function RefeicoesPage() {
 
             <div style={{ gridColumn: "span 12", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button type="button" style={segBtnStyle(mode === "ALMOCO", "lunch")} onClick={() => setMode("ALMOCO")}>Almoço</button>
-                <button type="button" style={segBtnStyle(mode === "JANTA", "dinner")} onClick={() => setMode("JANTA")}>Janta</button>
+                <button type="button" style={{ ...segBtnStyle(mode === "ALMOCO", "lunch"), opacity: cutoffBlocked.ALMOCO ? 0.55 : 1, cursor: cutoffBlocked.ALMOCO ? "not-allowed" : "pointer" }} onClick={() => !cutoffBlocked.ALMOCO && setMode("ALMOCO")} disabled={cutoffBlocked.ALMOCO}>Almoço</button>
+                <button type="button" style={{ ...segBtnStyle(mode === "JANTA", "dinner"), opacity: cutoffBlocked.JANTA ? 0.55 : 1, cursor: cutoffBlocked.JANTA ? "not-allowed" : "pointer" }} onClick={() => !cutoffBlocked.JANTA && setMode("JANTA")} disabled={cutoffBlocked.JANTA}>Janta</button>
                 <button type="button" style={segBtnStyle(mode === "AMBOS", "neutral")} onClick={() => setMode("AMBOS")}>Ambos</button>
                 <div style={{ marginLeft: 8, fontSize: 12, color: "var(--gp-muted-soft)", alignSelf: "center" }}>
                   Limites do restaurante: Almoço <b>{limits.lunch}</b> • Janta <b>{limits.dinner}</b>
+                  {cutoffBlocked.ALMOCO ? <span style={{ marginLeft: 8, color: "#b91c1c", fontWeight: 800 }}>• Almoço bloqueado</span> : null}
+                  {cutoffBlocked.JANTA ? <span style={{ marginLeft: 8, color: "#b91c1c", fontWeight: 800 }}>• Janta bloqueada</span> : null}
                 </div>
               </div>
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 800 }}>
@@ -1142,8 +1163,22 @@ export default function RefeicoesPage() {
                         </div>
                       </div>
                       <div style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end", minWidth: 210 }}>
-                        <button type="button" onClick={() => toggleEmployee("ALMOCO", e.id)} style={{ ...segBtnStyle(lunchOn, "lunch"), minWidth: 92 }}>Almoço</button>
-                        <button type="button" onClick={() => toggleEmployee("JANTA", e.id)} style={{ ...segBtnStyle(dinnerOn, "dinner"), minWidth: 92 }}>Janta</button>
+                        <button
+                          type="button"
+                          onClick={() => toggleEmployee("ALMOCO", e.id)}
+                          disabled={cutoffBlocked.ALMOCO}
+                          style={{ ...segBtnStyle(lunchOn, "lunch"), minWidth: 92, opacity: cutoffBlocked.ALMOCO ? 0.45 : 1, cursor: cutoffBlocked.ALMOCO ? "not-allowed" : "pointer" }}
+                        >
+                          Almoço
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => toggleEmployee("JANTA", e.id)}
+                          disabled={cutoffBlocked.JANTA}
+                          style={{ ...segBtnStyle(dinnerOn, "dinner"), minWidth: 92, opacity: cutoffBlocked.JANTA ? 0.45 : 1, cursor: cutoffBlocked.JANTA ? "not-allowed" : "pointer" }}
+                        >
+                          Janta
+                        </button>
                         <div style={{ fontSize: 11, fontWeight: 900, color: "#94a3b8", width: 18, textAlign: "center" }}>{lunchOn || dinnerOn ? "✓" : ""}</div>
                       </div>
                     </div>
@@ -1170,7 +1205,7 @@ export default function RefeicoesPage() {
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ fontSize: 13, fontWeight: 900, color: "#166534" }}>Almoço ({visitorsLunch.length})</div>
-                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => addVisitor("ALMOCO")}>+ Visitante</button>
+                <button type="button" style={{ ...segBtnStyle(false, "neutral"), opacity: cutoffBlocked.ALMOCO ? 0.45 : 1, cursor: cutoffBlocked.ALMOCO ? "not-allowed" : "pointer" }} onClick={() => addVisitor("ALMOCO")} disabled={cutoffBlocked.ALMOCO}>+ Visitante</button>
               </div>
               <div style={{ display: "grid", gap: 6 }}>
                 {visitorsLunch.length === 0 ? <div style={styles.hint}>Nenhum visitante.</div> : visitorsLunch.map((v) => (
@@ -1184,7 +1219,7 @@ export default function RefeicoesPage() {
             <div>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ fontSize: 13, fontWeight: 900, color: "#1d4ed8" }}>Janta ({visitorsDinner.length})</div>
-                <button type="button" style={segBtnStyle(false, "neutral")} onClick={() => addVisitor("JANTA")}>+ Visitante</button>
+                <button type="button" style={{ ...segBtnStyle(false, "neutral"), opacity: cutoffBlocked.JANTA ? 0.45 : 1, cursor: cutoffBlocked.JANTA ? "not-allowed" : "pointer" }} onClick={() => addVisitor("JANTA")} disabled={cutoffBlocked.JANTA}>+ Visitante</button>
               </div>
               <div style={{ display: "grid", gap: 6 }}>
                 {visitorsDinner.length === 0 ? <div style={styles.hint}>Nenhum visitante.</div> : visitorsDinner.map((v) => (
