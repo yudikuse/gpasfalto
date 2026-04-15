@@ -145,6 +145,7 @@ export default function RefeicoesPage() {
   const [accessReady, setAccessReady] = useState(false);
   const [worksites, setWorksites] = useState<Worksite[]>([]);
   const [requesters, setRequesters] = useState<Requester[]>([]);
+  const [allRestaurants, setAllRestaurants] = useState<Restaurant[]>([]);
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
 
   const [worksiteId, setWorksiteId] = useState("");
@@ -197,6 +198,18 @@ export default function RefeicoesPage() {
   };
 
   const currentRequester = useMemo(() => requesters.find((r) => r.id === requesterId) || null, [requesters, requesterId]);
+  const currentWorksite = useMemo(() => worksites.find((w) => w.id === worksiteId) || null, [worksites, worksiteId]);
+
+  useEffect(() => {
+    const city = (currentWorksite?.city || "").trim().toLowerCase();
+    const filtered = allRestaurants.filter((r) => (r.city || "").trim().toLowerCase() === city);
+    setRestaurants(filtered);
+    setRestaurantId((prev) => {
+      if (prev && filtered.some((r) => r.id === prev)) return prev;
+      if (filtered.length === 1) return filtered[0].id;
+      return filtered[0]?.id || "";
+    });
+  }, [allRestaurants, currentWorksite]);
 
   const totals = useMemo(() => {
     const lunch = selectedLunch.size + visitorsLunch.length;
@@ -274,12 +287,11 @@ export default function RefeicoesPage() {
     return rows;
   }
 
-  async function loadRestaurants() {
+  async function loadAllRestaurants() {
     const { data, error } = await supabase.from("meal_restaurants").select("id,name,city,active").eq("active", true).order("name", { ascending: true });
     if (error) throw error;
     const rows = (data || []) as Restaurant[];
-    setRestaurants(rows);
-    setRestaurantId((prev) => prev || rows[0]?.id || "");
+    setAllRestaurants(rows);
     return rows;
   }
 
@@ -454,7 +466,7 @@ export default function RefeicoesPage() {
     setLoading(true);
     setError(null);
     try {
-      const [wRows] = await Promise.all([loadWorksites(), loadRestaurants()]);
+      const [wRows] = await Promise.all([loadWorksites(), loadAllRestaurants()]);
       const storedRaw = localStorage.getItem(LS_KEY);
 
       let nextWorksiteId = wRows[0]?.id || "";
@@ -1029,24 +1041,19 @@ export default function RefeicoesPage() {
 
             <div style={{ gridColumn: "span 4" }}>
               <label style={styles.label}>Solicitado por</label>
-              <select style={styles.select} value={requesterId} onChange={(e) => { setRequesterId(e.target.value); saveAccess(worksiteId, e.target.value); }} disabled={loading || requesters.length === 0}>
-                <option value="">{requesters.length === 0 ? "Nenhum solicitante disponível" : "Selecione"}</option>
-                {requesters.map((r) => (
-                  <option key={r.id} value={r.id}>{r.name}</option>
-                ))}
-              </select>
+              <input style={{ ...styles.input, background: "#f8fafc" }} value={currentRequester?.name || ""} readOnly />
               {loadHints.noRequesters ? <div style={{ marginTop: 6, ...styles.hint, color: "#b91c1c" }}>Nenhum solicitante cadastrado para esta obra.</div> : null}
             </div>
 
             <div style={{ gridColumn: "span 4" }}>
               <label style={styles.label}>Restaurante do lote</label>
               <select style={styles.select} value={restaurantId} onChange={(e) => setRestaurantId(e.target.value)} disabled={loading || restaurants.length === 0}>
-                <option value="">{restaurants.length === 0 ? "Nenhum restaurante disponível" : "Selecione o restaurante"}</option>
+                <option value="">{restaurants.length === 0 ? "Nenhum restaurante para esta cidade" : "Selecione o restaurante"}</option>
                 {restaurants.map((r) => (
                   <option key={r.id} value={r.id}>{r.name}{r.city ? ` - ${r.city}` : ""}</option>
                 ))}
               </select>
-              {loadHints.noRestaurants ? <div style={{ marginTop: 6, ...styles.hint, color: "#b91c1c" }}>Nenhum restaurante foi carregado.</div> : null}
+              {loadHints.noRestaurants ? <div style={{ marginTop: 6, ...styles.hint, color: "#b91c1c" }}>Nenhum restaurante encontrado para a cidade desta obra.</div> : null}
             </div>
 
             <div style={{ gridColumn: "span 6" }}>
