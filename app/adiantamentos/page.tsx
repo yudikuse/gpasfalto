@@ -185,6 +185,238 @@ export default function AdiantamentosPage() {
     }
   }
 
+  async function gerarExtratoContabil() {
+    if (!filtroFuncionario) {
+      alert("Clique em um colaborador na lista de saldos antes de gerar o extrato.");
+      return;
+    }
+
+    const saldo = saldos.find((s) => s.funcionario_id === filtroFuncionario);
+
+    if (!saldo) {
+      alert("Colaborador não encontrado.");
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("adiantamento_extrato_v")
+      .select("*")
+      .eq("funcionario_id", filtroFuncionario)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      alert("Erro ao gerar extrato: " + error.message);
+      return;
+    }
+
+    const movimentos = data || [];
+    let saldoAcumulado = 0;
+
+    const linhas = movimentos
+      .map((m: any) => {
+        const valor = Number(m.valor || 0);
+        saldoAcumulado += valor;
+
+        const isCredito = m.tipo === "CREDITO";
+
+        return `
+          <tr>
+            <td>${dateBR(m.created_at)}</td>
+            <td>${m.tipo}</td>
+            <td>${m.descricao || "-"}</td>
+            <td>${m.obra || "-"}</td>
+            <td class="${isCredito ? "credito" : "debito"}">${moneyBR(valor)}</td>
+            <td>${moneyBR(saldoAcumulado)}</td>
+          </tr>
+
+          ${
+            m.foto_url
+              ? `
+                <tr>
+                  <td colspan="6" class="fotoLinha">
+                    <strong>Comprovante:</strong><br/>
+                    <img src="${m.foto_url}" />
+                  </td>
+                </tr>
+              `
+              : ""
+          }
+        `;
+      })
+      .join("");
+
+    const janela = window.open("", "_blank");
+
+    if (!janela) return;
+
+    janela.document.write(`
+      <html>
+        <head>
+          <title>Extrato - ${saldo.funcionario}</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              padding: 32px;
+              color: #111827;
+            }
+
+            h1 {
+              margin: 0;
+              font-size: 26px;
+            }
+
+            .sub {
+              margin-top: 4px;
+              color: #6b7280;
+              font-size: 13px;
+            }
+
+            .box {
+              display: grid;
+              grid-template-columns: repeat(3, 1fr);
+              gap: 12px;
+              margin: 24px 0;
+            }
+
+            .card {
+              border: 1px solid #d1d5db;
+              border-radius: 12px;
+              padding: 14px;
+            }
+
+            .card span {
+              display: block;
+              color: #6b7280;
+              font-size: 12px;
+              font-weight: bold;
+              margin-bottom: 6px;
+            }
+
+            .card strong {
+              font-size: 20px;
+            }
+
+            table {
+              width: 100%;
+              border-collapse: collapse;
+              margin-top: 20px;
+              font-size: 12px;
+            }
+
+            th {
+              background: #111827;
+              color: white;
+              text-align: left;
+              padding: 9px;
+            }
+
+            td {
+              border: 1px solid #d1d5db;
+              padding: 8px;
+              vertical-align: top;
+            }
+
+            .credito {
+              color: #166534;
+              font-weight: bold;
+            }
+
+            .debito {
+              color: #991b1b;
+              font-weight: bold;
+            }
+
+            .fotoLinha {
+              background: #f9fafb;
+            }
+
+            img {
+              max-width: 260px;
+              max-height: 260px;
+              margin-top: 8px;
+              border: 1px solid #d1d5db;
+              border-radius: 8px;
+            }
+
+            .assinatura {
+              margin-top: 60px;
+              display: grid;
+              grid-template-columns: 1fr 1fr;
+              gap: 60px;
+            }
+
+            .linha {
+              border-top: 1px solid #111827;
+              text-align: center;
+              padding-top: 8px;
+              font-size: 12px;
+            }
+
+            @media print {
+              button {
+                display: none;
+              }
+            }
+          </style>
+        </head>
+
+        <body>
+          <h1>Extrato de Adiantamento</h1>
+          <div class="sub">Prestação de contas - GP Asfalto</div>
+
+          <p><strong>Colaborador:</strong> ${saldo.funcionario}</p>
+          <p><strong>Emitido em:</strong> ${new Date().toLocaleString("pt-BR")}</p>
+
+          <div class="box">
+            <div class="card">
+              <span>Total de créditos</span>
+              <strong>${moneyBR(saldo.total_credito)}</strong>
+            </div>
+
+            <div class="card">
+              <span>Total de despesas</span>
+              <strong>${moneyBR(saldo.total_gasto)}</strong>
+            </div>
+
+            <div class="card">
+              <span>Saldo final</span>
+              <strong>${moneyBR(saldo.saldo)}</strong>
+            </div>
+          </div>
+
+          <table>
+            <thead>
+              <tr>
+                <th>Data</th>
+                <th>Tipo</th>
+                <th>Descrição</th>
+                <th>Obra</th>
+                <th>Valor</th>
+                <th>Saldo</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${linhas || `<tr><td colspan="6">Nenhum lançamento encontrado.</td></tr>`}
+            </tbody>
+          </table>
+
+          <div class="assinatura">
+            <div class="linha">Colaborador</div>
+            <div class="linha">Conferência / Administração</div>
+          </div>
+
+          <script>
+            window.onload = function() {
+              window.print();
+            };
+          </script>
+        </body>
+      </html>
+    `);
+
+    janela.document.close();
+  }
+
   return (
     <main className="page">
       <div className="header">
@@ -193,8 +425,8 @@ export default function AdiantamentosPage() {
           <h1>Adiantamentos</h1>
         </div>
 
-        <button className="printBtn" onClick={() => window.print()}>
-          Gerar PDF
+        <button className="printBtn" onClick={gerarExtratoContabil}>
+          Extrato
         </button>
       </div>
 
