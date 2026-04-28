@@ -150,7 +150,7 @@ function LancarContent() {
     const descricaoFinal = categoria === "Outros" ? descricao.trim() : categoria;
 
     if (!funcionarioId) {
-      setMsg("Funcionário não selecionado.");
+      setMsg("Colaborador não selecionado.");
       return;
     }
 
@@ -190,7 +190,7 @@ function LancarContent() {
       setValor("");
       setFoto(null);
       setPreview("");
-      setMsg("Gasto enviado com sucesso.");
+      setMsg("Comprovante enviado com sucesso.");
 
       await carregar();
     } catch (e: any) {
@@ -204,14 +204,13 @@ function LancarContent() {
     <main className="page">
       <div className="card">
         <p className="eyebrow">GP Asfalto</p>
-        <h1>Enviar gasto</h1>
+        <h1>Comprovante de Despesas</h1>
 
-        <label className="label">Funcionário</label>
+        <label className="label">Colaborador</label>
 
         {isLocked ? (
           <div className="lockedName">
             <strong>{funcionarioAtual?.nome || "Carregando..."}</strong>
-            <small>Nome fixo neste link</small>
           </div>
         ) : (
           <select
@@ -290,7 +289,7 @@ function LancarContent() {
         {msg && <div className="msg">{msg}</div>}
 
         <button className="btn" onClick={salvar} disabled={loading}>
-          {loading ? "Enviando..." : "Enviar gasto"}
+          {loading ? "Enviando..." : "Enviar Comprovante"}
         </button>
       </div>
 
@@ -365,13 +364,6 @@ function LancarContent() {
         .lockedName strong {
           display: block;
           font-size: 18px;
-        }
-
-        .lockedName small {
-          display: block;
-          margin-top: 4px;
-          color: #6b7280;
-          font-weight: 700;
         }
 
         .saldoBox {
