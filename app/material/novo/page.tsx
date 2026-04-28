@@ -1192,9 +1192,19 @@ export default function MaterialTicketNovoPage() {
         setLastAcum(acum);
 
         // resumo por plano (para mensagem do WhatsApp)
-        const planIdsMsg = plans.map((p) => Number(p.id)).filter((x) => Number.isFinite(Number(x)));
+        // ✅ mostra apenas os planos realmente consumidos neste ticket,
+        // na mesma ordem dos allocs, sem poluir com outros planos ativos
+        const planIdsMsg = Array.from(
+          new Set(
+            allocs
+              .map((a) => (a.plan_id !== null && a.plan_id !== undefined ? Number(a.plan_id) : null))
+              .filter((x): x is number => x !== null && Number.isFinite(Number(x)))
+          )
+        );
         const resumoByAfter = await loadEntradaPlanResumoByIds(planIdsMsg);
-        const rows = Object.values(resumoByAfter);
+        const rows = planIdsMsg
+          .map((planId) => resumoByAfter[planId])
+          .filter((r): r is EntradaPlanResumo => Boolean(r));
         setLastEntradaPlanRows(rows.length ? rows : null);
 
         setSavedMsg(idsInserted.length > 1 ? "Salvo com sucesso! (Entrada dividida em 2 lançamentos)" : "Salvo com sucesso!");
