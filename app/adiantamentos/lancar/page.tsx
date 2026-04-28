@@ -4,15 +4,16 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
-type Funcionario = {
-  id: string;
-  nome: string;
-};
+type Funcionario = { id: string; nome: string };
+type Saldo = { funcionario_id: string; funcionario: string; saldo: number };
 
-type Saldo = {
-  funcionario_id: string;
-  funcionario: string;
-  saldo: number;
+type Extrato = {
+  id: string;
+  created_at: string;
+  tipo: "CREDITO" | "GASTO";
+  valor: number;
+  descricao: string | null;
+  categoria: string | null;
 };
 
 const CATEGORIAS = [
@@ -21,6 +22,7 @@ const CATEGORIAS = [
   "Café da manhã",
   "Abastecimento",
   "Borracharia",
+  "Pedágio",
   "Outros",
 ];
 
@@ -35,6 +37,10 @@ function moneyBR(value: number | string | null | undefined) {
   });
 }
 
+function dateBR(value: string) {
+  return new Date(value).toLocaleString("pt-BR");
+}
+
 function parseMoneyBR(value: string) {
   const clean = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
   const n = Number(clean);
@@ -44,7 +50,6 @@ function parseMoneyBR(value: string) {
 function formatMoneyInput(value: string) {
   const digits = value.replace(/\D/g, "");
   if (!digits) return "";
-
   return (Number(digits) / 100).toLocaleString("pt-BR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
@@ -53,7 +58,6 @@ function formatMoneyInput(value: string) {
 
 async function compressImage(file: File): Promise<File> {
   const imageBitmap = await createImageBitmap(file);
-
   const scale = Math.min(1, MAX_IMAGE_WIDTH / imageBitmap.width);
   const width = Math.round(imageBitmap.width * scale);
   const height = Math.round(imageBitmap.height * scale);
@@ -86,6 +90,7 @@ function LancarContent() {
 
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [saldos, setSaldos] = useState<Saldo[]>([]);
+  const [extrato, setExtrato] = useState<Extrato[]>([]);
 
   const [funcionarioId, setFuncionarioId] = useState("");
   const [categoria, setCategoria] = useState("Almoço");
@@ -112,6 +117,11 @@ function LancarContent() {
   useEffect(() => {
     if (funcionarioParam) setFuncionarioId(funcionarioParam);
   }, [funcionarioParam]);
+
+  useEffect(() => {
+    if (funcionarioId) carregarExtrato(funcionarioId);
+    else setExtrato([]);
+  }, [funcionarioId]);
 
   useEffect(() => {
     if (!foto) {
@@ -142,6 +152,17 @@ function LancarContent() {
     setSaldos(saldosData || []);
   }
 
+  async function carregarExtrato(id: string) {
+    const { data } = await supabase
+      .from("adiantamento_extrato_v")
+      .select("id,created_at,tipo,valor,descricao,categoria")
+      .eq("funcionario_id", id)
+      .order("created_at", { ascending: false })
+      .limit(20);
+
+    setExtrato((data as Extrato[]) || []);
+  }
+
   async function uploadFoto() {
     if (!foto) return null;
 
@@ -169,10 +190,7 @@ function LancarContent() {
       .from("adiantamentos")
       .getPublicUrl(fileName);
 
-    return {
-      path: fileName,
-      url: data.publicUrl,
-    };
+    return { path: fileName, url: data.publicUrl };
   }
 
   async function salvar() {
@@ -210,6 +228,7 @@ function LancarContent() {
       setMsg("Comprovante enviado com sucesso.");
 
       await carregar();
+      await carregarExtrato(funcionarioId);
     } catch (e: any) {
       setMsg(`Erro: ${e.message || "não foi possível salvar"}`);
     } finally {
@@ -308,6 +327,30 @@ function LancarContent() {
         <button className="btn" onClick={salvar} disabled={loading}>
           {loading ? "Enviando..." : "Enviar Comprovante"}
         </button>
+
+        <div className="extratoBox">
+          <h2>Extrato simples</h2>
+
+          {extrato.length === 0 ? (
+            <p className="empty">Nenhum lançamento ainda.</p>
+          ) : (
+            extrato.map((item) => {
+              const isCredito = item.tipo === "CREDITO";
+              return (
+                <div key={`${item.tipo}-${item.id}`} className="extratoItem">
+                  <div>
+                    <strong>{isCredito ? "Crédito" : item.descricao}</strong>
+                    <small>{dateBR(item.created_at)}</small>
+                  </div>
+
+                  <span className={isCredito ? "valor credito" : "valor debito"}>
+                    {isCredito ? "+" : "-"} {moneyBR(Math.abs(Number(item.valor || 0)))}
+                  </span>
+                </div>
+              );
+            })
+          )}
+        </div>
       </div>
 
       <style jsx>{`
@@ -489,6 +532,57 @@ function LancarContent() {
           border-radius: 14px;
           background: #fff7ed;
           color: #9a3412;
+          font-weight: 800;
+          font-size: 14px;
+        }
+
+        .extratoBox {
+          margin-top: 24px;
+          padding-top: 18px;
+          border-top: 1px solid #e5e7eb;
+        }
+
+        .extratoBox h2 {
+          margin: 0 0 12px;
+          font-size: 20px;
+        }
+
+        .extratoItem {
+          display: flex;
+          justify-content: space-between;
+          gap: 10px;
+          padding: 12px 0;
+          border-bottom: 1px solid #f1f5f9;
+        }
+
+        .extratoItem strong {
+          display: block;
+          font-size: 14px;
+        }
+
+        .extratoItem small {
+          display: block;
+          margin-top: 3px;
+          color: #6b7280;
+          font-size: 12px;
+          font-weight: 700;
+        }
+
+        .valor {
+          font-weight: 900;
+          white-space: nowrap;
+        }
+
+        .valor.credito {
+          color: #166534;
+        }
+
+        .valor.debito {
+          color: #991b1b;
+        }
+
+        .empty {
+          color: #6b7280;
           font-weight: 800;
           font-size: 14px;
         }
