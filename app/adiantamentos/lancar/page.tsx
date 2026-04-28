@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 
 type Funcionario = {
@@ -31,7 +32,11 @@ function moneyBR(value: number | string | null | undefined) {
 }
 
 function parseMoneyBR(value: string) {
-  const clean = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
+  const clean = value
+    .replace(/[^\d,.-]/g, "")
+    .replace(/\./g, "")
+    .replace(",", ".");
+
   const n = Number(clean);
   return Number.isFinite(n) ? n : 0;
 }
@@ -39,13 +44,18 @@ function parseMoneyBR(value: string) {
 function formatMoneyInput(value: string) {
   const digits = value.replace(/\D/g, "");
   if (!digits) return "";
+
   return (Number(digits) / 100).toLocaleString("pt-BR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
 }
 
-export default function LancarAdiantamentoFuncionarioPage() {
+function LancarContent() {
+  const searchParams = useSearchParams();
+  const funcionarioParam = searchParams.get("f");
+  const isLocked = !!funcionarioParam;
+
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [saldos, setSaldos] = useState<Saldo[]>([]);
 
@@ -59,14 +69,23 @@ export default function LancarAdiantamentoFuncionarioPage() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
 
-  const saldoAtual = useMemo(
-    () => saldos.find((s) => s.funcionario_id === funcionarioId),
-    [saldos, funcionarioId]
-  );
+  const funcionarioAtual = useMemo(() => {
+    return funcionarios.find((f) => f.id === funcionarioId);
+  }, [funcionarios, funcionarioId]);
+
+  const saldoAtual = useMemo(() => {
+    return saldos.find((s) => s.funcionario_id === funcionarioId);
+  }, [saldos, funcionarioId]);
 
   useEffect(() => {
     carregar();
   }, []);
+
+  useEffect(() => {
+    if (funcionarioParam) {
+      setFuncionarioId(funcionarioParam);
+    }
+  }, [funcionarioParam]);
 
   useEffect(() => {
     if (!foto) {
@@ -76,6 +95,7 @@ export default function LancarAdiantamentoFuncionarioPage() {
 
     const url = URL.createObjectURL(foto);
     setPreview(url);
+
     return () => URL.revokeObjectURL(url);
   }, [foto]);
 
@@ -109,9 +129,13 @@ export default function LancarAdiantamentoFuncionarioPage() {
         upsert: false,
       });
 
-    if (error) throw new Error(error.message);
+    if (error) {
+      throw new Error(error.message);
+    }
 
-    const { data } = supabase.storage.from("adiantamentos").getPublicUrl(fileName);
+    const { data } = supabase.storage
+      .from("adiantamentos")
+      .getPublicUrl(fileName);
 
     return {
       path: fileName,
@@ -125,10 +149,25 @@ export default function LancarAdiantamentoFuncionarioPage() {
     const valorNumber = parseMoneyBR(valor);
     const descricaoFinal = categoria === "Outros" ? descricao.trim() : categoria;
 
-    if (!funcionarioId) return setMsg("Selecione seu nome.");
-    if (!foto) return setMsg("Tire a foto do comprovante.");
-    if (!valorNumber || valorNumber <= 0) return setMsg("Informe o valor do gasto.");
-    if (!descricaoFinal) return setMsg("Descreva o gasto.");
+    if (!funcionarioId) {
+      setMsg("Funcionário não selecionado.");
+      return;
+    }
+
+    if (!foto) {
+      setMsg("Tire a foto do comprovante.");
+      return;
+    }
+
+    if (!valorNumber || valorNumber <= 0) {
+      setMsg("Informe o valor do gasto.");
+      return;
+    }
+
+    if (!descricaoFinal) {
+      setMsg("Descreva o gasto.");
+      return;
+    }
 
     try {
       setLoading(true);
@@ -168,18 +207,26 @@ export default function LancarAdiantamentoFuncionarioPage() {
         <h1>Enviar gasto</h1>
 
         <label className="label">Funcionário</label>
-        <select
-          className="input"
-          value={funcionarioId}
-          onChange={(e) => setFuncionarioId(e.target.value)}
-        >
-          <option value="">Selecione seu nome</option>
-          {funcionarios.map((f) => (
-            <option key={f.id} value={f.id}>
-              {f.nome}
-            </option>
-          ))}
-        </select>
+
+        {isLocked ? (
+          <div className="lockedName">
+            <strong>{funcionarioAtual?.nome || "Carregando..."}</strong>
+            <small>Nome fixo neste link</small>
+          </div>
+        ) : (
+          <select
+            className="input"
+            value={funcionarioId}
+            onChange={(e) => setFuncionarioId(e.target.value)}
+          >
+            <option value="">Selecione seu nome</option>
+            {funcionarios.map((f) => (
+              <option key={f.id} value={f.id}>
+                {f.nome}
+              </option>
+            ))}
+          </select>
+        )}
 
         <div className="saldoBox">
           <span>Saldo disponível</span>
@@ -306,6 +353,25 @@ export default function LancarAdiantamentoFuncionarioPage() {
         .textarea {
           min-height: 90px;
           resize: none;
+        }
+
+        .lockedName {
+          border: 1px solid #d1d5db;
+          border-radius: 16px;
+          padding: 15px;
+          background: #f9fafb;
+        }
+
+        .lockedName strong {
+          display: block;
+          font-size: 18px;
+        }
+
+        .lockedName small {
+          display: block;
+          margin-top: 4px;
+          color: #6b7280;
+          font-weight: 700;
         }
 
         .saldoBox {
@@ -435,5 +501,13 @@ export default function LancarAdiantamentoFuncionarioPage() {
         }
       `}</style>
     </main>
+  );
+}
+
+export default function LancarPage() {
+  return (
+    <Suspense fallback={<main style={{ padding: 20 }}>Carregando...</main>}>
+      <LancarContent />
+    </Suspense>
   );
 }
