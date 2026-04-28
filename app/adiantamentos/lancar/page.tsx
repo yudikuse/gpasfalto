@@ -24,6 +24,10 @@ const CATEGORIAS = [
   "Outros",
 ];
 
+const MAX_UPLOAD_MB = 8;
+const MAX_IMAGE_WIDTH = 1600;
+const JPEG_QUALITY = 0.75;
+
 function moneyBR(value: number | string | null | undefined) {
   return Number(value || 0).toLocaleString("pt-BR", {
     style: "currency",
@@ -32,11 +36,7 @@ function moneyBR(value: number | string | null | undefined) {
 }
 
 function parseMoneyBR(value: string) {
-  const clean = value
-    .replace(/[^\d,.-]/g, "")
-    .replace(/\./g, "")
-    .replace(",", ".");
-
+  const clean = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
   const n = Number(clean);
   return Number.isFinite(n) ? n : 0;
 }
@@ -48,6 +48,34 @@ function formatMoneyInput(value: string) {
   return (Number(digits) / 100).toLocaleString("pt-BR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
+  });
+}
+
+async function compressImage(file: File): Promise<File> {
+  const imageBitmap = await createImageBitmap(file);
+
+  const scale = Math.min(1, MAX_IMAGE_WIDTH / imageBitmap.width);
+  const width = Math.round(imageBitmap.width * scale);
+  const height = Math.round(imageBitmap.height * scale);
+
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return file;
+
+  ctx.drawImage(imageBitmap, 0, 0, width, height);
+
+  const blob = await new Promise<Blob | null>((resolve) => {
+    canvas.toBlob(resolve, "image/jpeg", JPEG_QUALITY);
+  });
+
+  if (!blob) return file;
+
+  return new File([blob], "comprovante.jpg", {
+    type: "image/jpeg",
+    lastModified: Date.now(),
   });
 }
 
@@ -82,9 +110,7 @@ function LancarContent() {
   }, []);
 
   useEffect(() => {
-    if (funcionarioParam) {
-      setFuncionarioId(funcionarioParam);
-    }
+    if (funcionarioParam) setFuncionarioId(funcionarioParam);
   }, [funcionarioParam]);
 
   useEffect(() => {
@@ -119,19 +145,25 @@ function LancarContent() {
   async function uploadFoto() {
     if (!foto) return null;
 
-    const ext = foto.name.split(".").pop() || "jpg";
-    const fileName = `${funcionarioId}/${Date.now()}.${ext}`;
+    const originalMb = foto.size / 1024 / 1024;
+    let finalFile = foto;
+
+    if (originalMb > MAX_UPLOAD_MB || foto.type !== "image/jpeg") {
+      setMsg("Comprimindo foto...");
+      finalFile = await compressImage(foto);
+    }
+
+    const fileName = `${funcionarioId}/${Date.now()}.jpg`;
 
     const { error } = await supabase.storage
       .from("adiantamentos")
-      .upload(fileName, foto, {
+      .upload(fileName, finalFile, {
         cacheControl: "3600",
         upsert: false,
+        contentType: "image/jpeg",
       });
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
     const { data } = supabase.storage
       .from("adiantamentos")
@@ -149,25 +181,10 @@ function LancarContent() {
     const valorNumber = parseMoneyBR(valor);
     const descricaoFinal = categoria === "Outros" ? descricao.trim() : categoria;
 
-    if (!funcionarioId) {
-      setMsg("Colaborador não selecionado.");
-      return;
-    }
-
-    if (!foto) {
-      setMsg("Tire a foto do comprovante.");
-      return;
-    }
-
-    if (!valorNumber || valorNumber <= 0) {
-      setMsg("Informe o valor do gasto.");
-      return;
-    }
-
-    if (!descricaoFinal) {
-      setMsg("Descreva o gasto.");
-      return;
-    }
+    if (!funcionarioId) return setMsg("Colaborador não selecionado.");
+    if (!foto) return setMsg("Tire a foto do comprovante.");
+    if (!valorNumber || valorNumber <= 0) return setMsg("Informe o valor do gasto.");
+    if (!descricaoFinal) return setMsg("Descreva o gasto.");
 
     try {
       setLoading(true);
@@ -474,22 +491,6 @@ function LancarContent() {
           color: #9a3412;
           font-weight: 800;
           font-size: 14px;
-        }
-
-        @media (max-width: 480px) {
-          .card {
-            border-radius: 20px;
-            padding: 16px;
-          }
-
-          .saldoBox {
-            display: block;
-          }
-
-          .saldoBox strong {
-            display: block;
-            margin-top: 5px;
-          }
         }
       `}</style>
     </main>
