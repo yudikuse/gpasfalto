@@ -12,24 +12,26 @@ type Saldo = {
   funcionario_id: string;
   funcionario: string;
   saldo: number;
-  total_credito: number;
-  total_gasto: number;
-  gastos_pendentes: number;
 };
 
+const CATEGORIAS = [
+  "Almoço",
+  "Janta",
+  "Café da manhã",
+  "Abastecimento",
+  "Borracharia",
+  "Outros",
+];
+
 function moneyBR(value: number | string | null | undefined) {
-  const n = Number(value || 0);
-  return n.toLocaleString("pt-BR", {
+  return Number(value || 0).toLocaleString("pt-BR", {
     style: "currency",
     currency: "BRL",
   });
 }
 
 function parseMoneyBR(value: string) {
-  const clean = value
-    .replace(/[^\d,.-]/g, "")
-    .replace(/\./g, "")
-    .replace(",", ".");
+  const clean = value.replace(/[^\d,.-]/g, "").replace(/\./g, "").replace(",", ".");
   const n = Number(clean);
   return Number.isFinite(n) ? n : 0;
 }
@@ -37,8 +39,7 @@ function parseMoneyBR(value: string) {
 function formatMoneyInput(value: string) {
   const digits = value.replace(/\D/g, "");
   if (!digits) return "";
-  const cents = Number(digits) / 100;
-  return cents.toLocaleString("pt-BR", {
+  return (Number(digits) / 100).toLocaleString("pt-BR", {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   });
@@ -49,17 +50,19 @@ export default function LancarAdiantamentoFuncionarioPage() {
   const [saldos, setSaldos] = useState<Saldo[]>([]);
 
   const [funcionarioId, setFuncionarioId] = useState("");
-  const [valor, setValor] = useState("");
+  const [categoria, setCategoria] = useState("Almoço");
   const [descricao, setDescricao] = useState("");
+  const [valor, setValor] = useState("");
   const [foto, setFoto] = useState<File | null>(null);
   const [preview, setPreview] = useState("");
 
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
 
-  const saldoAtual = useMemo(() => {
-    return saldos.find((s) => s.funcionario_id === funcionarioId);
-  }, [saldos, funcionarioId]);
+  const saldoAtual = useMemo(
+    () => saldos.find((s) => s.funcionario_id === funcionarioId),
+    [saldos, funcionarioId]
+  );
 
   useEffect(() => {
     carregar();
@@ -73,7 +76,6 @@ export default function LancarAdiantamentoFuncionarioPage() {
 
     const url = URL.createObjectURL(foto);
     setPreview(url);
-
     return () => URL.revokeObjectURL(url);
   }, [foto]);
 
@@ -86,7 +88,7 @@ export default function LancarAdiantamentoFuncionarioPage() {
 
     const { data: saldosData } = await supabase
       .from("adiantamento_saldos_v")
-      .select("*")
+      .select("funcionario_id,funcionario,saldo")
       .eq("ativo", true)
       .order("funcionario", { ascending: true });
 
@@ -107,13 +109,9 @@ export default function LancarAdiantamentoFuncionarioPage() {
         upsert: false,
       });
 
-    if (error) {
-      throw new Error(error.message);
-    }
+    if (error) throw new Error(error.message);
 
-    const { data } = supabase.storage
-      .from("adiantamentos")
-      .getPublicUrl(fileName);
+    const { data } = supabase.storage.from("adiantamentos").getPublicUrl(fileName);
 
     return {
       path: fileName,
@@ -125,26 +123,12 @@ export default function LancarAdiantamentoFuncionarioPage() {
     setMsg("");
 
     const valorNumber = parseMoneyBR(valor);
+    const descricaoFinal = categoria === "Outros" ? descricao.trim() : categoria;
 
-    if (!funcionarioId) {
-      setMsg("Selecione seu nome.");
-      return;
-    }
-
-    if (!foto) {
-      setMsg("Tire a foto do comprovante.");
-      return;
-    }
-
-    if (!valorNumber || valorNumber <= 0) {
-      setMsg("Informe o valor do gasto.");
-      return;
-    }
-
-    if (!descricao.trim()) {
-      setMsg("Descreva rapidamente o gasto.");
-      return;
-    }
+    if (!funcionarioId) return setMsg("Selecione seu nome.");
+    if (!foto) return setMsg("Tire a foto do comprovante.");
+    if (!valorNumber || valorNumber <= 0) return setMsg("Informe o valor do gasto.");
+    if (!descricaoFinal) return setMsg("Descreva o gasto.");
 
     try {
       setLoading(true);
@@ -154,16 +138,17 @@ export default function LancarAdiantamentoFuncionarioPage() {
       const { error } = await supabase.from("adiantamento_gastos").insert({
         funcionario_id: funcionarioId,
         valor: valorNumber,
-        descricao: descricao.trim(),
-        categoria: "OUTROS",
+        categoria,
+        descricao: descricaoFinal,
         foto_url: uploaded?.url,
         foto_path: uploaded?.path,
       });
 
       if (error) throw new Error(error.message);
 
-      setValor("");
+      setCategoria("Almoço");
       setDescricao("");
+      setValor("");
       setFoto(null);
       setPreview("");
       setMsg("Gasto enviado com sucesso.");
@@ -179,15 +164,10 @@ export default function LancarAdiantamentoFuncionarioPage() {
   return (
     <main className="page">
       <div className="card">
-        <div className="top">
-          <div>
-            <p className="eyebrow">GP Asfalto</p>
-            <h1>Enviar gasto</h1>
-          </div>
-          <div className="badge">Celular</div>
-        </div>
+        <p className="eyebrow">GP Asfalto</p>
+        <h1>Enviar gasto</h1>
 
-        <label className="label">Quem está lançando?</label>
+        <label className="label">Funcionário</label>
         <select
           className="input"
           value={funcionarioId}
@@ -212,7 +192,7 @@ export default function LancarAdiantamentoFuncionarioPage() {
           ) : (
             <div>
               <div className="cameraIcon">📷</div>
-              <strong>Tirar foto do comprovante</strong>
+              <strong>Tirar foto</strong>
               <small>Recibo, cupom, anotação ou comprovante</small>
             </div>
           )}
@@ -225,7 +205,7 @@ export default function LancarAdiantamentoFuncionarioPage() {
           />
         </label>
 
-        <label className="label">Valor gasto</label>
+        <label className="label">Valor</label>
         <input
           className="input big"
           inputMode="numeric"
@@ -234,13 +214,31 @@ export default function LancarAdiantamentoFuncionarioPage() {
           onChange={(e) => setValor(formatMoneyInput(e.target.value))}
         />
 
-        <label className="label">Descrição</label>
-        <textarea
-          className="textarea"
-          placeholder="Ex: almoço, lanche, estacionamento, peça urgente..."
-          value={descricao}
-          onChange={(e) => setDescricao(e.target.value)}
-        />
+        <label className="label">Tipo de gasto</label>
+        <div className="chips">
+          {CATEGORIAS.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              className={categoria === cat ? "chip active" : "chip"}
+              onClick={() => setCategoria(cat)}
+            >
+              {cat}
+            </button>
+          ))}
+        </div>
+
+        {categoria === "Outros" && (
+          <>
+            <label className="label">Descrição</label>
+            <textarea
+              className="textarea"
+              placeholder="Descreva o gasto"
+              value={descricao}
+              onChange={(e) => setDescricao(e.target.value)}
+            />
+          </>
+        )}
 
         {msg && <div className="msg">{msg}</div>}
 
@@ -253,7 +251,7 @@ export default function LancarAdiantamentoFuncionarioPage() {
         .page {
           min-height: 100vh;
           background: #f3f5f8;
-          padding: 16px;
+          padding: 12px;
           font-family: Arial, sans-serif;
           color: #111827;
         }
@@ -263,47 +261,28 @@ export default function LancarAdiantamentoFuncionarioPage() {
           margin: 0 auto;
           background: white;
           border-radius: 24px;
-          padding: 20px;
+          padding: 18px;
           box-shadow: 0 12px 35px rgba(15, 23, 42, 0.12);
-        }
-
-        .top {
-          display: flex;
-          justify-content: space-between;
-          align-items: flex-start;
-          gap: 12px;
-          margin-bottom: 20px;
         }
 
         .eyebrow {
           margin: 0 0 4px;
           font-size: 13px;
           color: #6b7280;
-          font-weight: 700;
+          font-weight: 800;
           text-transform: uppercase;
-          letter-spacing: 0.04em;
         }
 
         h1 {
-          margin: 0;
+          margin: 0 0 18px;
           font-size: 30px;
-          line-height: 1;
-        }
-
-        .badge {
-          background: #eef2ff;
-          color: #1e3a8a;
-          border-radius: 999px;
-          padding: 8px 12px;
-          font-size: 13px;
-          font-weight: 800;
         }
 
         .label {
           display: block;
-          margin: 18px 0 8px;
+          margin: 16px 0 8px;
           font-size: 14px;
-          font-weight: 800;
+          font-weight: 900;
           color: #374151;
         }
 
@@ -315,35 +294,29 @@ export default function LancarAdiantamentoFuncionarioPage() {
           padding: 15px;
           font-size: 17px;
           outline: none;
-          background: #fff;
-        }
-
-        .input:focus,
-        .textarea:focus {
-          border-color: #111827;
+          background: white;
         }
 
         .input.big {
-          font-size: 30px;
+          font-size: 32px;
           font-weight: 900;
           text-align: center;
         }
 
         .textarea {
-          min-height: 96px;
+          min-height: 90px;
           resize: none;
         }
 
         .saldoBox {
-          margin-top: 16px;
-          padding: 18px;
+          margin-top: 14px;
+          padding: 16px;
           border-radius: 20px;
           background: #111827;
           color: white;
           display: flex;
           justify-content: space-between;
           align-items: center;
-          gap: 12px;
         }
 
         .saldoBox span {
@@ -352,12 +325,12 @@ export default function LancarAdiantamentoFuncionarioPage() {
         }
 
         .saldoBox strong {
-          font-size: 26px;
+          font-size: 25px;
         }
 
         .photoBox {
           margin-top: 18px;
-          min-height: 230px;
+          min-height: 220px;
           border: 2px dashed #9ca3af;
           border-radius: 22px;
           display: flex;
@@ -381,19 +354,41 @@ export default function LancarAdiantamentoFuncionarioPage() {
         }
 
         .cameraIcon {
-          font-size: 52px;
-          margin-bottom: 10px;
+          font-size: 54px;
+          margin-bottom: 8px;
         }
 
         .photoBox strong {
           display: block;
-          font-size: 19px;
+          font-size: 21px;
         }
 
         .photoBox small {
           display: block;
-          margin-top: 6px;
+          margin-top: 5px;
           color: #6b7280;
+        }
+
+        .chips {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 10px;
+        }
+
+        .chip {
+          border: 1px solid #d1d5db;
+          border-radius: 16px;
+          padding: 15px 10px;
+          background: #f9fafb;
+          font-size: 16px;
+          font-weight: 900;
+          color: #111827;
+        }
+
+        .chip.active {
+          background: #111827;
+          color: white;
+          border-color: #111827;
         }
 
         .btn {
@@ -411,7 +406,6 @@ export default function LancarAdiantamentoFuncionarioPage() {
 
         .btn:disabled {
           opacity: 0.6;
-          cursor: not-allowed;
         }
 
         .msg {
@@ -420,22 +414,14 @@ export default function LancarAdiantamentoFuncionarioPage() {
           border-radius: 14px;
           background: #fff7ed;
           color: #9a3412;
-          font-weight: 700;
+          font-weight: 800;
           font-size: 14px;
         }
 
         @media (max-width: 480px) {
-          .page {
-            padding: 10px;
-          }
-
           .card {
             border-radius: 20px;
             padding: 16px;
-          }
-
-          h1 {
-            font-size: 28px;
           }
 
           .saldoBox {
@@ -444,7 +430,7 @@ export default function LancarAdiantamentoFuncionarioPage() {
 
           .saldoBox strong {
             display: block;
-            margin-top: 6px;
+            margin-top: 5px;
           }
         }
       `}</style>
