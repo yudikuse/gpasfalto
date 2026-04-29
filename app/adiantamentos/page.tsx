@@ -32,6 +32,18 @@ type Gasto = {
   };
 };
 
+type Credito = {
+  id: string;
+  funcionario_id: string;
+  valor: number;
+  obra: string | null;
+  observacao: string | null;
+  created_at: string;
+  funcionario?: {
+    nome: string;
+  };
+};
+
 function moneyBR(value: number | string | null | undefined) {
   return Number(value || 0).toLocaleString("pt-BR", {
     style: "currency",
@@ -68,6 +80,7 @@ export default function AdiantamentosPage() {
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [saldos, setSaldos] = useState<Saldo[]>([]);
   const [gastos, setGastos] = useState<Gasto[]>([]);
+  const [creditos, setCreditos] = useState<Credito[]>([]);
 
   const [funcionarioId, setFuncionarioId] = useState("");
   const [valorCredito, setValorCredito] = useState("");
@@ -86,6 +99,11 @@ export default function AdiantamentosPage() {
     if (!filtroFuncionario) return gastos;
     return gastos.filter((g) => g.funcionario_id === filtroFuncionario);
   }, [gastos, filtroFuncionario]);
+
+  const creditosFiltrados = useMemo(() => {
+    if (!filtroFuncionario) return creditos;
+    return creditos.filter((c) => c.funcionario_id === filtroFuncionario);
+  }, [creditos, filtroFuncionario]);
 
   useEffect(() => {
     carregar();
@@ -122,9 +140,26 @@ export default function AdiantamentosPage() {
       .order("created_at", { ascending: false })
       .limit(200);
 
+    const { data: creditosData } = await supabase
+      .from("adiantamento_creditos")
+      .select(
+        `
+        id,
+        funcionario_id,
+        valor,
+        obra,
+        observacao,
+        created_at,
+        funcionario:adiantamento_funcionarios(nome)
+      `
+      )
+      .order("created_at", { ascending: false })
+      .limit(200);
+
     setFuncionarios(funcionariosData || []);
     setSaldos(saldosData || []);
     setGastos((gastosData as any[]) || []);
+    setCreditos((creditosData as any[]) || []);
   }
 
   async function salvarCredito() {
@@ -185,6 +220,125 @@ export default function AdiantamentosPage() {
     }
   }
 
+  async function editarCredito(c: Credito) {
+    const valorAtual = moneyBR(c.valor).replace("R$", "").trim();
+
+    const novoValorTexto = window.prompt("Novo valor do crédito:", valorAtual);
+    if (novoValorTexto === null) return;
+
+    const novoValor = parseMoneyBR(novoValorTexto);
+    if (!novoValor || novoValor <= 0) {
+      setMsg("Valor inválido.");
+      return;
+    }
+
+    const novaObra = window.prompt("Obra:", c.obra || "");
+    if (novaObra === null) return;
+
+    const novaObs = window.prompt("Observação:", c.observacao || "");
+    if (novaObs === null) return;
+
+    const { error } = await supabase
+      .from("adiantamento_creditos")
+      .update({
+        valor: novoValor,
+        obra: novaObra.trim() || null,
+        observacao: novaObs.trim() || null,
+      })
+      .eq("id", c.id);
+
+    if (error) {
+      setMsg(`Erro: ${error.message}`);
+      return;
+    }
+
+    setMsg("Crédito editado.");
+    await carregar();
+  }
+
+  async function excluirCredito(c: Credito) {
+    const ok = window.confirm(
+      `Excluir crédito de ${moneyBR(c.valor)} para ${c.funcionario?.nome || "colaborador"}?`
+    );
+
+    if (!ok) return;
+
+    const { error } = await supabase
+      .from("adiantamento_creditos")
+      .delete()
+      .eq("id", c.id);
+
+    if (error) {
+      setMsg(`Erro: ${error.message}`);
+      return;
+    }
+
+    setMsg("Crédito excluído.");
+    await carregar();
+  }
+
+  async function editarGasto(g: Gasto) {
+    const valorAtual = moneyBR(g.valor).replace("R$", "").trim();
+
+    const novoValorTexto = window.prompt("Novo valor do gasto:", valorAtual);
+    if (novoValorTexto === null) return;
+
+    const novoValor = parseMoneyBR(novoValorTexto);
+    if (!novoValor || novoValor <= 0) {
+      setMsg("Valor inválido.");
+      return;
+    }
+
+    const novaCategoria = window.prompt("Categoria:", g.categoria || "");
+    if (novaCategoria === null) return;
+
+    const novaDescricao = window.prompt("Descrição:", g.descricao || "");
+    if (novaDescricao === null) return;
+
+    if (!novaDescricao.trim()) {
+      setMsg("Descrição obrigatória.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("adiantamento_gastos")
+      .update({
+        valor: novoValor,
+        categoria: novaCategoria.trim() || g.categoria,
+        descricao: novaDescricao.trim(),
+      })
+      .eq("id", g.id);
+
+    if (error) {
+      setMsg(`Erro: ${error.message}`);
+      return;
+    }
+
+    setMsg("Gasto editado.");
+    await carregar();
+  }
+
+  async function excluirGasto(g: Gasto) {
+    const ok = window.confirm(
+      `Excluir gasto de ${moneyBR(g.valor)} de ${g.funcionario?.nome || "colaborador"}?`
+    );
+
+    if (!ok) return;
+
+    const { error } = await supabase
+      .from("adiantamento_gastos")
+      .delete()
+      .eq("id", g.id);
+
+    if (error) {
+      setMsg(`Erro: ${error.message}`);
+      return;
+    }
+
+    setMsg("Gasto excluído.");
+    await carregar();
+  }
+
   async function gerarExtratoContabil() {
     const funcionarioSelecionado = filtroFuncionario || funcionarioId;
 
@@ -243,7 +397,9 @@ export default function AdiantamentosPage() {
                     <td colspan="6" class="fotoLinha">
                       <div class="comprovanteBox">
                         <div class="comprovanteTitulo">
-                          Comprovante ${String(contadorComprovante).padStart(2, "0")} — ${m.descricao || m.categoria || "Despesa"} — ${moneyBR(valorAbs)}
+                          Comprovante ${String(contadorComprovante).padStart(2, "0")} — ${
+                            m.descricao || m.categoria || "Despesa"
+                          } — ${moneyBR(valorAbs)}
                         </div>
                         <img src="${m.foto_url}" />
                       </div>
@@ -571,6 +727,38 @@ export default function AdiantamentosPage() {
 
       <section className="card full">
         <div className="sectionTop">
+          <h2>Créditos lançados</h2>
+        </div>
+
+        <div className="lancamentos">
+          {creditosFiltrados.map((c) => (
+            <div key={c.id} className="linhaLancamento">
+              <div>
+                <strong>{c.funcionario?.nome || "Colaborador"}</strong>
+                <small>{dateBR(c.created_at)}</small>
+                <div className="desc">
+                  {c.obra || "-"} · {c.observacao || "Crédito"}
+                </div>
+              </div>
+
+              <div className="ladoValor">
+                <span className="valorCredito">{moneyBR(c.valor)}</span>
+                <div className="actions">
+                  <button onClick={() => editarCredito(c)}>Editar</button>
+                  <button onClick={() => excluirCredito(c)}>Excluir</button>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {creditosFiltrados.length === 0 && (
+            <div className="empty">Nenhum crédito encontrado.</div>
+          )}
+        </div>
+      </section>
+
+      <section className="card full">
+        <div className="sectionTop">
           <h2>Comprovantes enviados</h2>
 
           {filtroFuncionario && (
@@ -607,6 +795,9 @@ export default function AdiantamentosPage() {
                       Marcar conferido
                     </button>
                   )}
+
+                  <button onClick={() => editarGasto(g)}>Editar</button>
+                  <button onClick={() => excluirGasto(g)}>Excluir</button>
 
                   <a href={g.foto_url} target="_blank">
                     Abrir foto
@@ -806,6 +997,47 @@ export default function AdiantamentosPage() {
           cursor: pointer;
         }
 
+        .lancamentos {
+          display: grid;
+          gap: 10px;
+        }
+
+        .linhaLancamento {
+          border: 1px solid #e5e7eb;
+          border-radius: 16px;
+          padding: 14px;
+          display: flex;
+          justify-content: space-between;
+          gap: 14px;
+          background: #fff;
+        }
+
+        .linhaLancamento strong {
+          display: block;
+          font-size: 15px;
+        }
+
+        .linhaLancamento small {
+          display: block;
+          margin-top: 4px;
+          color: #6b7280;
+          font-size: 12px;
+          font-weight: 700;
+        }
+
+        .ladoValor {
+          text-align: right;
+          min-width: 150px;
+        }
+
+        .valorCredito {
+          display: block;
+          font-weight: 900;
+          color: #166534;
+          font-size: 17px;
+          margin-bottom: 8px;
+        }
+
         .gastos {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -878,6 +1110,11 @@ export default function AdiantamentosPage() {
           align-items: center;
           gap: 10px;
           flex-wrap: wrap;
+          justify-content: flex-end;
+        }
+
+        .gastoInfo .actions {
+          justify-content: flex-start;
         }
 
         .actions button,
@@ -935,6 +1172,19 @@ export default function AdiantamentosPage() {
 
           .gastos {
             grid-template-columns: 1fr;
+          }
+
+          .linhaLancamento {
+            display: block;
+          }
+
+          .ladoValor {
+            text-align: left;
+            margin-top: 10px;
+          }
+
+          .actions {
+            justify-content: flex-start;
           }
         }
 
