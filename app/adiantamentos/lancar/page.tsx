@@ -23,6 +23,7 @@ const CATEGORIAS = [
   "Abastecimento",
   "Borracharia",
   "Pedágio",
+  "Manutenção",
   "Outros",
 ];
 
@@ -109,6 +110,8 @@ function LancarContent() {
   const saldoAtual = useMemo(() => {
     return saldos.find((s) => s.funcionario_id === funcionarioId);
   }, [saldos, funcionarioId]);
+
+  const precisaDescricao = categoria === "Outros" || categoria === "Manutenção";
 
   useEffect(() => {
     carregar();
@@ -197,7 +200,7 @@ function LancarContent() {
     setMsg("");
 
     const valorNumber = parseMoneyBR(valor);
-    const descricaoFinal = categoria === "Outros" ? descricao.trim() : categoria;
+    const descricaoFinal = precisaDescricao ? descricao.trim() : categoria;
 
     if (!funcionarioId) return setMsg("Colaborador não selecionado.");
     if (!foto) return setMsg("Tire a foto do comprovante.");
@@ -234,6 +237,63 @@ function LancarContent() {
     } finally {
       setLoading(false);
     }
+  }
+
+  async function editarGasto(item: Extrato) {
+    const valorAtual = moneyBR(Math.abs(Number(item.valor || 0))).replace("R$", "").trim();
+
+    const novoValorTexto = window.prompt("Novo valor:", valorAtual);
+    if (novoValorTexto === null) return;
+
+    const novoValor = parseMoneyBR(novoValorTexto);
+    if (!novoValor || novoValor <= 0) {
+      setMsg("Valor inválido.");
+      return;
+    }
+
+    const novaDescricao = window.prompt("Descrição:", item.descricao || "");
+    if (novaDescricao === null) return;
+
+    if (!novaDescricao.trim()) {
+      setMsg("Descrição obrigatória.");
+      return;
+    }
+
+    const { error } = await supabase
+      .from("adiantamento_gastos")
+      .update({
+        valor: novoValor,
+        descricao: novaDescricao.trim(),
+      })
+      .eq("id", item.id);
+
+    if (error) {
+      setMsg(`Erro: ${error.message}`);
+      return;
+    }
+
+    setMsg("Lançamento editado.");
+    await carregar();
+    await carregarExtrato(funcionarioId);
+  }
+
+  async function excluirGasto(item: Extrato) {
+    const ok = window.confirm("Excluir este lançamento?");
+    if (!ok) return;
+
+    const { error } = await supabase
+      .from("adiantamento_gastos")
+      .delete()
+      .eq("id", item.id);
+
+    if (error) {
+      setMsg(`Erro: ${error.message}`);
+      return;
+    }
+
+    setMsg("Lançamento excluído.");
+    await carregar();
+    await carregarExtrato(funcionarioId);
   }
 
   return (
@@ -310,7 +370,7 @@ function LancarContent() {
           ))}
         </div>
 
-        {categoria === "Outros" && (
+        {precisaDescricao && (
           <>
             <label className="label">Descrição</label>
             <textarea
@@ -341,6 +401,17 @@ function LancarContent() {
                   <div>
                     <strong>{isCredito ? "Crédito" : item.descricao}</strong>
                     <small>{dateBR(item.created_at)}</small>
+
+                    {!isCredito && (
+                      <div className="miniActions">
+                        <button type="button" onClick={() => editarGasto(item)}>
+                          Editar
+                        </button>
+                        <button type="button" onClick={() => excluirGasto(item)}>
+                          Excluir
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   <span className={isCredito ? "valor credito" : "valor debito"}>
@@ -579,6 +650,23 @@ function LancarContent() {
 
         .valor.debito {
           color: #991b1b;
+        }
+
+        .miniActions {
+          display: flex;
+          gap: 8px;
+          margin-top: 8px;
+        }
+
+        .miniActions button {
+          border: 0;
+          border-radius: 999px;
+          padding: 7px 10px;
+          background: #e5e7eb;
+          color: #111827;
+          font-size: 12px;
+          font-weight: 900;
+          cursor: pointer;
         }
 
         .empty {
