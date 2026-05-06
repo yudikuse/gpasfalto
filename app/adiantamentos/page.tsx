@@ -119,6 +119,13 @@ function isVencido(value: string | null | undefined) {
 
 export default function AdiantamentosPage() {
   const competencia = getCompetenciaAtual();
+  const [competenciaInicio, setCompetenciaInicio] = useState(
+  competencia.inicio.toISOString().slice(0, 10)
+);
+
+const [competenciaFim, setCompetenciaFim] = useState(
+  competencia.fim.toISOString().slice(0, 10)
+);
 
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [saldos, setSaldos] = useState<Saldo[]>([]);
