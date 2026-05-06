@@ -161,12 +161,15 @@ export default function AdiantamentosPage() {
       .eq("ativo", true)
       .order("nome", { ascending: true });
 
-    const { data: saldosData } = await supabase
-      .from("adiantamento_saldos_v")
-      .select("*")
-      .eq("ativo", true)
-      .order("funcionario", { ascending: true });
-
+   const { data: saldosData } = await supabase
+  .from("adiantamento_saldos_competencia_v")
+  .select("*")
+  .eq("ativo", true)
+  .eq(
+    "competencia_inicio",
+    competencia.inicio.toISOString().slice(0, 10)
+  )
+  .order("funcionario", { ascending: true });
     const { data: gastosData } = await supabase
       .from("adiantamento_gastos")
       .select(
