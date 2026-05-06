@@ -38,6 +38,9 @@ type Credito = {
   valor: number;
   obra: string | null;
   observacao: string | null;
+  comprovante_url: string | null;
+  comprovante_path: string | null;
+  prazo_prestacao: string | null;
   created_at: string;
   funcionario?: {
     nome: string;
@@ -51,9 +54,13 @@ function moneyBR(value: number | string | null | undefined) {
   });
 }
 
-function dateBR(value: string) {
-  if (!value) return "";
+function dateBR(value: string | null | undefined) {
+  if (!value) return "-";
   return new Date(value).toLocaleString("pt-BR");
+}
+
+function dateOnlyBR(value: Date) {
+  return value.toLocaleDateString("pt-BR");
 }
 
 function parseMoneyBR(value: string) {
@@ -76,7 +83,43 @@ function formatMoneyInput(value: string) {
   });
 }
 
+function getCompetenciaAtual() {
+  const hoje = new Date();
+  const ano = hoje.getFullYear();
+  const mes = hoje.getMonth();
+
+  let inicio: Date;
+  let fim: Date;
+
+  if (hoje.getDate() >= 21) {
+    inicio = new Date(ano, mes, 21, 0, 0, 0);
+    fim = new Date(ano, mes + 1, 20, 23, 59, 59);
+  } else {
+    inicio = new Date(ano, mes - 1, 21, 0, 0, 0);
+    fim = new Date(ano, mes, 20, 23, 59, 59);
+  }
+
+  return { inicio, fim };
+}
+
+function toInputDateTime(value: string | null | undefined) {
+  if (!value) return "";
+  const d = new Date(value);
+  const pad = (n: number) => String(n).padStart(2, "0");
+
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+    d.getDate()
+  )}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function isVencido(value: string | null | undefined) {
+  if (!value) return false;
+  return new Date(value).getTime() < Date.now();
+}
+
 export default function AdiantamentosPage() {
+  const competencia = getCompetenciaAtual();
+
   const [funcionarios, setFuncionarios] = useState<Funcionario[]>([]);
   const [saldos, setSaldos] = useState<Saldo[]>([]);
   const [gastos, setGastos] = useState<Gasto[]>([]);
@@ -86,6 +129,8 @@ export default function AdiantamentosPage() {
   const [valorCredito, setValorCredito] = useState("");
   const [obra, setObra] = useState("");
   const [observacao, setObservacao] = useState("");
+  const [prazoPrestacao, setPrazoPrestacao] = useState("");
+  const [comprovanteCredito, setComprovanteCredito] = useState<File | null>(null);
 
   const [filtroFuncionario, setFiltroFuncionario] = useState("");
   const [loading, setLoading] = useState(false);
@@ -137,8 +182,10 @@ export default function AdiantamentosPage() {
         funcionario:adiantamento_funcionarios(nome)
       `
       )
+      .gte("created_at", competencia.inicio.toISOString())
+      .lte("created_at", competencia.fim.toISOString())
       .order("created_at", { ascending: false })
-      .limit(200);
+      .limit(300);
 
     const { data: creditosData } = await supabase
       .from("adiantamento_creditos")
@@ -149,17 +196,47 @@ export default function AdiantamentosPage() {
         valor,
         obra,
         observacao,
+        comprovante_url,
+        comprovante_path,
+        prazo_prestacao,
         created_at,
         funcionario:adiantamento_funcionarios(nome)
       `
       )
+      .gte("created_at", competencia.inicio.toISOString())
+      .lte("created_at", competencia.fim.toISOString())
       .order("created_at", { ascending: false })
-      .limit(200);
+      .limit(300);
 
     setFuncionarios(funcionariosData || []);
     setSaldos(saldosData || []);
     setGastos((gastosData as any[]) || []);
     setCreditos((creditosData as any[]) || []);
+  }
+
+  async function uploadComprovanteCredito() {
+    if (!comprovanteCredito || !funcionarioId) return null;
+
+    const ext = comprovanteCredito.name.split(".").pop() || "jpg";
+    const fileName = `creditos/${funcionarioId}/${Date.now()}.${ext}`;
+
+    const { error } = await supabase.storage
+      .from("adiantamentos")
+      .upload(fileName, comprovanteCredito, {
+        cacheControl: "3600",
+        upsert: false,
+      });
+
+    if (error) throw new Error(error.message);
+
+    const { data } = supabase.storage
+      .from("adiantamentos")
+      .getPublicUrl(fileName);
+
+    return {
+      path: fileName,
+      url: data.publicUrl,
+    };
   }
 
   async function salvarCredito() {
@@ -180,11 +257,16 @@ export default function AdiantamentosPage() {
     try {
       setLoading(true);
 
+      const uploaded = await uploadComprovanteCredito();
+
       const { error } = await supabase.from("adiantamento_creditos").insert({
         funcionario_id: funcionarioId,
         valor,
         obra: obra.trim() || null,
         observacao: observacao.trim() || null,
+        prazo_prestacao: prazoPrestacao || null,
+        comprovante_url: uploaded?.url || null,
+        comprovante_path: uploaded?.path || null,
         criado_por: "encarregado",
       });
 
@@ -193,6 +275,8 @@ export default function AdiantamentosPage() {
       setValorCredito("");
       setObra("");
       setObservacao("");
+      setPrazoPrestacao("");
+      setComprovanteCredito(null);
       setMsg("Adiantamento lançado com sucesso.");
 
       await carregar();
@@ -238,12 +322,30 @@ export default function AdiantamentosPage() {
     const novaObs = window.prompt("Observação:", c.observacao || "");
     if (novaObs === null) return;
 
+    const novoPrazo = window.prompt(
+      "Prazo de prestação (AAAA-MM-DD HH:MM) ou vazio:",
+      c.prazo_prestacao ? dateBR(c.prazo_prestacao) : ""
+    );
+    if (novoPrazo === null) return;
+
+    let prazoFormatado: string | null = c.prazo_prestacao;
+
+    if (novoPrazo.trim() === "") {
+      prazoFormatado = null;
+    } else {
+      const d = new Date(novoPrazo.trim());
+      if (!Number.isNaN(d.getTime())) {
+        prazoFormatado = d.toISOString();
+      }
+    }
+
     const { error } = await supabase
       .from("adiantamento_creditos")
       .update({
         valor: novoValor,
         obra: novaObra.trim() || null,
         observacao: novaObs.trim() || null,
+        prazo_prestacao: prazoFormatado,
       })
       .eq("id", c.id);
 
@@ -258,7 +360,9 @@ export default function AdiantamentosPage() {
 
   async function excluirCredito(c: Credito) {
     const ok = window.confirm(
-      `Excluir crédito de ${moneyBR(c.valor)} para ${c.funcionario?.nome || "colaborador"}?`
+      `Excluir crédito de ${moneyBR(c.valor)} para ${
+        c.funcionario?.nome || "colaborador"
+      }?`
     );
 
     if (!ok) return;
@@ -320,7 +424,9 @@ export default function AdiantamentosPage() {
 
   async function excluirGasto(g: Gasto) {
     const ok = window.confirm(
-      `Excluir gasto de ${moneyBR(g.valor)} de ${g.funcionario?.nome || "colaborador"}?`
+      `Excluir gasto de ${moneyBR(g.valor)} de ${
+        g.funcionario?.nome || "colaborador"
+      }?`
     );
 
     if (!ok) return;
@@ -358,6 +464,8 @@ export default function AdiantamentosPage() {
       .from("adiantamento_extrato_v")
       .select("*")
       .eq("funcionario_id", funcionarioSelecionado)
+      .gte("created_at", competencia.inicio.toISOString())
+      .lte("created_at", competencia.fim.toISOString())
       .order("created_at", { ascending: true });
 
     if (error) {
@@ -389,6 +497,23 @@ export default function AdiantamentosPage() {
               <td class="${isCredito ? "credito" : "debito"}">${moneyBR(valorAbs)}</td>
               <td>${moneyBR(saldoAcumulado)}</td>
             </tr>
+
+            ${
+              m.comprovante_url
+                ? `
+                  <tr>
+                    <td colspan="6" class="fotoLinha">
+                      <div class="comprovanteBox">
+                        <div class="comprovanteTitulo">
+                          Comprovante do crédito — ${moneyBR(valorAbs)}
+                        </div>
+                        <img src="${m.comprovante_url}" />
+                      </div>
+                    </td>
+                  </tr>
+                `
+                : ""
+            }
 
             ${
               m.foto_url
@@ -569,7 +694,12 @@ export default function AdiantamentosPage() {
 
           <div class="dados">
             <div><strong>Colaborador:</strong> ${saldo.funcionario}</div>
-            <div><strong>Emitido em:</strong> ${new Date().toLocaleString("pt-BR")}</div>
+            <div><strong>Competência:</strong> ${dateOnlyBR(
+              competencia.inicio
+            )} a ${dateOnlyBR(competencia.fim)}</div>
+            <div><strong>Emitido em:</strong> ${new Date().toLocaleString(
+              "pt-BR"
+            )}</div>
           </div>
 
           <div class="box">
@@ -584,7 +714,7 @@ export default function AdiantamentosPage() {
             </div>
 
             <div class="card">
-              <span>Saldo a devolver</span>
+              <span>Saldo a prestar/devolver</span>
               <strong>${moneyBR(saldo.saldo)}</strong>
             </div>
           </div>
@@ -629,6 +759,10 @@ export default function AdiantamentosPage() {
         <div>
           <p className="eyebrow">GP Asfalto</p>
           <h1>Adiantamentos</h1>
+          <div className="competencia">
+            Prestação de contas: {dateOnlyBR(competencia.inicio)} a{" "}
+            {dateOnlyBR(competencia.fim)}
+          </div>
         </div>
 
         <button className="printBtn" onClick={gerarExtratoContabil}>
@@ -681,6 +815,26 @@ export default function AdiantamentosPage() {
             onChange={(e) => setObservacao(e.target.value)}
           />
 
+          <label>Prazo para prestação</label>
+          <input
+            type="datetime-local"
+            value={prazoPrestacao}
+            onChange={(e) => setPrazoPrestacao(e.target.value)}
+          />
+
+          <label>Comprovante do crédito</label>
+          <input
+            type="file"
+            accept="image/*,.pdf"
+            onChange={(e) => setComprovanteCredito(e.target.files?.[0] || null)}
+          />
+
+          {comprovanteCredito && (
+            <div className="arquivoSelecionado">
+              Arquivo: <strong>{comprovanteCredito.name}</strong>
+            </div>
+          )}
+
           {msg && <div className="msg">{msg}</div>}
 
           <button className="primaryBtn" onClick={salvarCredito} disabled={loading}>
@@ -731,25 +885,39 @@ export default function AdiantamentosPage() {
         </div>
 
         <div className="lancamentos">
-          {creditosFiltrados.map((c) => (
-            <div key={c.id} className="linhaLancamento">
-              <div>
-                <strong>{c.funcionario?.nome || "Colaborador"}</strong>
-                <small>{dateBR(c.created_at)}</small>
-                <div className="desc">
-                  {c.obra || "-"} · {c.observacao || "Crédito"}
-                </div>
-              </div>
+          {creditosFiltrados.map((c) => {
+            const vencido = isVencido(c.prazo_prestacao) && Number(c.valor) > 0;
 
-              <div className="ladoValor">
-                <span className="valorCredito">{moneyBR(c.valor)}</span>
-                <div className="actions">
-                  <button onClick={() => editarCredito(c)}>Editar</button>
-                  <button onClick={() => excluirCredito(c)}>Excluir</button>
+            return (
+              <div key={c.id} className={vencido ? "linhaLancamento vencido" : "linhaLancamento"}>
+                <div>
+                  <strong>{c.funcionario?.nome || "Colaborador"}</strong>
+                  <small>{dateBR(c.created_at)}</small>
+                  <div className="desc">
+                    {c.obra || "-"} · {c.observacao || "Crédito"}
+                  </div>
+
+                  <div className={vencido ? "prazo vencidoTxt" : "prazo"}>
+                    Prazo prestação: {dateBR(c.prazo_prestacao)}
+                  </div>
+
+                  {c.comprovante_url && (
+                    <a className="linkComprovante" href={c.comprovante_url} target="_blank">
+                      Abrir comprovante do crédito
+                    </a>
+                  )}
+                </div>
+
+                <div className="ladoValor">
+                  <span className="valorCredito">{moneyBR(c.valor)}</span>
+                  <div className="actions">
+                    <button onClick={() => editarCredito(c)}>Editar</button>
+                    <button onClick={() => excluirCredito(c)}>Excluir</button>
+                  </div>
                 </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {creditosFiltrados.length === 0 && (
             <div className="empty">Nenhum crédito encontrado.</div>
@@ -844,6 +1012,17 @@ export default function AdiantamentosPage() {
           font-size: 34px;
         }
 
+        .competencia {
+          margin-top: 6px;
+          display: inline-block;
+          background: #111827;
+          color: white;
+          border-radius: 999px;
+          padding: 7px 11px;
+          font-size: 13px;
+          font-weight: 900;
+        }
+
         h2 {
           margin: 0 0 16px;
           font-size: 22px;
@@ -892,6 +1071,16 @@ export default function AdiantamentosPage() {
         textarea {
           min-height: 80px;
           resize: none;
+        }
+
+        .arquivoSelecionado {
+          margin-top: 8px;
+          padding: 10px;
+          border-radius: 12px;
+          background: #f9fafb;
+          font-size: 13px;
+          font-weight: 700;
+          color: #374151;
         }
 
         .saldoMini {
@@ -1012,6 +1201,11 @@ export default function AdiantamentosPage() {
           background: #fff;
         }
 
+        .linhaLancamento.vencido {
+          border-color: #f97316;
+          background: #fff7ed;
+        }
+
         .linhaLancamento strong {
           display: block;
           font-size: 15px;
@@ -1023,6 +1217,29 @@ export default function AdiantamentosPage() {
           color: #6b7280;
           font-size: 12px;
           font-weight: 700;
+        }
+
+        .prazo {
+          margin-top: 6px;
+          color: #374151;
+          font-size: 13px;
+          font-weight: 800;
+        }
+
+        .vencidoTxt {
+          color: #c2410c;
+        }
+
+        .linkComprovante {
+          display: inline-block;
+          margin-top: 8px;
+          color: #111827;
+          background: #e5e7eb;
+          border-radius: 999px;
+          padding: 7px 10px;
+          font-size: 12px;
+          font-weight: 900;
+          text-decoration: none;
         }
 
         .ladoValor {
